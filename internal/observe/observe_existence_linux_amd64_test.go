@@ -444,3 +444,60 @@ except OSError:
 		t.Errorf("the chroot target %q was recorded as an access; counting it says the observation is short, not what it lost", target)
 	}
 }
+
+// The Linux 6.13 *at forms of the xattr calls. setxattrat/removexattrat need the path
+// recorded as a write like every other metadata write - each fails EROFS on a read-only
+// bind - and decoding chmod but not its siblings is the under-grant this file's own
+// fchmodat2 note warns about; this is the row it stopped short of.
+//
+// Issued through syscall(2) rather than a libc wrapper, and it does not matter that this
+// host's kernel (6.8) answers ENOSYS: the mutating decode happens at the ENTRY stop,
+// before the kernel has looked at the number at all. That is what makes a syscall this
+// host cannot run still testable here.
+//
+// The reader half of the family - getxattrat/listxattrat, decoded in inspectExistence -
+// is not asserted, and cannot be on this kernel. Those go through the success filter at
+// the EXIT stop, and ENOSYS is in its skip set by design (it is how glibc probes
+// faccessat2 before falling back), so a call the kernel never ran is correctly recorded
+// as nothing whether or not the decoder recognizes the number. Only a 6.13 host can tell
+// the two apart.
+func TestTraceDecodesTheXattratWriters(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	dir := t.TempDir()
+	written := filepath.Join(dir, "set")
+	removed := filepath.Join(dir, "remove")
+	for _, p := range []string{written, removed} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// (dirfd, path, at_flags, ...) for both, so only the first two arguments matter to
+	// the decode; the rest are passed as zero.
+	script := fmt.Sprintf(`
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+for nr, path in ((%d, %q), (%d, %q)):
+    libc.syscall(nr, -100, path.encode(), 0, 0, 0, 0)
+`,
+		unix.SYS_SETXATTRAT, written,
+		unix.SYS_REMOVEXATTRAT, removed)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	for _, path := range []string{written, removed} {
+		a, ok := find(res, path)
+		if !ok {
+			t.Errorf("no access recorded for %q; an xattr write the decoder skips leaves a silent under-grant", path)
+			continue
+		}
+		if !a.Write {
+			t.Errorf("%q recorded as a read, want a write: it fails EROFS on a read-only bind", path)
+		}
+	}
+}

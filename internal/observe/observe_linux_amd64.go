@@ -1231,8 +1231,12 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 	// that only ever probes a path this way (df /data) profiled as not needing it.
 	case unix.SYS_STATFS, unix.SYS_GETXATTR, unix.SYS_LGETXATTR, unix.SYS_LISTXATTR, unix.SYS_LLISTXATTR:
 		dirfd, pathReg = atFdCwd, regs.Rdi
+	// getxattrat/listxattrat are the Linux 6.13 *at forms of the xattr readers above,
+	// taking (dirfd, path, at_flags, ...). They answer ENOENT for a path the sandbox did
+	// not bind exactly as their non-at siblings do, so leaving them out would let a run
+	// that probes only this way profile as not needing the path.
 	case unix.SYS_NEWFSTATAT, unix.SYS_STATX, unix.SYS_FACCESSAT, unix.SYS_FACCESSAT2, unix.SYS_READLINKAT,
-		unix.SYS_NAME_TO_HANDLE_AT:
+		unix.SYS_NAME_TO_HANDLE_AT, unix.SYS_GETXATTRAT, unix.SYS_LISTXATTRAT:
 		dirfd, pathReg = int32(regs.Rdi), regs.Rsi
 	// inotify_add_watch(fd, path, mask) takes a watch descriptor, not a dirfd, so its
 	// pathname is anchored at the working directory like the non-at forms.
@@ -1418,8 +1422,14 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		unix.SYS_CHMOD, unix.SYS_CHOWN, unix.SYS_LCHOWN, unix.SYS_UTIME, unix.SYS_UTIMES,
 		unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR:
 		at(0, atFdCwd, regs.Rdi, true)
+	// setxattrat/removexattrat are the Linux 6.13 *at forms of the xattr writers above,
+	// taking (dirfd, path, at_flags, ...) - the same reason the case above gives for
+	// fchmodat2, applied to the row it stopped short of. AT_EMPTY_PATH makes them act on
+	// the descriptor and name no path, which arrives here as an empty pathname rather
+	// than the NULL utimensat's exemption is about, and record already skips that.
 	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_MKNODAT,
-		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT:
+		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT,
+		unix.SYS_SETXATTRAT, unix.SYS_REMOVEXATTRAT:
 		// utimensat and futimesat accept a NULL pathname, and then act on the descriptor
 		// itself rather than naming a file - the kernel forms of futimens(3) and futimes(3).
 		// Reading address zero fails, so decoding one as a pathname reported a lost access
