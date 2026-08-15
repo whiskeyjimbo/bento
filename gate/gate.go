@@ -521,9 +521,15 @@ func writeShieldProblem(set shield.Set, g string) (string, bool) {
 		// package doc rules out.
 		return "", false
 	}
-	// Only Honored means no problem. A verdict added to shield and not named above is a
-	// refusal the run raises, and reporting none green-lights a manifest that dies at its
-	// first step - so it is reported in the nearest sentence instead, which can be wrong
-	// about the remedy where silence would be wrong about the outcome.
-	return grantrefusal.WriteInsideShield(g, r.Path).Error(), true
+	// Unreachable: the switch above names every verdict, and the exhaustive linter fails
+	// the build for one that arrives without an arm here - which is what pins the
+	// enumeration, since nothing would stop compiling.
+	//
+	// Silent rather than a guessed refusal, matching ShieldedReadProblems and the backend's
+	// checkNotShielded. A new verdict is not a refusal the run necessarily raises: the
+	// backend answers a write in four checks, only the first of which this mirrors, and one
+	// added to internal/shield without a matching check is honored by the run. Refusing it
+	// here would refuse what the run accepts, the one direction the package doc rules out,
+	// and it would do so in a sentence about a shield the grant may be nowhere near.
+	return "", false
 }
