@@ -212,9 +212,11 @@ func LoopedGrantProblems(read, write []string) []string {
 // Asked of where the grant LANDS, as RootWriteProblems asks it and as prepareWriteDirs
 // stats it: run resolves the grant physically, so a ".." popping over a symlink lands
 // somewhere a lexical filepath.Clean does not - and Cleaning here refuses a grant the run
-// honors, the one direction this package rules out. Resolving also disposes of the
-// trailing slash `dir/file.txt/`, which stats as ENOTDIR unresolved and would otherwise be
-// neither a problem nor a note, while run refuses it as the file it is.
+// honors, the one direction this package rules out. It also disposes of the trailing slash
+// `dir/file.txt/`, which stats as ENOTDIR unspelled-away and would otherwise be neither a
+// problem nor a note, while run refuses it as the file it is - except where the resolver's
+// depth budget hands the path back verbatim, and the ENOTDIR is refused in the unstattable
+// sentence instead. Both refuse, so the wording is the whole of the difference.
 //
 // A stat that fails for anything but absence or a loop is a refusal too, in the same
 // sentence prepareWriteDirs' default arm refuses it with. It is asked here and not narrowed
