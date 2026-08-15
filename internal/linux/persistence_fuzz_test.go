@@ -136,11 +136,20 @@ func persistenceSandbox(root string) sandbox {
 }
 
 // checkPersistenceShielded plants every surface selected by mask under a fresh checkout,
-// runs the full grant-admission sequence (which must accept - the grant is a plain temp dir
-// with no symlink components and no home shield above it), compiles the deny args, and
-// asserts every planted execution surface is non-writable. Shared by the fuzz and the
-// exhaustive test.
-func checkPersistenceShielded(t *testing.T, mask int) {
+// grants a write at rel BELOW that checkout, runs the full grant-admission sequence,
+// compiles the deny args, and asserts every planted execution surface the grant reaches is
+// non-writable. Shared by the fuzz and the exhaustive test.
+//
+// rel is the axis the fuzzer moves and the exhaustive test leaves at "": the grant used to
+// be hard-coded to the checkout root, so no case varied the grant's DEPTH - and that is
+// where the real bug shipped, shields anchored at the grant rather than the checkout
+// leaving planted hooks runnable on the host at the developer's next commit.
+//
+// A grant deeper than the checkout changes what the oracle may demand. The write grant is
+// the only writable bind, so a surface outside it was never writable and proves nothing;
+// only the surfaces the grant REACHES are asserted, the same narrowing the read-grant fuzz
+// makes with reachable().
+func checkPersistenceShielded(t *testing.T, mask int, rel string) {
 	root := canonTempDir(t)
 	// A real checkout so the grant is a directory that earns its Workspace + gitDir shields.
 	if err := os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o755); err != nil {
@@ -170,41 +179,99 @@ func checkPersistenceShielded(t *testing.T, mask int) {
 		filepath.Join(root, ".idea"),
 	)
 
-	sb := persistenceSandbox(root)
-	writes := []string{root}
-	p := &policy.Policy{Entrypoint: filepath.Join(root, "run.sh"), Write: writes}
+	grant := filepath.Join(root, rel)
+	// The grant is made a real directory: shieldRules skips a write grant that is not
+	// one, so a grant naming a path nothing created would silently pose no shields at
+	// all and the assertions below would hold vacuously.
+	if err := os.MkdirAll(grant, 0o755); err != nil {
+		t.Skipf("grant %q could not be created (a planted surface holds the name as a file): %v", rel, err)
+	}
 
-	if err := checkGrants(sb, p, nil, writes); err != nil {
-		t.Fatalf("mask %d: a plain temp-dir write grant must be accepted, got: %v", mask, err)
+	sb := persistenceSandbox(root)
+	writes := []string{grant}
+	p := &policy.Policy{Entrypoint: filepath.Join(grant, "run.sh"), Write: writes}
+
+	// Coupling: the accept/refuse verdict against ground truth built from what was
+	// PLANTED, not from the emitter. A write grant at or inside an execution surface must
+	// be refused - honoring it would put a writable bind over a rule that lands after it,
+	// so every write fails EROFS at run time while the manifest reports the grant honored.
+	// Without this the fuzzer could spend its whole budget on refused grants and the
+	// properties below would pass by never being reached.
+	err := checkGrants(sb, p, nil, writes)
+	wantRefused := coveredBy(grant, expected)
+	if (err != nil) != wantRefused {
+		t.Fatalf("mask %d grant %q: refused=%v (want %v): %v", mask, rel, err != nil, wantRefused, err)
+	}
+	if err != nil {
+		return // a refused policy is never enforced; nothing to prove about its shields
 	}
 
 	args, _ := denyArgs(sb, exposedPaths(sb, nil, writes), writes, nil)
 	dests := shieldDests(args, sb.emptyFile, false)
 	for _, path := range expected {
+		// Only what the grant makes writable. A surface outside the single write bind
+		// was never reachable, so demanding a shield over it would assert the emitter
+		// covers paths no run can touch.
+		if !policy.CoversResolved(grant, path) {
+			continue
+		}
 		if !coveredBy(path, dests) {
-			t.Fatalf("mask %d: execution surface %q left writable (not covered by a shield); shield dests=%v", mask, path, dests)
+			t.Fatalf("mask %d grant %q: execution surface %q left writable (not covered by a shield); shield dests=%v", mask, rel, path, dests)
 		}
 	}
 }
 
+// fuzzGrantRel folds a fuzzer string into a relative path under the checkout. Relative
+// and cleaned rather than free-form absolute: the whole point is the grant's DEPTH and
+// its position against the shielded stores, and an absolute path would send the fuzzer
+// wandering off the temp dir into the real filesystem.
+func fuzzGrantRel(rel string) (string, bool) {
+	if rel == "" {
+		return "", true
+	}
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	// A NUL cannot reach a syscall, and a path separator run is already collapsed by
+	// Clean; anything else - including a name colliding with a shielded store - is the
+	// input this target exists to try.
+	if strings.ContainsRune(clean, 0) {
+		return "", false
+	}
+	return clean, true
+}
+
 func FuzzPersistenceShieldsCoverReachableSurfaces(f *testing.F) {
-	f.Add(0)                               // bare checkout: only the static Workspace shields
-	f.Add(1)                               // one submodule
-	f.Add(1 << 5)                          // the unreadable-subtree fail-closed path
-	f.Add(1<<len(persistenceSurfaces) - 1) // every surface at once
-	f.Add(1<<1 | 1<<3)                     // nested submodule + a worktree config
-	f.Fuzz(func(t *testing.T, mask int) {
-		checkPersistenceShielded(t, ((mask%(1<<len(persistenceSurfaces)))+(1<<len(persistenceSurfaces)))%(1<<len(persistenceSurfaces)))
+	f.Add(0, "")                               // bare checkout, grant at the root: the old fixed shape
+	f.Add(1, "")                               // one submodule
+	f.Add(1<<5, "")                            // the unreadable-subtree fail-closed path
+	f.Add(1<<len(persistenceSurfaces)-1, "")   // every surface at once
+	f.Add(1<<1|1<<3, "")                       // nested submodule + a worktree config
+	f.Add(0, ".git")                           // the shape the shipped bug had: one directory deeper
+	f.Add(0, ".git/hooks")                     // at a shielded surface, which must be refused
+	f.Add(0, "src/deep/deeper")                // an ordinary subdirectory grant, reaching no surface
+	f.Add(1, ".git/modules")                   // above a planted gitdir, reaching it
+	f.Add(1, ".git/modules/sub")               // at a planted gitdir
+	f.Add(0, ".git/modules/sub/../../../.git") // a traversal that lands back on a shielded store
+	f.Fuzz(func(t *testing.T, mask int, rel string) {
+		clean, ok := fuzzGrantRel(rel)
+		if !ok {
+			t.Skip()
+		}
+		checkPersistenceShielded(t, ((mask%(1<<len(persistenceSurfaces)))+(1<<len(persistenceSurfaces)))%(1<<len(persistenceSurfaces)), clean)
 	})
 }
 
 // TestPersistenceShieldsExhaustive enumerates every subset of the discovery-dimension
 // surfaces - the menu is small enough that coverage is guaranteed rather than left to the
-// fuzz corpus, matching TestShieldInvariantsExhaustive.
+// fuzz corpus, matching TestShieldInvariantsExhaustive. It keeps the grant at the checkout
+// root: the surface mask is the axis it enumerates, and the grant's depth is the unbounded
+// one the fuzz target above mutates.
 func TestPersistenceShieldsExhaustive(t *testing.T) {
 	for mask := 0; mask < 1<<len(persistenceSurfaces); mask++ {
 		t.Run(fmt.Sprintf("mask%d", mask), func(t *testing.T) {
-			checkPersistenceShielded(t, mask)
+			checkPersistenceShielded(t, mask, "")
 		})
 	}
 }
@@ -212,8 +279,9 @@ func TestPersistenceShieldsExhaustive(t *testing.T) {
 // The workspace shields must anchor at the CHECKOUT, not at whatever the policy spelled.
 // Anchored at the grant, "write: <repo>/.git" put them at <repo>/.git/.git/hooks and left
 // the real hooks dir under a writable bind with no rule, so a planted pre-commit ran on
-// the host at the developer's next commit. checkPersistenceShielded hard-codes
-// writes := []string{root}, so no fuzz case varies the grant's depth.
+// the host at the developer's next commit. It stays as the named, minimal statement of
+// that one shape; the fuzz target above reaches it too, now that the grant path is the
+// axis it varies.
 func TestWorkspaceShieldsAnchorAtTheCheckoutNotTheGrant(t *testing.T) {
 	root := canonTempDir(t)
 	gitDir := filepath.Join(root, ".git")
