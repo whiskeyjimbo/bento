@@ -130,8 +130,8 @@ RACE_LINUX_TESTS := TestEgressCollector TestEnforcerReuseIsConcurrencySafe
 # on requireSandbox, so on a runner without bwrap or unprivileged userns it would skip and
 # this gate would pass having run nothing. The -list guard does not catch that - a skip
 # exits 0 exactly as a missing pattern does.
-race: ## Run the proxy concurrency tests under the race detector
-	@printf "$(CYAN)$(BOLD)==> Running proxy tests under -race...$(RESET)\n"
+race: ## Run the concurrency tests under the race detector
+	@printf "$(CYAN)$(BOLD)==> Running concurrency tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/... ./internal/observe/
 	@set -e; listed=$$(GOWORK=off go test -list '.*' ./internal/linux/); pattern=""; \
 	for t in $(RACE_LINUX_TESTS); do \

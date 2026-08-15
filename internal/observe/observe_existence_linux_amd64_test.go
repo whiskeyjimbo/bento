@@ -501,3 +501,42 @@ for nr, path in ((%d, %q), (%d, %q)):
 		}
 	}
 }
+
+// The NULL half of the same family. All four *xattrat forms take their pathname through
+// the kernel's getname_maybe_null, which accepts NULL when at_flags carries AT_EMPTY_PATH
+// - so fsetxattr(3) issued that way names the descriptor and no file. Decoding address
+// zero as a pathname would report a lost access for a call that lost nothing, in the one
+// channel that tells a user their manifest is short. That is the utimensat phantom this
+// package was already fixed for once, and these four arrive at the same decode.
+//
+// Testable on a kernel that answers ENOSYS for exactly the reason the writers above are:
+// the phantom would be counted at the entry stop, before the number is looked at.
+func TestTraceDoesNotDropADescriptorDirectedXattrat(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	trace := func(body string) Result {
+		t.Helper()
+		res, err := Trace([]string{py, "-c", body}, os.Environ(), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Trace: %v", err)
+		}
+		return res
+	}
+	// AT_EMPTY_PATH with a NULL pathname, on each of the four.
+	calls := fmt.Sprintf(`
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+for nr in (%d, %d, %d, %d):
+    libc.syscall(nr, 1, 0, 0x1000, 0, 0, 0)
+`, unix.SYS_SETXATTRAT, unix.SYS_REMOVEXATTRAT, unix.SYS_GETXATTRAT, unix.SYS_LISTXATTRAT)
+
+	base := trace("import ctypes")
+	with := trace(calls)
+
+	if got := with.Dropped - base.Dropped; got != 0 {
+		t.Errorf("four descriptor-directed xattrat calls moved Dropped by %d, want 0 (base %d, with the calls %d): a call that named no path was reported as a lost access",
+			got, base.Dropped, with.Dropped)
+	}
+}

@@ -1163,6 +1163,28 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 // namespace, mq_open/mq_unlink want an mqueue mount the sandbox does not provide, and
 // io_uring is refused before the fork. Add a number here when it becomes reachable, and
 // prefer moving one out into a decode when the path it names is worth recording.
+// nullPathnameOK are the syscalls that accept a NULL pathname and then act on their
+// descriptor, naming no file. Reading address zero fails, so decoding one as a pathname
+// reports a lost access for a call that lost nothing - and phantom losses in the channel
+// that tells a user their manifest is short is a defect this package has been fixed for
+// before. Every other *at form refuses NULL with EFAULT, where a failed read IS a real
+// loss, so this is a named set rather than a blanket zero-register skip.
+//
+// utimensat/futimesat are the kernel forms of futimens(3) and futimes(3), and reachable
+// today: cp -p, tar -x, install and rsync all route through utimensat, so extracting one
+// archive put hundreds of phantom losses on the channel. The four *xattrat forms take
+// their pathname through getname_maybe_null, which accepts NULL when at_flags carries
+// AT_EMPTY_PATH; they need a 6.13 kernel to reach, and are listed now because the phantom
+// they would produce is silent.
+var nullPathnameOK = map[uint64]bool{
+	unix.SYS_UTIMENSAT:     true,
+	unix.SYS_FUTIMESAT:     true,
+	unix.SYS_SETXATTRAT:    true,
+	unix.SYS_REMOVEXATTRAT: true,
+	unix.SYS_GETXATTRAT:    true,
+	unix.SYS_LISTXATTRAT:   true,
+}
+
 var undecodedPathSyscalls = map[uint64]bool{
 	unix.SYS_CHROOT:        true,
 	unix.SYS_PIVOT_ROOT:    true,
@@ -1243,6 +1265,11 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 	case unix.SYS_INOTIFY_ADD_WATCH:
 		dirfd, pathReg = atFdCwd, regs.Rsi
 	default:
+		return
+	}
+	// A NULL pathname names the descriptor rather than a file - see nullPathnameOK. Nothing
+	// is held for it, so no drop travels to the exit stop either; there is no path to lose.
+	if pathReg == 0 && nullPathnameOK[regs.Orig_rax] {
 		return
 	}
 	// An unreadable pathname is not dropped here: the drop travels with the held entry, so
@@ -1424,9 +1451,7 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		at(0, atFdCwd, regs.Rdi, true)
 	// setxattrat/removexattrat are the Linux 6.13 *at forms of the xattr writers above,
 	// taking (dirfd, path, at_flags, ...) - the same reason the case above gives for
-	// fchmodat2, applied to the row it stopped short of. AT_EMPTY_PATH makes them act on
-	// the descriptor and name no path, which arrives here as an empty pathname rather
-	// than the NULL utimensat's exemption is about, and record already skips that.
+	// fchmodat2, applied to the row it stopped short of.
 	case unix.SYS_MKDIRAT, unix.SYS_UNLINKAT, unix.SYS_MKNODAT,
 		unix.SYS_FCHMODAT, sysFchmodat2, unix.SYS_FCHOWNAT, unix.SYS_UTIMENSAT, unix.SYS_FUTIMESAT,
 		unix.SYS_SETXATTRAT, unix.SYS_REMOVEXATTRAT:
@@ -1435,11 +1460,20 @@ func inspectMutating(pid int, regs *syscall.PtraceRegs, record func(string, bool
 		// Reading address zero fails, so decoding one as a pathname reported a lost access
 		// for a call that lost nothing: cp -p, tar -x, install and rsync all use utimensat,
 		// so extracting an archive alone put hundreds of phantom losses on the channel that
-		// tells the user their manifest is short. The exemption names the two rather than
-		// skipping every zero pathname register because they are the only two: the other
-		// *at forms in this case list (mkdirat, unlinkat, mknodat, fchmodat, fchmodat2,
-		// fchownat) all refuse a NULL pathname with EFAULT.
-		if regs.Rsi == 0 && (regs.Orig_rax == unix.SYS_UTIMENSAT || regs.Orig_rax == unix.SYS_FUTIMESAT) {
+		// tells the user their manifest is short.
+		//
+		// setxattrat and removexattrat are the same shape for a different reason: they take
+		// the pathname through the kernel's getname_maybe_null, which accepts NULL when
+		// at_flags carries AT_EMPTY_PATH, so fsetxattr(3) issued this way names the
+		// descriptor and no path at all. Not reachable until a 6.13 host - but it is a
+		// silent phantom drop when it becomes reachable, and this is the line that would
+		// have to be found again.
+		//
+		// The exemption names its members rather than skipping every zero pathname register
+		// because the rest of this case list (mkdirat, unlinkat, mknodat, fchmodat,
+		// fchmodat2, fchownat) all refuse a NULL pathname with EFAULT, and a blanket skip
+		// would hide a real unreadable pathname on those.
+		if regs.Rsi == 0 && nullPathnameOK[regs.Orig_rax] {
 			return
 		}
 		at(0, int32(regs.Rdi), regs.Rsi, true)
