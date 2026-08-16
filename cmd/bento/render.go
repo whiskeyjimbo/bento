@@ -1434,8 +1434,8 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 	return true
 }
 
-// writeGateDeniedWarning names the destinations a network gate was asked about and
-// refused. It is separate from writeDeniedWarning because that notice's whole remedy -
+// writeGateDeniedWarning names the destinations a network gate was asked about and did
+// not admit - whether it refused them or panicked answering. It is separate from writeDeniedWarning because that notice's whole remedy -
 // add the destination under network: and re-approve - describes a decision the operator
 // has already made and declined, and under the prompt-on-every-host mode (an empty
 // network: block plus a gate) it would describe a manifest allowlist that does not exist.
@@ -1456,6 +1456,12 @@ func writeGateDeniedWarning(w io.Writer, res enforce.Result) bool {
 	fmt.Fprintln(w, "[bento] the script saw a 403 from the proxy. Nothing is wrong with the manifest - this")
 	fmt.Fprintln(w, "[bento] was a decision made during the run. To stop being asked, add the destination")
 	fmt.Fprintln(w, "[bento] under network: in the manifest and re-approve.")
+	// A gate that panicked refused its destinations too, and they are listed above with
+	// the rest: the operator still has to see the host. But then no decision was made and
+	// the remedy above is the wrong one, so the report's degradation line is named as the
+	// tiebreaker rather than this notice guessing which of the two happened.
+	fmt.Fprintln(w, "[bento] If the run report says the network gate panicked, none of this was a decision")
+	fmt.Fprintln(w, "[bento] and the gate itself is what to fix.")
 	return true
 }
 

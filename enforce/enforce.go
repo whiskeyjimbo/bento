@@ -416,7 +416,11 @@ type Result struct {
 	// stayed inside the allowlist: a run that made no connections reports empty too.
 	Denied []HostPort
 	// GateDenied lists the destinations no manifest rule covered and a NetworkGate,
-	// consulted about them, refused - deduped and sorted. It is the negative half of
+	// consulted about them, did not admit - deduped and sorted. A gate that PANICKED on a
+	// destination puts it here too: the operator still has to see the host, and the gate
+	// was consulted either way. What separates the two is the report, whose network layer
+	// is degraded with the count when a gate panicked - and the remedy below is the wrong
+	// one for that case, so a consumer rendering this list should say which it is reading. It is the negative half of
 	// GateAdmitted, and the whole of what a supervised run with an empty network: block
 	// refuses: every destination goes to the gate, so nothing in such a run is ever
 	// refused by the allowlist alone.
