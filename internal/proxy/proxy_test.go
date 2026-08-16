@@ -906,7 +906,7 @@ func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
 	upstreamConn, server := net.Pipe()
 	defer sandbox.Close()
 	defer server.Close()
-	go tunnel(clientConn, clientConn, upstreamConn, 200*time.Millisecond)
+	go tunnel(clientConn, clientConn, upstreamConn, 200*time.Millisecond, 30*time.Second)
 
 	// Total transfer (~300ms) outlasts the idle timeout, but each per-chunk gap
 	// (20ms) stays an order of magnitude under it, so scheduler jitter under load
@@ -2017,5 +2017,41 @@ func TestAPanickingObserverCountsTheDecisionItLost(t *testing.T) {
 	// status line is read.
 	if n := p.InternalFaults(); n != 1 {
 		t.Errorf("InternalFaults() = %d, want 1: a swallowed decision leaves the egress record short and nothing else says so", n)
+	}
+}
+
+// A destination that completes the handshake and then says nothing is not refusable -
+// it passed the allowlist - so only a first-byte bound frees the handler slot it holds.
+// The client's own traffic must not clear that bound: through a CONNECT tunnel the
+// client speaks first, so a bound cleared by either direction would never apply.
+func TestTunnelBoundsASilentUpstreamThroughTheClientsTraffic(t *testing.T) {
+	sandbox, clientConn := net.Pipe()
+	upstreamConn, server := net.Pipe()
+	defer sandbox.Close()
+	defer server.Close()
+	// Drain upstream so the client's writes keep landing, and never answer: this is the
+	// destination that accepted the connection and said nothing.
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+
+	done := make(chan struct{})
+	go func() {
+		tunnel(clientConn, clientConn, upstreamConn, time.Hour, 200*time.Millisecond)
+		close(done)
+	}()
+	// Keep the client half busy across the whole first-byte window, which is what
+	// re-arms the idle deadline on both conns.
+	go func() {
+		for {
+			if _, err := io.WriteString(sandbox, "x"); err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("tunnel outlived the first-byte bound: an upstream that never speaks holds its handler slot for the whole idle timeout")
 	}
 }

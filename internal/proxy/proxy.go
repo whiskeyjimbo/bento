@@ -881,7 +881,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// may have already sent its TLS ClientHello into br's buffer along with the
 	// CONNECT headers; reading the raw conn would drop those bytes and break the
 	// handshake.
-	tunnel(br, client, upstream, idleTimeout)
+	tunnel(br, client, upstream, idleTimeout, firstByteTimeout)
 }
 
 // report hands a decision to the observer, containing a panic there rather than
@@ -1151,21 +1151,53 @@ func writeStatus(c net.Conn, status, body string) {
 // shorten it without writing to shared state other tunnels are reading.
 const idleTimeout = 5 * time.Minute
 
+// firstByteTimeout bounds how long an established tunnel may wait for its FIRST byte
+// from upstream. A destination that completes the TCP handshake and then says nothing
+// is not refusable - it passed the allowlist - so without this it holds a handler slot
+// for the whole idleTimeout, and maxConcurrent of them black out the run's declared
+// egress for five minutes at a time, renewably.
+//
+// It is bounded on the upstream direction alone. The client speaks first through a
+// CONNECT tunnel (the TLS ClientHello), so a bound cleared by traffic in either
+// direction would be cleared by the client every time and never reach the silent
+// upstream this exists for. A real destination answers within a round trip, because
+// whatever the tunnel carries opens with the peer's half of a handshake; a long-poll
+// that goes quiet for minutes does so after that handshake, under idleTimeout.
+const firstByteTimeout = 30 * time.Second
+
 // tunnel copies bytes both ways until either side closes or the tunnel goes idle.
 // The client side is read through clientR (which may hold buffered bytes); client
 // and upstream are the conns used to write, half-close, and bound idleness; idle
-// is how long the tunnel may sit with no traffic before it is torn down.
-func tunnel(clientR io.Reader, client, upstream net.Conn, idle time.Duration) {
+// is how long the tunnel may sit with no traffic before it is torn down, and
+// firstByte how long it may wait for upstream to say anything at all.
+func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.Duration) {
 	// Traffic in either direction means the tunnel is active, so re-arm the idle
 	// deadline on BOTH conns on every read. A long one-way transfer (a large
 	// upload with a silent upstream, say) keeps only its own direction busy; if
 	// each direction armed only its own conn, the silent side would trip the idle
 	// timeout after idle and - because SetDeadline bounds writes too - kill
 	// the active side's next write, aborting a transfer that never went idle.
+	// Until upstream has produced a byte, its own deadline is held at the first-byte
+	// bound rather than pushed out by the client's traffic - which through a CONNECT
+	// tunnel starts arriving immediately and would otherwise clear the bound before it
+	// could ever apply. Written by the upstream copy goroutine and read by both, so it
+	// is atomic.
+	var upstreamSpoke atomic.Bool
+	firstByteAt := time.Now().Add(firstByte)
 	extend := func() {
 		t := time.Now().Add(idle)
 		client.SetDeadline(t)
+		if !upstreamSpoke.Load() && firstByteAt.Before(t) {
+			t = firstByteAt
+		}
 		upstream.SetDeadline(t)
+	}
+	// The upstream direction's first read is what lifts the bound, and it lifts it for
+	// the connection's whole remaining life: a destination that answered once is a real
+	// one, and after that only idle governs.
+	extendUp := func() {
+		upstreamSpoke.Store(true)
+		extend()
 	}
 	extend()
 	// handle's recover runs on the caller's goroutine and cannot see a panic raised in
@@ -1179,7 +1211,7 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle time.Duration) {
 	// Wait, which is what orders them.
 	var panics [2]any
 	var wg sync.WaitGroup
-	half := func(i int, dst io.Writer, src io.Reader, w net.Conn) {
+	half := func(i int, dst io.Writer, src io.Reader, w net.Conn, ext func()) {
 		defer wg.Done()
 		defer func() {
 			v := recover()
@@ -1194,11 +1226,11 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle time.Duration) {
 			client.Close()
 			upstream.Close()
 		}()
-		copyIdle(dst, src, extend)
+		copyIdle(dst, src, ext)
 	}
 	wg.Add(2)
-	go half(0, upstream, clientR, upstream)
-	go half(1, client, upstream, client)
+	go half(0, upstream, clientR, upstream, extend)
+	go half(1, client, upstream, client, extendUp)
 	wg.Wait()
 	for _, v := range panics {
 		if v != nil {
