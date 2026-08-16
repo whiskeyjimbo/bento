@@ -121,8 +121,15 @@ func newApproveCmd() *cobra.Command {
 			// After the manifest, and only once it landed: the journal describes an approval
 			// that is on disk, and recording one for a stamp that failed to write would give
 			// the next re-approval a baseline no manifest ever carried.
-			writeApprovalRecord(mt.RealPath, doc.Policy, !assumeYes, os.Stderr)
+			recorded := writeApprovalRecord(mt.RealPath, doc.Policy, !assumeYes, os.Stderr)
 			fmt.Fprintf(os.Stdout, "approved %s for its current permissions.\n", path)
+			if !recorded {
+				// The stamp landed, so the line above is true and stays; the code is what a
+				// script reads, and an approval whose record was lost is not a clean one.
+				// Bare, because the warning already said what happened - a second rendering
+				// of it through main would only repeat it.
+				return &exitError{code: bentoFailed}
+			}
 			return nil
 		},
 	}

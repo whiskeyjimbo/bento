@@ -160,15 +160,19 @@ func readApprovalRecord(realPath string, doc *manifest.Document) (approvalRecord
 	return rec, journalMatches
 }
 
-// writeApprovalRecord records what approve just stamped. It never fails the approval: the
-// stamp is the product and the journal is a convenience over it, so a state home that
-// cannot be written warns and the approval stands. This is a deliberate exception to
-// letting errors propagate - the alternative is that an unwritable state directory stops
-// people approving manifests, which trades a working gate for a diff.
-func writeApprovalRecord(realPath string, p *policy.Policy, reviewed bool, warn io.Writer) {
+// writeApprovalRecord records what approve just stamped, and says whether it managed to.
+// The stamp is the product and the journal is a convenience over it, so a state home that
+// cannot be written does not undo the approval - the warning names exactly what was lost
+// and the manifest stays stamped. It is still not a success: the whole point of the record
+// is that a later re-approval can diff against it, and a CI wrapper gating on the exit
+// code must not read a half-done approval as a clean one. The caller turns the false into
+// a nonzero exit.
+func writeApprovalRecord(realPath string, p *policy.Policy, reviewed bool, warn io.Writer) bool {
 	if err := storeApprovalRecord(realPath, p, reviewed); err != nil {
 		fmt.Fprintf(warn, "[bento] the approval is stamped, but bento could not record what it approved (%v), so a later re-approval cannot show you what changed.\n", err)
+		return false
 	}
+	return true
 }
 
 func storeApprovalRecord(realPath string, p *policy.Policy, reviewed bool) error {

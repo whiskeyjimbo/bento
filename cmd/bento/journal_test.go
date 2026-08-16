@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -189,8 +190,12 @@ func TestAnUnwritableJournalStillStamps(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	path := writeManifest(t, p, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
-		t.Fatalf("an unwritable state home must not fail the approval: %v", err)
+	// The stamp lands and the exit code does not: the approval stands, and a script
+	// gating on the code must not read an approval whose record was lost as a clean one.
+	_, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		t.Errorf("approve = %v, want a nonzero exit; the record could not be written", err)
 	}
 	if trust.CheckApproval(stamped(t, path)) != trust.ApprovalCurrent {
 		t.Error("the manifest must be stamped even though the journal could not be written")
@@ -198,8 +203,8 @@ func TestAnUnwritableJournalStillStamps(t *testing.T) {
 }
 
 // A journal directory someone else can write is a forgeable diff, which defeats the whole
-// reason the record is not kept in the manifest. Refusing the entry is right; refusing the
-// approval is not.
+// reason the record is not kept in the manifest. Refusing the entry is right; unstamping
+// the manifest is not - but the run is not a success either, and the exit code says so.
 func TestASharedJournalDirIsNotWritten(t *testing.T) {
 	base := stateHome(t)
 	dir := filepath.Join(base, "bento", "approvals")
@@ -215,8 +220,10 @@ func TestASharedJournalDirIsNotWritten(t *testing.T) {
 
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
 	path := writeManifest(t, p, manifest.Provenance{})
-	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err != nil {
-		t.Fatalf("a shared journal dir must not fail the approval: %v", err)
+	_, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		t.Errorf("approve = %v, want a nonzero exit; no record was written", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
