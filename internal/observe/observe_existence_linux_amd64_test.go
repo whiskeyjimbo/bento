@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -456,11 +457,11 @@ except OSError:
 // host cannot run still testable here.
 //
 // The reader half of the family - getxattrat/listxattrat, decoded in inspectExistence -
-// is not asserted, and cannot be on this kernel. Those go through the success filter at
-// the EXIT stop, and ENOSYS is in its skip set by design (it is how glibc probes
-// faccessat2 before falling back), so a call the kernel never ran is correctly recorded
-// as nothing whether or not the decoder recognizes the number. Only a 6.13 host can tell
-// the two apart.
+// is asserted separately by TestTraceDecodesTheXattratReaders, which has to reach a
+// kernel that runs the calls: those go through the success filter at the EXIT stop, and
+// ENOSYS is in its skip set by design (it is how glibc probes faccessat2 before falling
+// back), so a call the kernel never ran is correctly recorded as nothing whether or not
+// the decoder recognizes the number.
 func TestTraceDecodesTheXattratWriters(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
@@ -498,6 +499,105 @@ for nr, path in ((%d, %q), (%d, %q)):
 		}
 		if !a.Write {
 			t.Errorf("%q recorded as a read, want a write: it fails EROFS on a read-only bind", path)
+		}
+	}
+}
+
+// xattratReadersRun reports whether this kernel has getxattrat/listxattrat (Linux 6.13).
+// The readers resolve at the EXIT stop against a success filter that skips ENOSYS, so on
+// an older kernel a decoded call and an unrecognized one are indistinguishable - the
+// expectation below has to branch on the kernel rather than assert one column. Asked of
+// the syscall itself, not of a parsed uname: what decides the answer is whether this
+// kernel runs the call, and a seccomp policy refusing it answers ENOSYS the same way.
+func xattratReadersRun(t *testing.T) bool {
+	t.Helper()
+	probe, err := os.CreateTemp(t.TempDir(), "xattrat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.Close()
+	path, err := unix.BytePtrFromString(probe.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// listxattrat(dirfd, path, at_flags, list, size); a NULL list asks only for the size,
+	// so this resolves the pathname without needing a buffer or any attribute present.
+	atFdCwd := unix.AT_FDCWD
+	_, _, errno := unix.Syscall6(unix.SYS_LISTXATTRAT, uintptr(atFdCwd),
+		uintptr(unsafe.Pointer(path)), 0, 0, 0, 0)
+	return errno != unix.ENOSYS
+}
+
+// The reader half of the *xattrat family, which the writers' test above cannot reach.
+// getxattrat/listxattrat answer ENOENT for a path the sandbox did not bind exactly as
+// getxattr/listxattr do, so a run that probes a path only this way must not profile as
+// not needing it - and unlike the writers, nothing about them is decided before the
+// kernel sees the syscall number, so only a 6.13 host tells a decoded call from a
+// skipped one.
+//
+// Neither call needs an attribute to exist, which keeps the assertion off whether the
+// filesystem under TempDir carries user.* xattrs at all: getxattrat for an absent name
+// answers ENODATA and listxattrat answers zero, and both are recorded. ENODATA is named
+// in recordHeldExistence's own comment as the normal answer for a file carrying no such
+// attribute - a file that is demonstrably there, which is the whole question the manifest
+// asks.
+func TestTraceDecodesTheXattratReaders(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		skipMissingDep(t, "python3 not available")
+	}
+	dir := t.TempDir()
+	fetched := filepath.Join(dir, "get")
+	listed := filepath.Join(dir, "list")
+	for _, p := range []string{fetched, listed} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both go through syscall(2) with every argument explicitly typed. ctypes promotes a
+	// bare Python int to c_int, which truncates the size_t getxattrat checks its args
+	// struct against - the call then fails E2BIG before the kernel resolves the pathname,
+	// and the test would pass on a kernel that never ran it.
+	script := fmt.Sprintf(`
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+
+class XattrArgs(ctypes.Structure):
+    _fields_ = [("value", ctypes.c_uint64), ("size", ctypes.c_uint32), ("flags", ctypes.c_uint32)]
+
+value = ctypes.create_string_buffer(64)
+args = XattrArgs(ctypes.cast(value, ctypes.c_void_p).value, 64, 0)
+libc.syscall(ctypes.c_long(%d), ctypes.c_int(-100), %q.encode(), ctypes.c_uint(0),
+             b"user.bento-absent", ctypes.byref(args), ctypes.c_size_t(ctypes.sizeof(args)))
+
+names = ctypes.create_string_buffer(256)
+libc.syscall(ctypes.c_long(%d), ctypes.c_int(-100), %q.encode(), ctypes.c_uint(0),
+             names, ctypes.c_size_t(256))
+`,
+		unix.SYS_GETXATTRAT, fetched,
+		unix.SYS_LISTXATTRAT, listed)
+
+	res, err := Trace([]string{py, "-c", script}, os.Environ(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Trace: %v", err)
+	}
+	decoded := xattratReadersRun(t)
+	for _, path := range []string{fetched, listed} {
+		a, ok := find(res, path)
+		if !ok {
+			if decoded {
+				t.Errorf("no access recorded for %q; an xattr read the decoder skips leaves a silent under-grant, and this kernel ran the call", path)
+			}
+			continue
+		}
+		if !decoded {
+			t.Errorf("%q recorded on a kernel without the call: the pathname came from somewhere other than the syscall under test, so the assertion above proves nothing", path)
+			continue
+		}
+		if a.Write {
+			t.Errorf("%q recorded as a write, want a read: an xattr read needs no write grant, and asking for one over-binds the sandbox", path)
 		}
 	}
 }

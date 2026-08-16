@@ -654,6 +654,9 @@ func TestRestrictDegradedScopesIPC(t *testing.T) {
 		t.Fatalf("probe: %v\n%s", err, out)
 	}
 	got := strings.TrimSpace(string(out))
+	// The verdicts are the record of what this kernel does, and which column they came
+	// from is not recoverable from a pass; a host that moves ABI wants both lines.
+	t.Logf("ABI %d: %s", effectiveABI(), got)
 	if !strings.Contains(got, "scoped_abstract_baseline=OK") {
 		t.Fatalf("the abstract socket did not answer before the ruleset was applied, so the verdict below proves nothing: %q", got)
 	}
