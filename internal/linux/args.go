@@ -435,6 +435,13 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		RecordExec: sb.recordExec,
 		Target:     command(p, sb),
 	}
+	// Ahead of the deadMount check below, because shieldsApplied consults sb.exists to tell
+	// a read-only bind from a discarded tmpfs, and a seam expiring THERE would answer true
+	// - reporting read-only for a shield that got a tmpfs, which is the one thing that doc
+	// comment exists to prevent. Computed first, the expiry is on record before the check
+	// reads it, so the wrong audit is refused rather than shipped. The degraded tier's
+	// caller (exposedShields) is already ahead of its own gate for the same reason.
+	applied := shieldsApplied(sb, appliedShields)
 	// Last, because every shield and every grant above was derived from the host seams:
 	// one that stopped answering handed back a fallback that reads as a real answer (a
 	// path that does not resolve, a path that is not a directory), and the argv built on
@@ -446,7 +453,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	}
 
 	args = append(args, sandboxBentoPath)
-	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(sb, appliedShields), nil
+	return append(args, launcher.EncodeLaunch(cfg)...), applied, nil
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on

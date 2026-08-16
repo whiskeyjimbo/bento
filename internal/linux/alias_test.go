@@ -1630,6 +1630,50 @@ func TestCompileRefusesARunWhoseHostSeamExpired(t *testing.T) {
 	}
 }
 
+// The shield audit is the last thing compile derives from the host, and it derives it
+// from sb.exists - a DenyWrite on a directory that is not there gets a tmpfs, which is
+// writable, and reporting it read-only names a protection other than the one applied.
+// An exists that expires answers true, so an expiry landing on that last call has to be
+// refused like any other, which means the audit is computed before deadMount is read
+// rather than in the same return statement after it.
+func TestCompileRefusesARunWhoseShieldAuditExpired(t *testing.T) {
+	sb := testSandbox("/home/u/proj", "/home/u/proj/src/main.go")
+	sb.deadMount = &deadMount{}
+	p := &policy.Policy{Write: []string{"/home/u/proj"}}
+
+	// The count from a healthy run, so the hang can be aimed at the LAST exists call -
+	// the one shieldsApplied makes. Aimed anywhere earlier, an expiry is recorded before
+	// the check whichever order the two are in, and the test would pass on the bug.
+	var calls int
+	healthy := sb.exists
+	sb.exists = func(path string) bool { calls++; return healthy(path) }
+	if _, applied, err := compile(p, enforce.Process{}, boundHostSeams(sb)); err != nil || len(applied) == 0 {
+		t.Fatalf("compile on a sandbox whose seams all answered = %d shields, %v; want an audit and no error", len(applied), err)
+	}
+	last := calls
+
+	setWalkTimeout(t, 50*time.Millisecond)
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	calls = 0
+	sb.deadMount = &deadMount{}
+	sb.exists = func(path string) bool {
+		calls++
+		if calls >= last {
+			<-hung
+		}
+		return healthy(path)
+	}
+
+	_, applied, err := compile(p, enforce.Process{}, boundHostSeams(sb))
+	if err == nil {
+		t.Fatalf("compile returned the audit %v built on a seam that never answered; a shield that got a tmpfs is reported read-only", applied)
+	}
+	if !strings.Contains(err.Error(), "did not answer") {
+		t.Errorf("compile error = %v, want the expiry that the shield audit recorded", err)
+	}
+}
+
 // An expired writable answers "not writable" without asking the host, and the grant it
 // covers is refused for it. The refusal is right; blaming this uid's permissions for it
 // is not, and it sends an operator to chmod a mount that is simply not answering.
