@@ -76,8 +76,12 @@ func bounded[T any](what string, call func() (T, error)) (T, error) {
 		return a.v, a.err
 	case <-t.C:
 		probeDeadlines.Add(1)
-		if abandoned.CompareAndSwap(false, true) {
-			parkedHostCalls.Add(1)
+		// Counted before the flag is set, and undone if the call had already answered:
+		// the other order lets the goroutine's decrement land first and the gauge read
+		// one below the truth, which for a count of zero is a negative.
+		parkedHostCalls.Add(1)
+		if !abandoned.CompareAndSwap(false, true) {
+			parkedHostCalls.Add(-1)
 		}
 		var zero T
 		return zero, fmt.Errorf("linux: %s %w within %s, which is what an unresponsive network mount looks like", what, errDidNotAnswer, credentialWalkTimeout)
