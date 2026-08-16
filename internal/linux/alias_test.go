@@ -1602,3 +1602,27 @@ func TestCompileRefusesARunWhoseHostSeamExpired(t *testing.T) {
 		t.Errorf("compile error = %v, want it to name the seam that expired", err)
 	}
 }
+
+// An expired writable answers "not writable" without asking the host, and the grant it
+// covers is refused for it. The refusal is right; blaming this uid's permissions for it
+// is not, and it sends an operator to chmod a mount that is simply not answering.
+func TestAnExpiredWritableIsNotReportedAsAPermissionProblem(t *testing.T) {
+	sb := testSandbox("/home/u/proj", "/home/u/proj/.git", "/home/u/proj/.git/hooks")
+	sb.deadMount = &deadMount{}
+	sb.writable = func(string) bool { return false }
+	writes := []string{"/home/u/proj"}
+
+	err := checkShieldsCarvable(sb, writes, writes, nil)
+	if err == nil {
+		t.Fatal("checkShieldsCarvable accepted a shield whose parent will not take the mkdir")
+	}
+	if !strings.Contains(err.Error(), "/home/u/proj") {
+		t.Fatalf("checkShieldsCarvable error = %v, want it to name the grant", err)
+	}
+
+	sb.deadMount.note(errors.New("linux: the writability check of /home/u did not answer within 30s, which is what an unresponsive network mount looks like"))
+	err = checkShieldsCarvable(sb, writes, writes, nil)
+	if err == nil || !strings.Contains(err.Error(), "did not answer within") {
+		t.Fatalf("checkShieldsCarvable error = %v, want the expiry; the seam never asked the host, so permissions are not the cause", err)
+	}
+}

@@ -148,8 +148,9 @@ func boundHostSeams(sb sandbox) sandbox {
 		})
 	}
 	// false answers "this directory will not accept the mkdir", which makes
-	// checkShieldsCarvable refuse the grant by name rather than hang on it. The refusal
-	// stands even where compile's deadMount check would not be reached.
+	// checkShieldsCarvable refuse the grant rather than hang on it - and it refuses even
+	// where compile's deadMount check would not be reached. It consults deadMount before
+	// naming a cause, so an expiry is not reported as a permission problem.
 	sb.writable = func(dir string) bool {
 		return boundedSeam(sb, "the writability check of "+dir, false, func() (bool, error) {
 			return writable(dir), nil

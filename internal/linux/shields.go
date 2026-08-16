@@ -527,6 +527,13 @@ func checkShieldsCarvable(sb sandbox, grants, writes, optIns []string) error {
 		if sb.writable(parent) {
 			continue
 		}
+		// A seam that expired answered "not writable" without asking the host, so blaming
+		// this uid's permissions for it sends an operator to chmod a mount that is simply
+		// not answering. compile refuses on the same expiry either way; this only makes
+		// sure the first refusal names the real cause.
+		if err := sb.deadMount.expired(); err != nil {
+			return err
+		}
 		for _, w := range writes {
 			if policy.CoversResolved(w, mount) {
 				return grantrefusal.ShieldNotCarvable(w, mount, parent)
