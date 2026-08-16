@@ -24,7 +24,8 @@ import (
 // refused there. Either way it is dropped from the auto-proposal, so this is a proposal-
 // quality filter, not a security check. A grant that merely CONTAINS a shield (read: ~
 // with ~/.ssh shielded inside it) is legitimate and kept - only a grant at or under a
-// shield goes.
+// shield goes. For a WRITE that holds only as far as this filter: the run refuses a write
+// enclosing a DenyAll shield outright, so withholdRunRefused takes it afterwards.
 //
 // The set is the caller's, the same one the enforcer applies and the gate predicts, so the
 // proposal is clamped against the shields the run will actually raise.

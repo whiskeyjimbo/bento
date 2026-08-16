@@ -52,6 +52,8 @@ func FuzzParseObservationsNeverOverClaims(f *testing.F) {
 	f.Add(1, strings.Index(fuzzObservationBases[1], "EXIT"), []byte("EXECRAN\nSECCOMPKILLED\n"))
 	f.Add(2, strings.Index(fuzzObservationBases[2], "DROPPED"), []byte("EXIT notanumber\n"))
 	f.Add(3, 3, []byte("\x00\xff"))
+	// A CR-tailed line, which the scanner reads whole and a "\n" split does not.
+	f.Add(0, 0, []byte("EXEC\r\n"))
 
 	f.Fuzz(func(t *testing.T, baseIdx, at int, junk []byte) {
 		base := fuzzObservationBases[((baseIdx%len(fuzzObservationBases))+len(fuzzObservationBases))%len(fuzzObservationBases)]
@@ -118,7 +120,7 @@ func parseObservation(t *testing.T, body string) (profile.Observation, error) {
 // where Quote would re-escape them, and a literal test calls that an over-claim. What is
 // still caught is a path arriving in Reads off a line that is not an "R " line at all.
 func namedOnALine(report, kind, path string) bool {
-	for _, line := range strings.Split(report, "\n") {
+	for _, line := range reportLines(report) {
 		if !strings.HasPrefix(line, kind+" ") {
 			continue
 		}
@@ -139,15 +141,28 @@ func namedOnALine(report, kind, path string) bool {
 // gives: cut on the first substring occurrence and a marker spelled inside a quoted path
 // ends the scan early, failing the oracle on a report that over-claims nothing.
 func beforeTheMarker(report string) string {
-	lines := strings.Split(report, "\n")
+	lines := reportLines(report)
 	if i := slices.Index(lines, observe.ReportEnd); i >= 0 {
 		lines = lines[:i]
 	}
 	return strings.Join(lines, "\n")
 }
 
+// reportLines splits the report the way the parser's own bufio.Scanner does, trailing CR
+// and all. Splitting on "\n" alone diverges: ScanLines strips a CR the oracle would keep,
+// so a spliced "EXEC\r" is a whole line to the parser and an unrecognized one here - and
+// the fuzzer would eventually synthesize a \r and file a corpus entry against the stdlib
+// rather than against a tamper the parser missed.
+func reportLines(report string) []string {
+	lines := strings.Split(report, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
+}
+
 func hasLine(report, line string) bool {
-	return slices.Contains(strings.Split(report, "\n"), line)
+	return slices.Contains(reportLines(report), line)
 }
 
 func count(paths []string, want string) int {
