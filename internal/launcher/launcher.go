@@ -150,6 +150,11 @@ func Run(cfg Config) (int, error) {
 	if err := verifyEmptyNetns(); err != nil {
 		return 0, err
 	}
+	// The filesystem half of the same assumption, and the one the Landlock backstop
+	// cannot cover because it grants writes to /tmp by construction. See verifyFreshTmp.
+	if err := verifyFreshTmp(); err != nil {
+		return 0, err
+	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without

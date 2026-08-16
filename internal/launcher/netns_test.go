@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -60,24 +59,12 @@ func TestVerifyEmptyNetnsNamesWhatItSaw(t *testing.T) {
 	}
 }
 
-// inEmptyNetns puts a re-exec'd child in its own network namespace. Run verifies from the
-// inside that its namespace is the empty one the host asked bwrap for, so a child that
-// calls Run has to be in one or it refuses before reaching what the test is about.
-// Unprivileged, through a user namespace, which is the permission the sandbox needs too.
-func inEmptyNetns(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-	}
-}
-
 const sentinelNetnsRun = "BENTO_TEST_NETNS_RUN"
 
 // The check is worth nothing if Run stops calling it, and every other test in this
-// package now spawns its child in an empty namespace - so this is the one that runs a
-// launch stage in the host's namespace and requires the refusal. In a child because Run
-// makes the process permanently non-dumpable.
+// package now spawns its child in a real sandbox (see inSandbox) - so this is the one
+// that runs a launch stage in the host's namespace and requires the refusal. In a child
+// because Run makes the process permanently non-dumpable.
 func TestRunRefusesAHostNetworkNamespace(t *testing.T) {
 	if os.Getenv(sentinelNetnsRun) != "" {
 		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {

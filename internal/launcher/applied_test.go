@@ -271,7 +271,7 @@ func TestRunReportsWhetherTheTargetWasReached(t *testing.T) {
 			defer f.Close()
 			cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()[:strings.Index(t.Name(), "/")]+"$")
 			cmd.Env = append(os.Environ(), sentinelRunReport+"="+tc.mode)
-			inEmptyNetns(cmd)
+			inSandbox(t, cmd, "")
 			cmd.ExtraFiles = []*os.File{f}
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantUnreached {
