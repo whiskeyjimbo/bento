@@ -1435,7 +1435,8 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 }
 
 // writeGateDeniedWarning names the destinations a network gate was asked about and did
-// not admit - whether it refused them or panicked answering. It is separate from writeDeniedWarning because that notice's whole remedy -
+// not admit - whether it refused them or panicked answering. It is separate from
+// writeDeniedWarning because that notice's whole remedy -
 // add the destination under network: and re-approve - describes a decision the operator
 // has already made and declined, and under the prompt-on-every-host mode (an empty
 // network: block plus a gate) it would describe a manifest allowlist that does not exist.
