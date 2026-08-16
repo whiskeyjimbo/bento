@@ -392,8 +392,8 @@ func UnshieldableRelocations(homes []string) map[string]string {
 	return out
 }
 
-// defaultsAtAnchor reports whether env's conventional location is a home anchor itself, so
-// a value naming one is that variable's DEFAULT and not a relocation at all: ZDOTDIR=$HOME
+// defaultsAtAnchor reports whether EVERY location env has is a home anchor itself, so a
+// value naming one is that variable's DEFAULT and not a relocation at all: ZDOTDIR=$HOME
 // is how zsh is ordinarily configured, and CURL_HOME, GEM_HOME, GHCUP_INSTALL_BASE_PREFIX
 // and DOTNET_CLI_HOME each hang their entry off the home by default. Home shields those
 // entries under the anchor already, so nothing is exposed.
@@ -403,21 +403,63 @@ func UnshieldableRelocations(homes []string) map[string]string {
 // def alone means "no conventional location to compare against" (HISTFILE, MISE_ENV_FILE),
 // which is a different thing and not this. ZDOTDIR has no row at all - its emit site
 // spells the same compare inline as isDefault(c, "") - so it is named here.
+// The test is over EVERY row the variable has, not any one of them:
+// CLAUDE_CONFIG_DIR carries both shapes, and while ~/.claude.json is at the anchor by
+// default, ~/.claude - which holds the OAuth token - is not. Exempting the variable on its
+// anchor-default row would leave .credentials.json shielded by nothing and unreported,
+// which is the case this whole report exists for.
 func defaultsAtAnchor(env string) bool {
 	if env == "ZDOTDIR" {
 		return true
 	}
-	for _, e := range dirFileEnvs {
-		if e.env == env && e.def == "" && e.file != "" {
-			return true
+	// A row in any other table is a disqualifier only: none of them hangs a name off the
+	// base, so none can carry the mark, but a def in one still means the variable has a
+	// conventional location that is not the anchor.
+	for _, e := range dirEnvs {
+		if e.env == env && e.def != "" {
+			return false
 		}
+	}
+	for _, e := range dirSubEnvs {
+		if e.env == env && e.def != "" {
+			return false
+		}
+	}
+	for _, e := range startupDefaultEnvs {
+		if e.env == env && e.def != "" {
+			return false
+		}
+	}
+	for _, e := range fileDenyAllEnvs {
+		if e.env == env && e.def != "" {
+			return false
+		}
+	}
+	for _, b := range xdgBases {
+		if b.env == env && b.def != "" {
+			return false
+		}
+	}
+	mark := false
+	for _, e := range dirFileEnvs {
+		if e.env != env {
+			continue
+		}
+		if e.def != "" {
+			return false
+		}
+		mark = mark || e.file != ""
 	}
 	for _, e := range writeOnlyDirEnvs {
-		if e.env == env && e.def == "" && e.sub != "" {
-			return true
+		if e.env != env {
+			continue
 		}
+		if e.def != "" {
+			return false
+		}
+		mark = mark || e.sub != ""
 	}
-	return false
+	return mark
 }
 
 // Shieldable reports whether a relocation target can carry a deny rule at all, given the

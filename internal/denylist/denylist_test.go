@@ -2327,6 +2327,12 @@ func TestUnshieldableRelocationsSkipsTheHarmlessRefusals(t *testing.T) {
 		{"ZDOTDIR", "/"},
 		{"CURL_HOME", "/home"},
 		{"GNUPGHOME", "/home/u"},
+		// The mark is per ROW, not per variable. CLAUDE_CONFIG_DIR carries both
+		// shapes: ~/.claude.json IS at the anchor by default, but ~/.claude, which
+		// holds the OAuth token, is not - so the variable set to the anchor leaves
+		// .credentials.json shielded by nothing, which is the case the report exists
+		// for. A variable with any row whose default is elsewhere is not exempt.
+		{"CLAUDE_CONFIG_DIR", "/home/u"},
 	} {
 		t.Run(tc.env+"="+tc.value, func(t *testing.T) {
 			t.Setenv(tc.env, tc.value)
