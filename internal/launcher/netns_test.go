@@ -47,15 +47,11 @@ func TestVerifyEmptyNetnsNamesWhatItSaw(t *testing.T) {
 	// The test process runs in the host namespace, which is exactly the state the check
 	// exists to refuse - so on any host with a second interface this is the real thing
 	// rather than a fixture.
-	data, err := os.ReadFile(procNetDev)
-	if err != nil {
-		t.Skipf("cannot read %s: %v", procNetDev, err)
-	}
-	extra := foreignInterfaces(data)
+	extra := foreignInterfaces(mustReadNetDev(t))
 	if len(extra) == 0 {
 		t.Skip("this host's namespace holds only lo, so there is nothing here to refuse")
 	}
-	err = verifyEmptyNetns()
+	err := verifyEmptyNetns()
 	if err == nil {
 		t.Fatal("verifyEmptyNetns accepted the host's own network namespace")
 	}
@@ -74,4 +70,42 @@ func inEmptyNetns(cmd *exec.Cmd) {
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 	}
+}
+
+const sentinelNetnsRun = "BENTO_TEST_NETNS_RUN"
+
+// The check is worth nothing if Run stops calling it, and every other test in this
+// package now spawns its child in an empty namespace - so this is the one that runs a
+// launch stage in the host's namespace and requires the refusal. In a child because Run
+// makes the process permanently non-dumpable.
+func TestRunRefusesAHostNetworkNamespace(t *testing.T) {
+	if os.Getenv(sentinelNetnsRun) != "" {
+		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	if len(foreignInterfaces(mustReadNetDev(t))) == 0 {
+		t.Skip("this host's namespace holds only lo, so a child of it is not the state under test")
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelNetnsRun+"=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded in the host's network namespace:\n%s", out)
+	}
+	if !strings.Contains(string(out), "network namespace is not the empty one") {
+		t.Errorf("Run failed without the netns refusal: %q", out)
+	}
+}
+
+func mustReadNetDev(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(procNetDev)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", procNetDev, err)
+	}
+	return data
 }

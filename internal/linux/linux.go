@@ -363,10 +363,18 @@ func noteProxyFault(r *enforce.Report, faults int) {
 }
 
 // noteRefusedAtCapacity records connections the proxy turned away with a 503 because
-// every handler slot was taken. The run does not fail on one - the connection was
-// refused, which is the safe direction - but the layer cannot be reported as having
-// enforced the manifest over a window where a declared destination was denied by load
-// rather than by policy, and nothing else in the report tells the two apart.
+// every handler slot was taken. The refusal itself is the safe direction, but the layer
+// cannot be reported as having enforced the manifest over a window where a declared
+// destination was denied by load rather than by policy, and nothing else in the report
+// tells the two apart.
+//
+// Degraded on a core layer is a posture shortfall under every posture but
+// --allow-degraded, so this costs the run its exit code rather than only a line in the
+// report. That is the intended weight: a run whose declared egress was blacked out and
+// which then reports the script's own clean exit is what the shortfall code exists to
+// prevent. It is reachable without anything malicious, by legitimate CONNECTs that hold
+// their slots, so the count in the disclosure is what tells an operator which of the two
+// they are looking at.
 func noteRefusedAtCapacity(r *enforce.Report, refusals int) {
 	if refusals == 0 {
 		return

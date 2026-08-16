@@ -364,3 +364,25 @@ func TestNAT64PartialDiscoveryStillRefusesTheOtherPrefix(t *testing.T) {
 		t.Errorf("a native public AAAA classified %d, want ipPublic (%d)", got, ipPublic)
 	}
 }
+
+// Below /96 the u-octet is reserved and zero in any real RFC 6052 embedding, so an
+// address with a dense interface identifier cannot be a synthesis at those lengths -
+// and reading those offsets anyway is what would refuse ordinary IPv6 destinations on a
+// DNS64 site for spelling something private by accident.
+func TestNAT64ShortLengthsNeedTheZeroUOctet(t *testing.T) {
+	// Bytes 9-12 read 10.0.0.5 at the /64 positions, but byte 8 is nonzero, so no RFC
+	// 6052 /64 synthesis produced this address.
+	dense := net.ParseIP("2001:db8:aaaa:bbbb:ff0a:5:0:1")
+	if dense == nil {
+		t.Fatal("bad test address")
+	}
+	if mayWrapUnroutableV4(dense) {
+		t.Errorf("%s was read as a possible synthesis; byte 8 is nonzero, so the sub-/96 lengths cannot apply", dense)
+	}
+	// The same bytes with the u-octet zeroed are a well-formed /64 embedding of 10.0.0.5.
+	b := dense.To16()
+	b[8] = 0
+	if !mayWrapUnroutableV4(b) {
+		t.Errorf("%s wraps 10.0.0.5 at the /64 positions with a zero u-octet and was not caught", net.IP(b))
+	}
+}

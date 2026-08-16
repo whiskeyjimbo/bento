@@ -433,6 +433,11 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	for _, d := range res.RedirectedHooks {
 		fmt.Fprintf(w, "embed: the run pointed this checkout's hooks at %q: whatever it holds runs at the next commit\n", d)
 	}
+	// UnresolvedHooks: the grants git could not answer for, so the two lists above are
+	// short. Silence here would have an empty hook report read as a clean one.
+	for _, g := range res.UnresolvedHooks {
+		fmt.Fprintf(w, "embed: could not ask git where %q runs its hooks, so any hook directory under it went unchecked\n", g)
+	}
 	// Exposed: what a full run would have shielded but this tier could not (the degraded,
 	// no-mount-namespace tier). The mirror image of Shields, and the same contract as
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.

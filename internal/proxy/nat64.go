@@ -155,22 +155,36 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 // be a synthesis wrapping such an address - so it is a guess about an address rather than
 // a decode of one, and only the classes an attacker would actually aim at count.
 //
-// Deliberately not every class classifyIP refuses: 0.0.0.0/8, 240/4 and the benchmarking
-// range are what a native AAAA's zero and high bytes read as at these offsets, and no
-// NAT64 gateway routes a synthesis to them, so counting them would refuse ordinary IPv6
-// destinations to close nothing.
+// Deliberately not every class classifyIP refuses: 0.0.0.0/8 and 240/4 are what a native
+// AAAA's zero and high bytes read as at these offsets, and no NAT64 gateway routes a
+// synthesis to them, so counting them would refuse ordinary IPv6 destinations to close
+// nothing. The benchmarking range is kept - it costs one address in 32768 per offset,
+// where those two cost a large share of all native AAAAs.
+//
+// Below /96 the u-octet (byte 8) is reserved and MUST be zero in a real RFC 6052
+// embedding, which is why rfc6052Positions skips it there. A nonzero byte 8 therefore
+// rules those lengths out, and skipping them is what keeps the false-positive rate down
+// on addresses with a dense interface identifier - the ones most likely to spell
+// something private by accident.
 func mayWrapUnroutableV4(ip net.IP) bool {
 	ip16 := ip.To16()
 	if ip16 == nil || ip.To4() != nil {
 		return false
 	}
 	for _, length := range rfc6052Lengths {
+		if length < 96 && ip16[8] != 0 {
+			continue
+		}
 		pos := rfc6052Positions[length]
 		v4 := net.IPv4(ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]])
 		if v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() {
 			return true
 		}
-		if b := v4.To4(); b[0] == 100 && b[1]&0xc0 == 64 {
+		b := v4.To4()
+		if b[0] == 100 && b[1]&0xc0 == 64 {
+			return true
+		}
+		if b[0] == 198 && b[1]&0xfe == 18 {
 			return true
 		}
 	}
