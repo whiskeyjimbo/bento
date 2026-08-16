@@ -271,6 +271,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		// No ExitCode or Signaled: the kill was the cancel's, and a SIGKILLed target has
 		// no outcome of its own to report. That separation is what tells an operator who
 		// aborted a run apart from a policy that killed it.
@@ -285,6 +286,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
@@ -299,6 +301,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	default:
 		// The auto-exec list for the same reason the cancel arm carries it: the target may
@@ -327,6 +330,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
@@ -356,6 +360,19 @@ func noteProxyFault(r *enforce.Report, faults int) {
 	}
 	worsenNetwork(r, enforce.Degraded,
 		fmt.Sprintf("the egress proxy dropped %d connection(s) on an internal fault, so their handlers did not run to an outcome", faults))
+}
+
+// noteRefusedAtCapacity records connections the proxy turned away with a 503 because
+// every handler slot was taken. The run does not fail on one - the connection was
+// refused, which is the safe direction - but the layer cannot be reported as having
+// enforced the manifest over a window where a declared destination was denied by load
+// rather than by policy, and nothing else in the report tells the two apart.
+func noteRefusedAtCapacity(r *enforce.Report, refusals int) {
+	if refusals == 0 {
+		return
+	}
+	worsenNetwork(r, enforce.Degraded,
+		fmt.Sprintf("the egress proxy was at its connection limit for %d connection(s), which were refused without the allowlist being consulted", refusals))
 }
 
 // bridgeReportedDeath reads the bridge's liveness pipe, which the host has already
@@ -852,6 +869,7 @@ type egressCollector struct {
 	mu         sync.Mutex
 	count      int
 	faulted    int
+	atCapacity int
 	admitted   map[string]enforce.HostPort
 	blocked    map[string]enforce.HostPort
 	denied     map[string]enforce.HostPort
@@ -908,6 +926,12 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 		// Counted but not named. An egress the rules allow outright is what the manifest
 		// already says, and the report exists for the destinations a run would not predict
 		// from reading it.
+	case proxy.RefusedAtCapacity:
+		// Counted like the two above - it is a connection that reached the proxy - and
+		// tallied apart as well, because unlike them it says the allowlist was never
+		// consulted. noteRefusedAtCapacity is what turns the tally into a verdict; without
+		// it a declared destination refused by load reads as one the rules allowed.
+		c.atCapacity++
 	case proxy.Faulted:
 		// Returned above, before the tally: a fault is an outcome on a connection rather
 		// than a destination reached.
@@ -918,6 +942,12 @@ func (c *egressCollector) counted() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.count
+}
+
+func (c *egressCollector) atCapacityCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.atCapacity
 }
 
 func (c *egressCollector) faultCount() int {

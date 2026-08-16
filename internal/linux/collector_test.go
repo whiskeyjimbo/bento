@@ -54,6 +54,42 @@ func TestProxyFaultDegradesAnEnforcedNetworkLayer(t *testing.T) {
 	}
 }
 
+// A refusal at the connection limit is a connection the allowlist never got to see, so
+// it is tallied apart from the ones it decided. Counted with them as well: it reached the
+// proxy, and a run that spent its window being refused must not read as one that never
+// attempted egress.
+func TestRefusalsAtCapacityAreTalliedApart(t *testing.T) {
+	c := &egressCollector{}
+	c.observe(proxy.Allowed, "example.com", "443")
+	c.observe(proxy.RefusedAtCapacity, "", "")
+	c.observe(proxy.RefusedAtCapacity, "", "")
+
+	if got := c.atCapacityCount(); got != 2 {
+		t.Errorf("atCapacityCount() = %d, want 2", got)
+	}
+	if got := c.counted(); got != 3 {
+		t.Errorf("counted() = %d, want 3: a refusal at the limit is still a connection the proxy handled", got)
+	}
+}
+
+// noteRefusedAtCapacity is that tally's only consumer, and a degraded network layer its
+// only effect: an Enforced layer cannot stand over a window where a declared destination
+// was refused by load rather than by policy.
+func TestRefusalAtCapacityDegradesAnEnforcedNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteRefusedAtCapacity(&r, 7)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("LayerNetwork = %v, want Degraded after a refusal at the connection limit", got)
+	}
+	degradations := r.Degradations()
+	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "7 connection(s)") {
+		t.Errorf("degradations = %+v, want the refusal count: this note is the count's only channel", degradations)
+	}
+}
+
 // The gate-denied and untunneled sets are reported through Result the same way the
 // admitted and guard-blocked ones are, deduped per destination and sorted.
 func TestCollectorReportsGateDeniedAndUntunneledDestinations(t *testing.T) {

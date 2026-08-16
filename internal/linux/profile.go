@@ -238,7 +238,7 @@ func (r *recordedEgress) observe(d proxy.Decision, host, port string) {
 	// not proposable (no rule matches a target with no port, or one whose port the
 	// dialer would refuse) but it is exactly what the warning asks the operator to add
 	// by hand, and bento knowing it and saying nothing is the gap.
-	if d == proxy.Refused || d == proxy.Faulted {
+	if d == proxy.Refused || d == proxy.RefusedAtCapacity || d == proxy.Faulted {
 		r.unnamed++
 		if host != "" {
 			r.unproposable = append(r.unproposable, profile.HostPort{Host: host, Port: port})

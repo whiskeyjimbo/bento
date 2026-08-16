@@ -37,18 +37,17 @@ const (
 	// gatekeeper admitted at runtime. It is distinct from Allowed so a run can be
 	// honest about egress it permitted beyond the declared manifest.
 	AdmittedByGate Decision = "gate"
-	// Refused marks a connection turned away before a destination was established - at
-	// the concurrency limit, or because its request line never parsed into one. It is
-	// reported so a run that floods the proxy, or speaks something other than CONNECT at
-	// it, is not counted as one that never touched the network.
+	// Refused marks a connection turned away before a destination was established,
+	// because its request line never parsed into one. It is reported so a run that speaks
+	// something other than CONNECT at the proxy is not counted as one that never touched
+	// the network. A refusal at the concurrency limit is RefusedAtCapacity instead.
 	//
 	// It carries a host only where the request line named one that passed the screen and
 	// the refusal is about something else - a target with no port, a non-canonical port
 	// spelling, a client that died mid-headers - and the port with it only where the port
 	// itself is not what was refused. Everywhere else it carries neither, which is the
-	// case a consumer must still handle: a refusal at the limit, a request line that
-	// never parsed, and a target the screen itself turned away, whose host must not be
-	// carried onward.
+	// case a consumer must still handle: a request line that never parsed, and a target
+	// the screen itself turned away, whose host must not be carried onward.
 	Refused Decision = "refused"
 	// GateDenied marks a connection the static allowlist did not permit and a gatekeeper,
 	// consulted about it, refused. It is the negative half of AdmittedByGate and is
@@ -71,6 +70,15 @@ const (
 	// nothing that separates the guard's refusal from an ordinary dial failure, so
 	// the observer is the only place the distinction survives.
 	GuardBlocked Decision = "blocked"
+	// RefusedAtCapacity marks a connection turned away because every handler slot was
+	// taken. It is distinct from Refused because the two say different things about the
+	// run: a Refused connection was answered by the proxy's own rules, while one refused
+	// here never reached them - a destination the manifest declares was denied not by
+	// policy but by load, and clients that connect and send nothing hold their slots for
+	// the whole connectTimeout, so the blackout renews for as long as they keep doing it.
+	// A run that reports the network layer fully enforced through such a window is
+	// claiming an allowlist it did not get to apply.
+	RefusedAtCapacity Decision = "refused-at-capacity"
 	// Faulted marks a connection the proxy itself dropped, because a handler panicked
 	// before reaching any other decision - a panic after one is not reported, the
 	// connection having already reached an outcome. It names no host or port for the same
@@ -654,7 +662,7 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 			// At capacity: refuse rather than let the host process grow unbounded. The
 			// refusal is recorded before the client is told, so a caller that observes
 			// the 503 has already observed the report.
-			p.report(Refused, "", "")
+			p.report(RefusedAtCapacity, "", "")
 			// Written on the accept goroutine, so it must not block: a client that never
 			// reads leaves the whole proxy not accepting. writeStatus bounds the write,
 			// which is what keeps "accept-loop work is non-blocking" an invariant rather

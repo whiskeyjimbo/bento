@@ -598,7 +598,11 @@ func TestConcurrencyIsCapped(t *testing.T) {
 			return nil, fmt.Errorf("test dialer unblocked")
 		}),
 		WithObserver(func(d Decision, host, port string) {
-			if d != Refused {
+			// RefusedAtCapacity, not Refused: a refusal by load is a different claim about
+			// the run than one the allowlist made, and an observer that cannot tell them
+			// apart cannot degrade the layer for the first without degrading it for a
+			// client that merely spoke garbage.
+			if d != RefusedAtCapacity {
 				return
 			}
 			mu.Lock()
