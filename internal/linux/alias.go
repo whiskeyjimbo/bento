@@ -128,9 +128,9 @@ func (d *deadMount) expired() error {
 
 // boundHostSeams puts the sandbox's error-free host seams under the same bound as the
 // walks: resolve, isDir, listDir, exists and writable each block for as long as an
-// unresponsive mount does, and none of them has an error to hand back. Not every seam a
-// dead mount blocks is here - newSandbox's entrypoint resolve and stat run before the
-// sandbox exists, so they are outside it.
+// unresponsive mount does, and none of them has an error to hand back. The seams outside it
+// are the ones that run before the sandbox exists - newSandbox's entrypoint and
+// interpreter lookups - which call bounded directly, having an error to return.
 //
 // Wrapped here, once, rather than at each of their call sites - there are dozens, and one
 // added later would otherwise be unbounded again. sb.deadMount is what makes the fallback

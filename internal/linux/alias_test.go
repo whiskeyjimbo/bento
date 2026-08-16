@@ -1626,3 +1626,28 @@ func TestAnExpiredWritableIsNotReportedAsAPermissionProblem(t *testing.T) {
 		t.Fatalf("checkShieldsCarvable error = %v, want the expiry; the seam never asked the host, so permissions are not the cause", err)
 	}
 }
+
+// The entrypoint is the first host path a run touches, and newSandbox reaches it before
+// the sandbox whose seams boundHostSeams wraps exists. Unbounded, an entrypoint on a dead
+// mount hangs the preflight with no output and no exit; bounded, the expiry lands in the
+// error that names the entrypoint.
+func TestNewSandboxRefusesAnEntrypointThatDoesNotAnswer(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
+
+	credentialWalkTimeout = 1 * time.Nanosecond
+	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
+
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	cleanup()
+	if err == nil {
+		t.Fatal("newSandbox built a sandbox from an entrypoint the host never answered for")
+	}
+	if !strings.Contains(err.Error(), "did not answer within") {
+		t.Errorf("newSandbox error = %v, want the expired entrypoint seam named", err)
+	}
+}

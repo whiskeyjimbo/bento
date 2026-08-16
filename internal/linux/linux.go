@@ -664,22 +664,35 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []string) (sandbox, func(), error) {
 	noop := func() {}
 
-	entrypoint, err := resolve(p.Entrypoint)
+	// Bounded, like the sandbox's own seams, except these run before the sandbox exists:
+	// the entrypoint is the first host path a run touches, so one on an unresponsive
+	// mount would otherwise hang the preflight with no output and no exit. Both return an
+	// error already, so the expiry needs no fallback - it travels in the error below,
+	// which names the entrypoint.
+	entrypoint, err := bounded("the symlink resolution of "+p.Entrypoint, func() (string, error) {
+		return resolve(p.Entrypoint)
+	})
 	if err != nil {
 		return sandbox{}, noop, err
 	}
-	if _, err := os.Stat(entrypoint); err != nil {
+	if _, err := bounded("the stat of "+entrypoint, func() (os.FileInfo, error) {
+		return os.Stat(entrypoint)
+	}); err != nil {
 		return sandbox{}, noop, fmt.Errorf("entrypoint %q: %w", p.Entrypoint, err)
 	}
 
 	// An empty interpreter means the entrypoint runs itself: a compiled binary.
 	var interp, interpName string
 	if p.Interpreter != "" {
-		found, err := exec.LookPath(p.Interpreter)
+		found, err := bounded("the PATH lookup of "+p.Interpreter, func() (string, error) {
+			return exec.LookPath(p.Interpreter)
+		})
 		if err != nil {
 			return sandbox{}, noop, fmt.Errorf("interpreter %q not found: %w", p.Interpreter, err)
 		}
-		if interp, err = resolve(found); err != nil {
+		if interp, err = bounded("the symlink resolution of "+found, func() (string, error) {
+			return resolve(found)
+		}); err != nil {
 			return sandbox{}, noop, err
 		}
 		if found != interp {

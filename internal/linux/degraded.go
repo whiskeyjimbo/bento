@@ -118,7 +118,13 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return enforce.Result{}, err
 	}
-	autoExecBefore := baselineAutoExec(writes)
+	// Bounded on the sandbox's own seam rather than raw: the write dirs are host paths,
+	// and one that stops answering between the stat above and this walk would hang here.
+	// An empty baseline is not a silent clean report - the deadMount check below refuses
+	// the run before anything compares against it.
+	autoExecBefore := boundedSeam(sb, "the auto-exec baseline of the write grants", autoExecBaseline{}, func() (autoExecBaseline, error) {
+		return baselineAutoExec(writes), nil
+	})
 
 	// With the write dirs now present (so the same Workspace/gitDir shields the full tier
 	// would carve are discovered), record which always-on shields a bwrap run would have
