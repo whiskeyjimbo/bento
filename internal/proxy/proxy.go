@@ -1183,14 +1183,16 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.D
 	// could ever apply. Written by the upstream copy goroutine and read by both, so it
 	// is atomic.
 	var upstreamSpoke atomic.Bool
-	firstByteAt := time.Now().Add(firstByte)
 	extend := func() {
 		t := time.Now().Add(idle)
 		client.SetDeadline(t)
-		if !upstreamSpoke.Load() && firstByteAt.Before(t) {
-			t = firstByteAt
+		// Before upstream has spoken its deadline belongs to extendUp alone, which is
+		// what keeps this from racing the byte that lifts the bound: a client read that
+		// checked the flag, was descheduled, and wrote afterwards would otherwise clamp
+		// the deadline back onto a destination that had just answered.
+		if upstreamSpoke.Load() {
+			upstream.SetDeadline(t)
 		}
-		upstream.SetDeadline(t)
 	}
 	// The upstream direction's first read is what lifts the bound, and it lifts it for
 	// the connection's whole remaining life: a destination that answered once is a real
@@ -1200,6 +1202,7 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.D
 		extend()
 	}
 	extend()
+	upstream.SetDeadline(time.Now().Add(firstByte))
 	// handle's recover runs on the caller's goroutine and cannot see a panic raised in
 	// either copy, so one left here does not reach the Faulted path at all - it takes
 	// down the whole bento process mid-run, which is the one thing that recover exists to
