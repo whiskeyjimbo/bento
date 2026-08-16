@@ -1529,10 +1529,10 @@ func TestACredentialWalkThatNeverAnswersIsBounded(t *testing.T) {
 	}
 }
 
-// The walks were bounded first; these are the seams a dead mount blocks just as
-// thoroughly and that answer with no error to carry - so before this a write grant or a
-// credential store on an unresponsive export still hung the preflight, just later.
-func TestTheRemainingHostSeamsAreBounded(t *testing.T) {
+// The walks were bounded first; these are the error-free seams a dead mount blocks just as
+// thoroughly - so before this a write grant or a credential store on an unresponsive export
+// still hung the preflight, just later.
+func TestTheSandboxsErrorFreeHostSeamsAreBounded(t *testing.T) {
 	credentialWalkTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
 
@@ -1543,10 +1543,12 @@ func TestTheRemainingHostSeamsAreBounded(t *testing.T) {
 		isDir:     func(string) bool { <-hung; return true },
 		resolve:   func(p string) string { <-hung; return p },
 		listDir:   func(string) (names, links []string, ok bool) { <-hung; return nil, nil, true },
+		exists:    func(string) bool { <-hung; return true },
+		writable:  func(string) bool { <-hung; return true },
 	})
 
 	// Each seam separately: one of them answering is not the others answering, and a
-	// grant's checkout root reaches all three.
+	// grant's checkout root reaches all of them.
 	for _, seam := range []struct {
 		name string
 		call func()
@@ -1554,6 +1556,8 @@ func TestTheRemainingHostSeamsAreBounded(t *testing.T) {
 		{"isDir", func() { sb.isDir("/export/checkout") }},
 		{"resolve", func() { sb.resolve("/export/checkout") }},
 		{"listDir", func() { sb.listDir("/export/checkout") }},
+		{"exists", func() { sb.exists("/export/checkout") }},
+		{"writable", func() { sb.writable("/export/checkout") }},
 	} {
 		done := make(chan struct{})
 		go func() { seam.call(); close(done) }()
@@ -1565,6 +1569,14 @@ func TestTheRemainingHostSeamsAreBounded(t *testing.T) {
 	}
 	if err := sb.deadMount.expired(); err == nil || !strings.Contains(err.Error(), "did not answer within") {
 		t.Fatalf("deadMount.expired() = %v, want the expiry recorded; an unrecorded one is a shield silently dropped", err)
+	}
+
+	// The two fallbacks whose direction is load-bearing rather than merely conservative.
+	if !sb.exists("/export/checkout") {
+		t.Error("an expired exists answered 'missing'; checkShieldsCarvable's `for !sb.exists(parent)` walk then loops forever at /")
+	}
+	if sb.writable("/export/checkout") {
+		t.Error("an expired writable answered 'writable'; the grant is then carried into a bwrap mkdir on a mount that never answered instead of being refused by name")
 	}
 }
 

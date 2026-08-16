@@ -48,10 +48,15 @@ func bounded[T any](what string, call func() (T, error)) (T, error) {
 	}
 	ch := make(chan answer, 1)
 	go func() { v, err := call(); ch <- answer{v, err} }()
+	// A timer that is stopped rather than time.After, which holds its timer alive for the
+	// full duration: sb.exists runs per deny-list rule and per ancestor in the shield
+	// walks, so the answered calls are thousands, not the nine the walks were.
+	t := time.NewTimer(credentialWalkTimeout)
+	defer t.Stop()
 	select {
 	case a := <-ch:
 		return a.v, a.err
-	case <-time.After(credentialWalkTimeout):
+	case <-t.C:
 		var zero T
 		return zero, fmt.Errorf("linux: %s did not answer within %s, which is what an unresponsive network mount looks like", what, credentialWalkTimeout)
 	}
@@ -81,13 +86,17 @@ func (sb sandbox) boundedStatID(path string) (fileID, bool) {
 // on a value-copied sandbox for the reason workspaceShieldCache is: an expiry noted by one
 // copy has to be seen by the one that refuses the run.
 //
-// The seams that record here - resolve, isDir, listDir - have no error to return, so an
-// expiry would otherwise pass for a real answer: a path that does not resolve, a path that
-// is not a directory, a directory that cannot be listed. Each of those silently WEAKENS
-// the shields built from it. A write grant whose isDir expires loses its checkout's git
-// hook and editor task shields and the run completes reporting them enforced, and nothing
-// else walks a write grant fatally - the alias scan only does so when the host has a
-// hardlinked credential. So the degraded answer travels and compile refuses the run on it.
+// The seams that record here - the ones boundHostSeams wraps - have no error to return, so
+// an expiry would otherwise pass for a real answer: a path that does not resolve, a path
+// that is not a directory, a directory that cannot be listed, a path that exists, a
+// directory that cannot be written. The first three silently WEAKEN the shields built from
+// them: a write grant whose isDir expires loses its checkout's git hook and editor task
+// shields and the run completes reporting them enforced, and nothing else walks a write
+// grant fatally - the alias scan only does so when the host has a hardlinked credential.
+// exists and writable are the weaker case - their fallbacks are chosen to keep rules and
+// to refuse, so an expiry there hangs rather than narrows - but they record all the same,
+// because the answer they gave was not the host's. So the degraded answer travels and
+// compile refuses the run on it.
 //
 // boundedStatID deliberately does not record: an expiry there collapses into "no identity",
 // which the fatal bounded walk of that same credential store backs up a moment later.
@@ -117,18 +126,35 @@ func (d *deadMount) expired() error {
 	return d.err
 }
 
-// boundHostSeams puts the three seams that answer without an error under the same bound
-// as the walks: resolve, isDir and listDir each block for as long as an unresponsive
-// mount does. They are the seams whose fallback SILENTLY NARROWS a shield, which is why
-// they are bounded here and their expiry is fatal - not every seam a dead mount blocks.
-// sb.exists and sb.writable are raw Lstat and access(2) and hang the preflight just as
-// thoroughly; bounding them is open work.
+// boundHostSeams puts the sandbox's error-free host seams under the same bound as the
+// walks: resolve, isDir, listDir, exists and writable each block for as long as an
+// unresponsive mount does, and none of them has an error to hand back. Not every seam a
+// dead mount blocks is here - newSandbox's entrypoint resolve and stat run before the
+// sandbox exists, so they are outside it.
 //
-// Wrapped here, once, rather than at each of their call sites - there are nine, and a
-// tenth added later would otherwise be unbounded again. sb.deadMount is what makes the
-// fallback answers safe to hand back; see it for why they are not silent.
+// Wrapped here, once, rather than at each of their call sites - there are dozens, and one
+// added later would otherwise be unbounded again. sb.deadMount is what makes the fallback
+// answers safe to hand back; see it for why they are not silent.
 func boundHostSeams(sb sandbox) sandbox {
 	isDir, resolve, listDir := sb.isDir, sb.resolve, sb.listDir
+	exists, writable := sb.exists, sb.writable
+	// true, not false: checkShieldsCarvable and createdShields both walk up with
+	// `for !sb.exists(parent)`, and a seam that always answers "missing" turns that walk
+	// into an infinite loop at "/" - a worse failure than the hang. It is also the
+	// conservative direction for the shields, since a rule whose path exists is kept.
+	sb.exists = func(path string) bool {
+		return boundedSeam(sb, "the existence check of "+path, true, func() (bool, error) {
+			return exists(path), nil
+		})
+	}
+	// false answers "this directory will not accept the mkdir", which makes
+	// checkShieldsCarvable refuse the grant by name rather than hang on it. The refusal
+	// stands even where compile's deadMount check would not be reached.
+	sb.writable = func(dir string) bool {
+		return boundedSeam(sb, "the writability check of "+dir, false, func() (bool, error) {
+			return writable(dir), nil
+		})
+	}
 	sb.isDir = func(path string) bool {
 		return boundedSeam(sb, "the directory check of "+path, false, func() (bool, error) {
 			return isDir(path), nil

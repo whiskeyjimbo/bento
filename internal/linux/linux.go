@@ -628,7 +628,11 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		return err
 	}
 	for _, w := range writes {
-		switch fi, err := os.Stat(w); {
+		// Bounded, like the sandbox's own seams: the grant is a host path, and this runs
+		// after checkShieldsCarvable, so bounding those alone would only move the hang on
+		// an unresponsive mount here. The expiry has an error to travel in, so it needs no
+		// fallback - it lands in WriteUnstattable below, naming the grant.
+		switch fi, err := bounded("the stat of "+w, func() (os.FileInfo, error) { return os.Stat(w) }); {
 		case err == nil && fi.IsDir():
 			// Already a directory: nothing to prepare.
 		case err == nil:
@@ -639,7 +643,9 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 			// or other access to a directory that exists because a sandbox asked
 			// for it. Applies to any missing parent MkdirAll creates too; an
 			// already-existing directory keeps whatever mode the user gave it.
-			if err := os.MkdirAll(w, 0o700); err != nil {
+			if _, err := bounded("the creation of "+w, func() (struct{}, error) {
+				return struct{}{}, os.MkdirAll(w, 0o700)
+			}); err != nil {
 				return fmt.Errorf("linux: creating write directory %q: %w", w, err)
 			}
 		case errors.Is(err, syscall.ELOOP):
