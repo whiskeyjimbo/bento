@@ -144,6 +144,13 @@ func Run(cfg Config) (int, error) {
 		return 0, fmt.Errorf("launcher: the bridge liveness descriptor %d is one of the target's standard streams", cfg.BridgeLivenessFD)
 	}
 
+	// Before anything else this stage does: every other check here assumes the sandbox it
+	// is running in is the one that was asked for, and the network half of that assumption
+	// is the only one nothing outside the sandbox can confirm. See verifyEmptyNetns.
+	if err := verifyEmptyNetns(); err != nil {
+		return 0, err
+	}
+
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without
 	// O_CLOEXEC - an editor, a CI runner, a server embedding bento - passes straight
@@ -213,8 +220,9 @@ func Run(cfg Config) (int, error) {
 		// over bento's, pointing the target's egress at a chosen proxy instead of the
 		// in-sandbox bridge. The host's own environment cannot reach here - args.go
 		// emits --clearenv - so the case this covers is a POLICY-declared proxy variable.
-		// Fail-closed today (empty netns), but the intercept model requires bento's
-		// values to be authoritative.
+		// The netns is empty and verified so above, so a proxy variable pointing elsewhere
+		// reaches nothing today; the intercept model still requires bento's values to be
+		// the authoritative ones.
 		env = dropEnv(env, proxyEnvNames...)
 		env = append(env, proxyEnv()...)
 	}

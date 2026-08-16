@@ -87,6 +87,7 @@ func TestRunRefusesWhenTheExecFilterWillNotInstall(t *testing.T) {
 	defer f.Close()
 	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
 	cmd.Env = append(os.Environ(), sentinelRunRefusal+"=1")
+	inEmptyNetns(cmd)
 	cmd.ExtraFiles = []*os.File{f}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
