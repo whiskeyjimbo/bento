@@ -226,7 +226,14 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		cmd.ExtraFiles = append(cmd.ExtraFiles, w)
 	}
 
-	runErr := runCmd(cmd)
+	// Only when the run was actually wrapped in a scope: unwrapped, there is no scope to
+	// read and the report already claims nothing about the limits.
+	var scoped scopeLimits
+	runErr := runCmd(cmd, func(pid int) {
+		if exe != bwrap {
+			scoped = attestScopeLimits(pid)
+		}
+	})
 	// Dropping the host's write end before reading: while the host holds one the read
 	// below would block past the sandbox's exit waiting for an EOF only it can send.
 	if bridgeLivenessW != nil {
@@ -273,6 +280,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			cancelCode, _, _ = exitStatusOf(cmd.ProcessState)
 		}
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, cancelCode)
+		noteScopeLimits(&report, p.Limits, scoped)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
@@ -290,6 +298,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		lostRecords, serveErr := stopProxy()
 		a := parseApplied(appliedReport)
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
+		noteScopeLimits(&report, p.Limits, scoped)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
@@ -307,6 +316,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		code, signaled, sig := exitStatusOf(ee.ProcessState)
 		a := parseApplied(appliedReport)
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, code)
+		noteScopeLimits(&report, p.Limits, scoped)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
@@ -338,6 +348,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		}
 		a := parseApplied(appliedReport)
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, code)
+		noteScopeLimits(&report, p.Limits, scoped)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
@@ -883,12 +894,23 @@ func bentoSelfPath(selfPath string) (string, error) {
 // green after minutes of wall clock and a leaked sandbox.
 var launchGuard func(bentoPath string) error
 
-// runCmd runs the wrapper and waits for it, as cmd.Run does. It is a seam over that
-// one call so a test can produce the failure the post-run default arm exists for: an
-// error that is neither nil nor an *exec.ExitError - a vanished wrapper binary, a fork
-// failure, an I/O error on the pipes. Nothing else in the suite can manufacture one,
-// and that arm carries the whole audit out for a target that may already have run.
-var runCmd = func(c *exec.Cmd) error { return c.Run() }
+// runCmd runs the wrapper and waits for it, as cmd.Run does, calling started with the
+// wrapper's pid in between. It is a seam over that one call so a test can produce the
+// failure the post-run default arm exists for: an error that is neither nil nor an
+// *exec.ExitError - a vanished wrapper binary, a fork failure, an I/O error on the pipes.
+// Nothing else in the suite can manufacture one, and that arm carries the whole audit out
+// for a target that may already have run.
+//
+// started is where the run's own scope is read back, which can only be done while the
+// target is alive; it runs between Start and Wait, so the target is under way throughout
+// and the reading costs the bookkeeping rather than the run.
+var runCmd = func(c *exec.Cmd, started func(pid int)) error {
+	if err := c.Start(); err != nil {
+		return err
+	}
+	started(c.Process.Pid)
+	return c.Wait()
+}
 
 // checkLauncher rules on the binary about to be launched as the in-sandbox
 // launcher. It is a no-op unless launchGuard is installed.

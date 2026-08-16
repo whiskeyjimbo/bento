@@ -38,7 +38,7 @@ func TestRunFailingOnANonExitErrorStillReportsTheExecRecord(t *testing.T) {
 
 	boom := errors.New("waiting on the wrapper: input/output error")
 	orig := runCmd
-	runCmd = func(c *exec.Cmd) error {
+	runCmd = func(c *exec.Cmd, started func(int)) error {
 		_ = c.Run()
 		return boom
 	}
@@ -78,7 +78,7 @@ func TestRunFailingBeforeTheStageReportsClaimsNoLayer(t *testing.T) {
 
 	boom := errors.New("waiting on the wrapper: input/output error")
 	orig := runCmd
-	runCmd = func(*exec.Cmd) error { return boom }
+	runCmd = func(*exec.Cmd, func(int)) error { return boom }
 	t.Cleanup(func() { runCmd = orig })
 
 	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})

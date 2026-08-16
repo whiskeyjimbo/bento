@@ -625,10 +625,18 @@ var envAssignment = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9_]{2,}=\S+`)
 // "No permissions" or "ENOSPC" and turn a host that answered into an unknown verdict,
 // which refuses outright where blocked would have offered the degraded tier.
 func forReason(out string) string {
-	s := envAssignment.ReplaceAllStringFunc(strings.TrimSpace(out), func(kv string) string {
+	return capOutput(envAssignment.ReplaceAllStringFunc(out, func(kv string) string {
 		name, _, _ := strings.Cut(kv, "=")
 		return name + "=[redacted]"
-	})
+	}))
+}
+
+// capOutput is the length half alone, for a tool whose output is bounded by nothing but
+// whose assignments are the diagnosis rather than a leak: systemd-run answers a refused
+// property by echoing it ("Unknown assignment: NoSuchProperty=1"), and redacting the value
+// there would take the clue with it.
+func capOutput(out string) string {
+	s := strings.TrimSpace(out)
 	if len(s) > probeOutputCap {
 		s = strings.ToValidUTF8(s[:probeOutputCap], "") + "... (truncated)"
 	}

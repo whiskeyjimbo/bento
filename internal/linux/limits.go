@@ -205,10 +205,11 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	out, err := cmd.CombinedOutput()
 	noteProbeDeadline(parent, ctx)
 	if err != nil {
-		// Scrubbed and capped like bwrap's, and for the same reason: this text becomes
-		// measureScope's reason, which travels into the doctor report and into a run's
-		// refusal message, and systemd-run's output is bounded by nothing.
-		msg := forReason(string(out))
+		// Capped, because this text becomes measureScope's reason and travels into the
+		// doctor report and into a run's refusal message, and systemd-run's output is
+		// bounded by nothing. Not scrubbed, unlike bwrap's: systemd-run answers a refused
+		// property by echoing it, so the assignments here are the diagnosis.
+		msg := capOutput(string(out))
 		if msg == "" {
 			return err
 		}
