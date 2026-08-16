@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -566,6 +567,36 @@ func exhaustedAllowanceReason(out string, allowanceZero bool) string {
 		"user.max_user_namespaces=15000 in /etc/sysctl.d to persist it."
 }
 
+// probeOutputCap bounds how much of bwrap's own words reach a reason. Its refusals are one
+// short line; anything past this is not the diagnosis, and the reason travels into the
+// doctor report, a run's refusal message, and whatever collects those.
+const probeOutputCap = 400
+
+// envAssignment matches the shape a leaked environment entry has in a tool's output. It is
+// deliberately narrow - an uppercase name with a value attached - because bwrap's own
+// messages contain paths and errnos, and a wider scrub would take the diagnosis with it.
+var envAssignment = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,}=[^\s]+`)
+
+// forReason is bwrap's output made safe to put in a user-facing reason: capped, and with
+// environment-shaped assignments stripped of their values. A misconfigured host can have
+// bwrap echo environment content, and the reason it lands in is unbounded in both length
+// and content.
+//
+// It is applied ONLY to what is shown. Every classification below matches on the raw
+// output, and must keep doing so: a cap applied before the match can truncate past
+// "No permissions" or "ENOSPC" and turn a host that answered into an unknown verdict,
+// which refuses outright where blocked would have offered the degraded tier.
+func forReason(out string) string {
+	s := envAssignment.ReplaceAllStringFunc(strings.TrimSpace(out), func(kv string) string {
+		name, _, _ := strings.Cut(kv, "=")
+		return name + "=[redacted]"
+	})
+	if len(s) > probeOutputCap {
+		s = strings.ToValidUTF8(s[:probeOutputCap], "") + "... (truncated)"
+	}
+	return s
+}
+
 func classifyUnshare(err error) (namespaceProbe, string) {
 	var out string
 	var ue *usernsError
@@ -587,7 +618,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 		// Worded for mounts in general rather than for the pseudo-filesystems: the probe
 		// binds the host root as well, and a refused --bind is not a procfs problem.
 		diagnosis := "bubblewrap can create a user namespace here but cannot set up the mounts " +
-			"the sandbox's root filesystem needs, so it cannot isolate anything: " + strings.TrimSpace(out)
+			"the sandbox's root filesystem needs, so it cannot isolate anything: " + forReason(out)
 		if strings.Contains(out, "Can't mount proc") {
 			// This reason is the head of a block that runs past twenty lines once the
 			// degraded tier's consequences follow it, and a flag held to its fifth sentence
@@ -599,7 +630,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 			return namespacesBlocked, "bubblewrap cannot mount /proc here, and the usual cause is a " +
 				"container runtime masking paths under it, which docker does by default; there " +
 				"--security-opt systempaths=unconfined lifts it. The namespace itself was granted - " +
-				"only the mount the sandbox's root filesystem needs was refused (" + strings.TrimSpace(out) + ")."
+				"only the mount the sandbox's root filesystem needs was refused (" + forReason(out) + ")."
 		}
 		return namespacesBlocked, diagnosis
 	}
@@ -616,7 +647,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	}
 	if !usernsRefused(out) {
 		if out != "" {
-			return namespacesUnknown, unknownBase + ": " + strings.TrimSpace(out)
+			return namespacesUnknown, unknownBase + ": " + forReason(out)
 		}
 		return namespacesUnknown, unknownBase + ": " + err.Error()
 	}
@@ -629,7 +660,7 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 		return namespacesBlocked, base + ": unprivileged user namespaces are disabled " +
 			"(kernel.unprivileged_userns_clone=0). Set it to 1 to allow them." + containerUsernsRemedy
 	}
-	return namespacesBlocked, base + ": " + strings.TrimRight(strings.TrimSpace(out), ".") + "." + containerUsernsRemedy
+	return namespacesBlocked, base + ": " + strings.TrimRight(forReason(out), ".") + "." + containerUsernsRemedy
 }
 
 // restricted reports whether a sysctl file holds the given value.
