@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -435,13 +436,13 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// then fail at launch with a bwrap exit code indistinguishable from the target's. Probing
 	// the shared set surfaces that at admission instead. --unshare-net is probed too (the run
 	// adds it for the network layer); --bind / / makes the canary reachable for the check.
-	// The canary is resolved on $PATH, not hardcoded to /bin/true: bwrap sets the
-	// namespaces up FIRST and only then execs, so on a host with no /bin/true (NixOS,
+	// The canary is resolved on $PATH, not hardcoded to /bin/sh: bwrap sets the
+	// namespaces up FIRST and only then execs, so on a host with no /bin/sh (NixOS,
 	// a minimal image) the namespaces would succeed and only the exec fail - and this
 	// probe cannot tell the two apart. It would report userns blocked, refuse every
 	// network manifest, and downgrade the run to the Landlock-only tier while sending
 	// the user off to flip AppArmor sysctls on a host where userns works. limits.go's
-	// trueBinary resolves it the same way for the same reason.
+	// shBinary resolves it the same way for the same reason.
 	// The pseudo-filesystem mounts are exercised for the same reason and from the same
 	// shared list (pseudoFSFlags): mounting a fresh procfs into the namespace is a
 	// permission separate from creating it, and a container that masks paths under
@@ -452,7 +453,7 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	args := append([]string{}, namespaceFlags...)
 	args = append(args, "--unshare-net", "--bind", "/", "/")
 	args = append(args, pseudoFSFlags...)
-	args = append(args, trueBinary())
+	args = append(args, shBinary(), "-c", namespaceCanary)
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
 	// the output pipe to close, and any descendant still holding it keeps the probe
@@ -464,8 +465,39 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	if err != nil {
 		return &usernsError{output: string(out), err: err, ctxErr: ctx.Err()}
 	}
+	if !strings.Contains(string(out), namespaceProof) {
+		// Deliberately not a *usernsError, which is the type classifyUnshare reads a HOST
+		// verdict out of: nothing here is a refusal, so the fall-through's unknown is the
+		// right landing. Unknown refuses outright where blocked would offer the degraded
+		// tier, and offering a tier on a bwrap that proved nothing is the fail-open half.
+		return fmt.Errorf("bubblewrap exited successfully but the canary inside it did not report a user namespace, so nothing proves the namespaces were built (%q)", forReason(string(out)))
+	}
 	return nil
 }
+
+// namespaceProof is what the canary prints once it has confirmed, from inside, that it is
+// in a user namespace of its own. namespaceCanary is the confirmation: /proc/self/uid_map
+// maps exactly one uid in a namespace bwrap built, where the host's own init namespace maps
+// the whole range (4294967295). It is read with shell builtins alone, so the check needs no
+// binary the sandbox root might not carry.
+//
+// Exit status is no oracle on its own. It cannot tell "bwrap built the namespaces" from
+// "something named bwrap exited 0", and the shapes that produce the second have no attacker
+// in them: a Nix or distro wrapper, a container entrypoint, or a bwrap older than one of the
+// flags in namespaceFlags, any of which can swallow an unrecognised flag and exit 0. Run
+// then resolves the same name and execs it, so the target would run with no mount namespace
+// and no netns while the report called the filesystem and network layers Enforced.
+//
+// What it does not catch: bento itself already running inside a namespace that maps one uid,
+// under a bwrap that builds nothing. That needs the wrapper AND the nesting, and the
+// deliberate version of it needs write access to a host $PATH directory, which is the same
+// premise the threat model already excludes.
+const namespaceProof = "bento-namespace-built"
+
+// Every step is checked, and the range is checked for BEING something as well as for not
+// being the host's: a read that fails leaves n empty, and "not the whole range" alone would
+// take that for proof - which is the fail-open direction this exists to close.
+const namespaceCanary = `read _ _ n < /proc/self/uid_map || exit 1; [ -n "$n" ] || exit 1; [ "$n" != 4294967295 ] || exit 1; echo ` + namespaceProof
 
 type usernsError struct {
 	output string

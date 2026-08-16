@@ -488,17 +488,17 @@ func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 }
 
 // The namespace probe's canary must be resolved on $PATH, not hardcoded to
-// /bin/true. bwrap creates the namespaces first and execs last, so on a host with no
-// /bin/true only the exec fails - and the probe would report userns blocked, refuse
+// /bin/sh. bwrap creates the namespaces first and execs last, so on a host with no
+// /bin/sh only the exec fails - and the probe would report userns blocked, refuse
 // every network manifest, and silently downgrade the run to the Landlock-only tier.
-// A host missing /bin/true cannot be constructed here, so this drives the property
-// from the other side: with $PATH naming a `true` that exits non-zero, the probe must
+// A host missing /bin/sh cannot be constructed here, so this drives the property
+// from the other side: with $PATH naming an `sh` that exits non-zero, the probe must
 // fail, which it can only do if the canary it ran was the resolved one.
 func TestCanUnshareRunsTheResolvedCanary(t *testing.T) {
 	requireSandbox(t)
 
 	dir := t.TempDir()
-	canary := filepath.Join(dir, "true")
+	canary := filepath.Join(dir, "sh")
 	if err := os.WriteFile(canary, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
