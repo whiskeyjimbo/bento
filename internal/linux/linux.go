@@ -719,7 +719,9 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		// Allocated here, not lazily: the sandbox is passed by value, so a map created
 		// on first use would live in one copy and every other call site would miss it.
 		workspaceShieldCache: map[string][]denylist.Rule{},
+		deadMount:            &deadMount{},
 	}
+	sb = boundHostSeams(sb)
 
 	// The in-sandbox launcher (the bento binary) runs on every sandbox: it is the
 	// one process bento controls between bwrap and the target, so it is where every

@@ -197,6 +197,11 @@ type sandbox struct {
 	// by value: a memo written into one copy would be invisible to every other call site. A
 	// test literal leaves it nil, where the walk simply runs each time.
 	shieldCache *shieldMemo
+	// deadMount carries the first host filesystem seam that stopped answering, so compile
+	// can refuse a run whose shields were derived from a mount that never replied. A
+	// pointer for shieldCache's reason, and nil in a test literal built from fakes, which
+	// has no host seam to hang.
+	deadMount *deadMount
 }
 
 // shieldMemo is one run's assembled shield set. done is carried apart from the set
@@ -430,6 +435,16 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		RecordExec: sb.recordExec,
 		Target:     command(p, sb),
 	}
+	// Last, because every shield and every grant above was derived from the host seams:
+	// one that stopped answering handed back a fallback that reads as a real answer (a
+	// path that does not resolve, a path that is not a directory), and the argv built on
+	// it is quietly narrower than the policy asked for. This is the last point at which
+	// the run can be refused instead, so it is refused here rather than launched with
+	// shields nobody can vouch for. See deadMount.
+	if err := sb.deadMount.expired(); err != nil {
+		return nil, nil, err
+	}
+
 	args = append(args, sandboxBentoPath)
 	return append(args, launcher.EncodeLaunch(cfg)...), shieldsApplied(sb, appliedShields), nil
 }

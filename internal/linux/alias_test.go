@@ -1528,3 +1528,65 @@ func TestACredentialWalkThatNeverAnswersIsBounded(t *testing.T) {
 		t.Fatal("aliasedCredentials never returned: a credential store on a dead mount hangs the preflight with no output and no exit")
 	}
 }
+
+// The walks were bounded first; these are the seams a dead mount blocks just as
+// thoroughly and that answer with no error to carry - so before this a write grant or a
+// credential store on an unresponsive export still hung the preflight, just later.
+func TestTheRemainingHostSeamsAreBounded(t *testing.T) {
+	credentialWalkTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
+
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	sb := boundHostSeams(sandbox{
+		deadMount: &deadMount{},
+		isDir:     func(string) bool { <-hung; return true },
+		resolve:   func(p string) string { <-hung; return p },
+		listDir:   func(string) (names, links []string, ok bool) { <-hung; return nil, nil, true },
+	})
+
+	// Each seam separately: one of them answering is not the others answering, and a
+	// grant's checkout root reaches all three.
+	for _, seam := range []struct {
+		name string
+		call func()
+	}{
+		{"isDir", func() { sb.isDir("/export/checkout") }},
+		{"resolve", func() { sb.resolve("/export/checkout") }},
+		{"listDir", func() { sb.listDir("/export/checkout") }},
+	} {
+		done := make(chan struct{})
+		go func() { seam.call(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("sb.%s never returned: a write grant on a dead mount hangs the preflight with no output and no exit", seam.name)
+		}
+	}
+	if err := sb.deadMount.expired(); err == nil || !strings.Contains(err.Error(), "did not answer within") {
+		t.Fatalf("deadMount.expired() = %v, want the expiry recorded; an unrecorded one is a shield silently dropped", err)
+	}
+}
+
+// The recording is what makes the fallback answers safe. A seam that expired handed back
+// "not a directory" or "does not resolve", which reads as a real answer and quietly
+// narrows the shields built from it - a write grant whose isDir expired loses its
+// checkout's git-hook and editor-task shields, and nothing else walks a write grant
+// fatally. So the run is refused where it can still be refused.
+func TestCompileRefusesARunWhoseHostSeamExpired(t *testing.T) {
+	sb := testSandbox("/work/run.py")
+	sb.deadMount = &deadMount{}
+	p := &policy.Policy{}
+
+	if _, _, err := compile(p, enforce.Process{}, sb); err != nil {
+		t.Fatalf("compile refused a sandbox whose seams all answered: %v", err)
+	}
+	sb.deadMount.note(errors.New("linux: the directory check of /export/checkout did not answer within 30s, which is what an unresponsive network mount looks like"))
+	_, _, err := compile(p, enforce.Process{}, sb)
+	if err == nil {
+		t.Fatal("compile built a sandbox whose shields were derived from a mount that never answered")
+	}
+	if !strings.Contains(err.Error(), "/export/checkout") {
+		t.Errorf("compile error = %v, want it to name the seam that expired", err)
+	}
+}

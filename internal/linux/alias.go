@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -73,6 +74,93 @@ func (sb sandbox) boundedStatID(path string) (fileID, bool) {
 		return id, nil
 	})
 	return id, err == nil
+}
+
+// deadMount records the first host filesystem seam that stopped answering, which is what
+// an unresponsive network mount looks like from inside this package. It is a pointer field
+// on a value-copied sandbox for the reason workspaceShieldCache is: an expiry noted by one
+// copy has to be seen by the one that refuses the run.
+//
+// The seams that record here - resolve, isDir, listDir - have no error to return, so an
+// expiry would otherwise pass for a real answer: a path that does not resolve, a path that
+// is not a directory, a directory that cannot be listed. Each of those silently WEAKENS
+// the shields built from it. A write grant whose isDir expires loses its checkout's git
+// hook and editor task shields and the run completes reporting them enforced, and nothing
+// else walks a write grant fatally - the alias scan only does so when the host has a
+// hardlinked credential. So the degraded answer travels and compile refuses the run on it.
+//
+// boundedStatID deliberately does not record: an expiry there collapses into "no identity",
+// which the fatal bounded walk of that same credential store backs up a moment later.
+type deadMount struct {
+	mu  sync.Mutex
+	err error
+}
+
+// note keeps the first expiry. The first is the one that names the mount an operator has
+// to fix; the ones after it are the same mount answering the same way.
+func (d *deadMount) note(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.err == nil {
+		d.err = err
+	}
+}
+
+// expired returns the recorded expiry, or nil. A nil receiver is the sandbox a test builds
+// from fakes, which has no host seam to hang.
+func (d *deadMount) expired() error {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err
+}
+
+// boundHostSeams puts the three seams that answer without an error under the same bound
+// as the walks: resolve, isDir and listDir each block for as long as an unresponsive
+// mount does, and between them they are every remaining way a dead credential store or
+// write grant hangs the preflight with no output, no timeout and no exit.
+//
+// Wrapped here, once, rather than at each of their call sites - there are nine, and a
+// tenth added later would otherwise be unbounded again. sb.deadMount is what makes the
+// fallback answers safe to hand back; see it for why they are not silent.
+func boundHostSeams(sb sandbox) sandbox {
+	isDir, resolve, listDir := sb.isDir, sb.resolve, sb.listDir
+	sb.isDir = func(path string) bool {
+		return boundedSeam(sb, "the directory check of "+path, false, func() (bool, error) {
+			return isDir(path), nil
+		})
+	}
+	sb.resolve = func(path string) string {
+		return boundedSeam(sb, "the symlink resolution of "+path, path, func() (string, error) {
+			return resolve(path), nil
+		})
+	}
+	sb.listDir = func(path string) (names, links []string, ok bool) {
+		type listing struct {
+			names, links []string
+			ok           bool
+		}
+		l := boundedSeam(sb, "the listing of "+path, listing{}, func() (listing, error) {
+			names, links, ok := listDir(path)
+			return listing{names, links, ok}, nil
+		})
+		return l.names, l.links, l.ok
+	}
+	return sb
+}
+
+// boundedSeam runs one host seam under the walks' bound, recording an expiry on
+// sb.deadMount and answering with fallback so the caller need not carry an error path
+// that only this can produce. The answer is not trusted: compile refuses the run.
+func boundedSeam[T any](sb sandbox, what string, fallback T, call func() (T, error)) T {
+	v, err := bounded(what, call)
+	if err != nil {
+		sb.deadMount.note(err)
+		return fallback
+	}
+	return v
 }
 
 // fileID identifies a file's content on the host. A hardlink and a bind alias both
