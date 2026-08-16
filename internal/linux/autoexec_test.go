@@ -468,3 +468,44 @@ func TestResolvedIsBounded(t *testing.T) {
 		t.Fatal("resolved never returned: a hook directory on a dead mount hangs the run there")
 	}
 }
+
+// git is a dependency of the hook report with no probe behind it: hookRunnerDir shells
+// to `git rev-parse` and every other binary this package shells to is probed at
+// admission. Unprobed, a host with no git gives a clean doctor report and then every run
+// names its grants unresolved - which is also what one unreadable checkout looks like,
+// so nothing says the host can never answer.
+func TestTheAutoExecReportLayerReportsAHostWithNoGit(t *testing.T) {
+	if got := autoExecReportLayer(); got.State != enforce.Enforced {
+		t.Fatalf("autoExecReportLayer on a host with git = %v, want enforced", got)
+	}
+
+	// A PATH with nothing on it: the layer answers for the host, so the question is
+	// whether git can be found at all, not whether some shim answers.
+	t.Setenv("PATH", t.TempDir())
+	got := autoExecReportLayer()
+	if got.State != enforce.Unavailable {
+		t.Fatalf("autoExecReportLayer with no git on PATH = %v, want unavailable", got.State)
+	}
+	if !strings.Contains(got.Reason, "git") || got.Consequences == "" {
+		t.Errorf("autoExecReportLayer reason = %q, consequences = %q; both have to name what the missing binary costs the report", got.Reason, got.Consequences)
+	}
+	// Hardening, and required by no policy: the report it degrades is a hint, and gating
+	// a run or doctor's exit code on it would refuse work over a missing hint.
+	if got.Layer.Tier() != enforce.TierHardening {
+		t.Errorf("%s is tier %v, want hardening - a core layer refuses every run on a host with no git", got.Layer, got.Layer.Tier())
+	}
+	if slices.Contains(enforce.BaselineLayers(), got.Layer) {
+		t.Errorf("%s is a baseline layer, so doctor would exit non-zero on a host that merely cannot hint", got.Layer)
+	}
+
+	// Through Probe, not just the function: doctor renders the report, so a layer the
+	// probe never adds is a row nobody sees, and asserting the function alone stays green
+	// with the call site deleted.
+	var reported bool
+	for _, l := range New().Probe(context.Background()).Layers {
+		reported = reported || l.Layer == enforce.LayerAutoExecReport
+	}
+	if !reported {
+		t.Error("Probe reported no auto-exec-report layer, so doctor's table has no row for it and a host with no git still reads as clean")
+	}
+}

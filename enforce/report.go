@@ -23,6 +23,14 @@ const (
 	LayerLimitsMemory Layer = "limits-memory"
 	LayerLimitsPIDs   Layer = "limits-pids"
 	LayerLimitsCPU    Layer = "limits-cpu"
+	// LayerAutoExecReport is the run's report of the auto-executing files a write grant
+	// holds, which needs git to answer where a checkout runs its hooks. It confines
+	// nothing - it is a hint an operator is told to read - but it is reported like the
+	// rest because the alternative is worse than a missing guarantee: on a host with no
+	// git the hint comes back short every run, naming grants as unresolved, and nothing
+	// says the host can never answer rather than that this run could not. No policy
+	// requires it, so it never gates a run or doctor's exit code.
+	LayerAutoExecReport Layer = "auto-exec-report"
 )
 
 // Tier separates the guarantees Bento makes on every supported platform from
@@ -51,7 +59,7 @@ func (t Tier) String() string {
 // Tier reports which tier a layer belongs to.
 func (l Layer) Tier() Tier {
 	switch l {
-	case LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsPIDs, LayerLimitsCPU:
+	case LayerExec, LayerExecStrict, LayerLimitsMemory, LayerLimitsPIDs, LayerLimitsCPU, LayerAutoExecReport:
 		return TierHardening
 	case LayerFilesystem, LayerNetwork:
 	}

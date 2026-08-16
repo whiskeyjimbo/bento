@@ -119,8 +119,30 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	for _, ls := range limitsLayers(scopeOK, scopeReason, per) {
 		r.AddStatus(ls)
 	}
+	r.AddStatus(autoExecReportLayer())
 
 	return r
+}
+
+// autoExecReportLayer reports whether this host can answer where a write grant's
+// checkout runs its hooks, which is hookRunnerDir's `git rev-parse` and so needs git on
+// PATH. Every other binary this package shells to is probed here; this one was the
+// dependency nobody asked about, and its absence is invisible from the run's own report -
+// each grant simply comes back unresolved, which is also what one bad checkout looks like.
+//
+// LookPath rather than running git: the per-call handling already treats a git that
+// answers wrongly as an unresolved grant, and what is missing is only the host-level
+// statement, which the presence of the binary settles.
+func autoExecReportLayer() enforce.LayerStatus {
+	if _, err := exec.LookPath("git"); err != nil {
+		return enforce.LayerStatus{
+			Layer: enforce.LayerAutoExecReport, State: enforce.Unavailable,
+			Reason: "git is not on this host's PATH, and bento asks git where a write grant's checkout runs its hooks.",
+			Consequences: "Every run's auto-exec report comes back short here: a grant's hook directory is never resolved, so it is listed as unresolved and any file planted in it goes unnamed. " +
+				"The shields are unaffected - nothing is less confined for it - but the hint an operator is told to read cannot be trusted as a clean one. Install git to restore it.",
+		}
+	}
+	return enforce.LayerStatus{Layer: enforce.LayerAutoExecReport, State: enforce.Enforced}
 }
 
 // execLayers decides the exec and exec-strict layers. exec-strict (none-strict's
