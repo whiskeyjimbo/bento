@@ -484,6 +484,18 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 			paths[s.Source] = append(paths[s.Source], s.Path)
 		}
 	}
+	// A variable that moved a store somewhere no shield can follow contributes no shield at
+	// all, so it cannot appear in the loop above and the count this line reports is the one
+	// an untouched host would print. Said on the run rather than only in doctor because it
+	// is the run that hands out the store.
+	if anchors, err := denylist.HomeAnchors(); err == nil {
+		dropped := denylist.UnshieldableRelocations(anchors)
+		for _, env := range slices.Sorted(maps.Keys(dropped)) {
+			fmt.Fprintf(w, "[bento] WARNING: $%s -> %q names a path the shields cannot reach, so the store it\n", env, dropped[env])
+			fmt.Fprintln(w, "[bento] names is NOT shielded in this run - point it outside every home")
+		}
+	}
+
 	if len(paths) == 0 {
 		return
 	}
@@ -1827,6 +1839,7 @@ func writeShieldAnchors(w io.Writer) {
 	}
 	writeNSSCaveat(w)
 	writeNestedAnchors(w, anchors)
+	writeDroppedRelocations(w, anchors)
 	writeRelocatedShields(w)
 	fmt.Fprintln(w)
 }
@@ -1852,6 +1865,30 @@ func writeNestedAnchors(w io.Writer, anchors []string) {
 			fmt.Fprintf(w, "  that reads as empty to the script. Point $HOME outside the other home to undo it.\n")
 		}
 	}
+}
+
+// writeDroppedRelocations names the variables that moved a store somewhere no shield can
+// follow, so the store is left unshielded.
+//
+// The complement of writeRelocatedShields below, and the case that surface structurally
+// cannot reach: it reads the emitted rules, and a dropped relocation emits none. So a
+// GNUPGHOME pointed at the home leaves the keys under it exposed to a broad read grant
+// while ~/.gnupg keeps its default rule, and the shield count is identical to that of a
+// host which set nothing.
+func writeDroppedRelocations(w io.Writer, anchors []string) {
+	dropped := denylist.UnshieldableRelocations(anchors)
+	if len(dropped) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  %d environment variable(s) move a store where the shields cannot reach, so\n", len(dropped))
+	fmt.Fprintf(w, "  nothing shields it - the default path keeps its rule and now covers an empty\n")
+	fmt.Fprintf(w, "  directory, which is why the shield count looks ordinary:\n")
+	for _, env := range slices.Sorted(maps.Keys(dropped)) {
+		// Quoted for the reason the anchors are - the value is the host's, so a newline in
+		// one would forge a line of this report.
+		fmt.Fprintf(w, "    $%s -> %s\n", env, strconv.Quote(dropped[env]))
+	}
+	fmt.Fprintf(w, "  Point each at an absolute path outside every home to shield it.\n")
 }
 
 // writeRelocatedShields names the shields an environment variable moved off their default

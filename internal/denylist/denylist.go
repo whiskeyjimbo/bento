@@ -336,6 +336,51 @@ func UnshieldableRuntimeDir(homes []string) string {
 	return ""
 }
 
+// UnshieldableRelocations returns the relocation variables set to a value no shield can
+// follow, as variable name -> the raw spelling the environment gave, and nil when there
+// are none.
+//
+// UnshieldableRuntimeDir generalised to the rest of the relocation variables, and for the
+// same reason its comment gives: the emitters DROP an unshieldable target, so no rule
+// carries the variable as its Source, so neither surface that reports a relocation - the
+// per-run note or doctor's - can name it, and the rule count alone reads exactly like an
+// ordinary host's. GNUPGHOME=$HOME leaves the private keys under it unshielded while
+// ~/.gnupg keeps its default rule, and nothing in the output changes.
+//
+// The two values that reach that state are the two every emitter drops: a RELATIVE one,
+// which an absolute bind cannot cover and which the tool resolves against the CWD anyway,
+// and one Shieldable refuses - the root, /dev/null, or a home anchor and its ancestors,
+// where a rule would hide the whole grant surface. The refusals themselves are right; only
+// their silence is the bug.
+//
+// XDG_RUNTIME_DIR is left to UnshieldableRuntimeDir: it keeps /run and /var/run either
+// way, so its caveat says something this one cannot.
+//
+// Residual: the colon-separated variables (KUBECONFIG, MAILCAPS, HGRCPATH, GOPATH) are
+// judged on the whole value, so a multi-entry list whose FIRST entry is unshieldable and
+// whose rest are fine is not reported. Splitting them here would misread a non-list
+// variable naming a path that legally contains a colon.
+func UnshieldableRelocations(homes []string) map[string]string {
+	var out map[string]string
+	for _, env := range RelocationVars() {
+		if env == "XDG_RUNTIME_DIR" {
+			continue
+		}
+		raw := os.Getenv(env)
+		if raw == "" {
+			continue
+		}
+		if filepath.IsAbs(raw) && Shieldable(filepath.Clean(raw), homes) {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[env] = raw
+	}
+	return out
+}
+
 // Shieldable reports whether a relocation target can carry a deny rule at all, given the
 // run's home anchors.
 //
@@ -359,6 +404,11 @@ func UnshieldableRuntimeDir(homes []string) string {
 // rule that cannot lexically enclose an anchor cannot lexically cover anything walked
 // from one, so the worst case is an inert rule. Teaching a reader to resolve without
 // teaching it to re-test here would turn that inert rule into a shield over a whole home.
+//
+// Nothing covers the store a refusal here declines. The rule is dropped, not replaced, and
+// the default location the variable moved the store OFF keeps a rule that now shields an
+// empty directory - so the refusal is invisible in the rule set and has to be reported
+// from the environment instead, which is what UnshieldableRelocations is for.
 func Shieldable(p string, homes []string) bool {
 	if p == "/" {
 		return false

@@ -1830,3 +1830,56 @@ func TestShieldSetMemoWalksForAnEmptyEnvironment(t *testing.T) {
 	}
 	t.Cleanup(invalidateShieldSet)
 }
+
+// A relocation variable naming a target no shield can follow is dropped by every emitter,
+// so the rule set is byte-identical to a host that set nothing: no rule carries the
+// variable as its Source, and the two surfaces that report a relocation both read Sources.
+// GNUPGHOME=$HOME therefore leaves the keys under it exposed to a broad read grant while
+// ~/.gnupg keeps its default rule, and the shield count says nothing happened.
+func TestWriteShieldAnchorsReportsADroppedRelocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// The report reads the ambient environment, and a developer's own shell sets several of
+	// these - a stray ZDOTDIR under the passwd anchor is a true positive that would make the
+	// negative half below unrunnable.
+	for _, env := range denylist.RelocationVars() {
+		t.Setenv(env, "")
+		os.Unsetenv(env)
+	}
+	t.Setenv("GNUPGHOME", home)
+	t.Setenv("PASSWORD_STORE_DIR", "gnupg") // relative: resolved against the CWD, unbindable
+
+	var b bytes.Buffer
+	writeShieldAnchors(&b)
+	out := b.String()
+	for _, want := range []string{"GNUPGHOME", strconv.Quote(home), "PASSWORD_STORE_DIR", strconv.Quote("gnupg")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a dropped relocation must be named with its raw value; %q missing from %q", want, out)
+		}
+	}
+
+	// A target outside every anchor is shielded normally, and saying so on every ordinary
+	// host would be the noise this report exists to stay clear of.
+	t.Setenv("GNUPGHOME", t.TempDir())
+	t.Setenv("PASSWORD_STORE_DIR", "")
+	b.Reset()
+	writeShieldAnchors(&b)
+	if out := b.String(); strings.Contains(out, "the shields cannot reach") {
+		t.Errorf("a shieldable relocation must not draw the dropped-relocation report; got %q", out)
+	}
+}
+
+// The same gap on the run's own summary. Doctor is opt-in; the run is what hands out the
+// store, and its shield count is the number an operator actually sees.
+func TestWriteShieldSummaryWarnsOnADroppedRelocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GNUPGHOME", home)
+
+	var b bytes.Buffer
+	writeShieldSummary(&b, enforce.Result{Shields: []enforce.ShieldApplied{{Path: "/x/.ssh", Kind: "hidden"}}})
+	out := b.String()
+	if !strings.Contains(out, "GNUPGHOME") || !strings.Contains(out, "NOT shielded") {
+		t.Errorf("the run must name a store its shields do not cover; got %q", out)
+	}
+}
