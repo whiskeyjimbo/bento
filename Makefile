@@ -129,10 +129,12 @@ RACE_LINUX_TESTS := TestEgressCollector TestEnforcerReuseIsConcurrencySafe
 # BENTO_REQUIRE_TEST_DEPS mirrors `make test`: TestEnforcerReuseIsConcurrencySafe is gated
 # on requireSandbox, so on a runner without bwrap or unprivileged userns it would skip and
 # this gate would pass having run nothing. The -list guard does not catch that - a skip
-# exits 0 exactly as a missing pattern does.
+# exits 0 exactly as a missing pattern does. It is set on both legs for the same reason:
+# observe's two concurrency tests need a real `sh` and skip without one, so the leg that
+# runs them whole is as skippable as the one that names them.
 race: ## Run the concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running concurrency tests under -race...$(RESET)\n"
-	@GOWORK=off CGO_ENABLED=1 go test -race -count=1 ./internal/proxy/... ./internal/observe/
+	@GOWORK=off CGO_ENABLED=1 BENTO_REQUIRE_TEST_DEPS=1 go test -race -count=1 ./internal/proxy/... ./internal/observe/
 	@set -e; listed=$$(GOWORK=off go test -list '.*' ./internal/linux/); pattern=""; \
 	for t in $(RACE_LINUX_TESTS); do \
 		printf '%s\n' "$$listed" | grep -q "^$$t" \
