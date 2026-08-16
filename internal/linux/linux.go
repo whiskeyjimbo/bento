@@ -115,7 +115,12 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	// Taken after preflightGrants, so the write grants are resolved and any directory it
 	// created for one is already in the baseline and does not read as a change.
-	autoExecBefore := baselineAutoExec(preflight.writes)
+	// Bounded like the seams that resolved those writes: an empty baseline is safe here
+	// only because compile below refuses a run whose host seams expired, so it is never
+	// the baseline anything is compared against.
+	autoExecBefore := boundedSeam(sb, "the auto-exec baseline of the write grants", autoExecBaseline{}, func() (autoExecBaseline, error) {
+		return baselineAutoExec(preflight.writes), nil
+	})
 
 	// bwrap creates a shield mount point on the host when the shielded path does not
 	// exist yet and a write grant makes its parent writable (e.g. a project's unborn
@@ -687,6 +692,9 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		found, err := bounded("the PATH lookup of "+p.Interpreter, func() (string, error) {
 			return exec.LookPath(p.Interpreter)
 		})
+		if errors.Is(err, errDidNotAnswer) {
+			return sandbox{}, noop, err
+		}
 		if err != nil {
 			return sandbox{}, noop, fmt.Errorf("interpreter %q not found: %w", p.Interpreter, err)
 		}

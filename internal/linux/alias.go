@@ -32,6 +32,11 @@ import (
 // bounds for the hook-directory git call.
 var credentialWalkTimeout = 30 * time.Second
 
+// errDidNotAnswer marks an expiry, so a caller framing its own error - "interpreter not
+// found" - can tell a real answer from a mount that never gave one and not blame the
+// wrong cause.
+var errDidNotAnswer = errors.New("did not answer")
+
 // bounded runs a host filesystem call that a dead mount can block forever and stops
 // waiting for it after credentialWalkTimeout.
 //
@@ -58,7 +63,7 @@ func bounded[T any](what string, call func() (T, error)) (T, error) {
 		return a.v, a.err
 	case <-t.C:
 		var zero T
-		return zero, fmt.Errorf("linux: %s did not answer within %s, which is what an unresponsive network mount looks like", what, credentialWalkTimeout)
+		return zero, fmt.Errorf("linux: %s %w within %s, which is what an unresponsive network mount looks like", what, errDidNotAnswer, credentialWalkTimeout)
 	}
 }
 

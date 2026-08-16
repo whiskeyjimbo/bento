@@ -1647,7 +1647,11 @@ func TestNewSandboxRefusesAnEntrypointThatDoesNotAnswer(t *testing.T) {
 	if err == nil {
 		t.Fatal("newSandbox built a sandbox from an entrypoint the host never answered for")
 	}
-	if !strings.Contains(err.Error(), "did not answer within") {
+	// The entrypoint by name, not just the generic expiry: newSandbox bounds the
+	// interpreter lookups too, and those expire under the same timeout with the same
+	// wording - so an assertion on the wording alone stays green with the entrypoint
+	// bounds removed, which is the regression this test exists to catch.
+	if !strings.Contains(err.Error(), "did not answer") || !strings.Contains(err.Error(), script) {
 		t.Errorf("newSandbox error = %v, want the expired entrypoint seam named", err)
 	}
 }
