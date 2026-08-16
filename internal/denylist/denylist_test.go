@@ -2243,3 +2243,32 @@ func TestHomeShieldsTheComposerBinDirKnob(t *testing.T) {
 		}
 	}
 }
+
+// Shieldable screens the value a relocation variable names, but the blocks that hang a
+// filename off that value test only the JOINED path - which is strictly below the base and
+// so clears the screen no matter how broad the base is. CARGO_HOME=/ therefore shielded
+// the system /bin and bound empty files at /credentials.toml and /env, and
+// XDG_CONFIG_HOME=$HOME restated a hundred-odd rules at the home root, hiding any project
+// directory that shared a name with one.
+//
+// Asserted over every relocation variable rather than the two that were found: the same
+// join shape appears in eight blocks, and closing them one at a time is what left the
+// others open.
+func TestRelocatedScreensTheBaseAndNotOnlyTheJoinedPath(t *testing.T) {
+	for _, base := range []string{"/", "/home", "/home/u"} {
+		for _, env := range RelocationVars() {
+			t.Run(env+"="+base, func(t *testing.T) {
+				for _, e := range RelocationVars() {
+					t.Setenv(e, "")
+					os.Unsetenv(e)
+				}
+				t.Setenv(env, base)
+				for _, r := range allRules("/home/u") {
+					if r.Source == env {
+						t.Errorf("%s=%s emitted a shield at %q, but no rule can hang off a base that is the root or a home anchor", env, base, r.Path)
+					}
+				}
+			})
+		}
+	}
+}

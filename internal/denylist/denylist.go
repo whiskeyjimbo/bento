@@ -1138,6 +1138,21 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	covered := func(p string) bool { return underDenyAll(p, defaults) || underDenyAll(p, rules) }
 	shieldable := func(p string) bool { return Shieldable(p, anchors) }
 	isDefault := func(p, rel string) bool { return isDefaultAt(p, rel, anchors) }
+	// The cleaned value of a variable that names a BASE other blocks hang a filename off,
+	// and whether it can carry a rule at all. The base needs its own screen: a joined path
+	// is strictly below it, so it clears shieldable however broad the base is - which is how
+	// CARGO_HOME=/ shielded the system /bin, and XDG_CONFIG_HOME=$HOME restated a hundred
+	// rules at the home root and hid every project directory sharing one of their names.
+	// Held here rather than at the eight join sites for the reason Shieldable is: closing
+	// them one at a time is what leaves the rest open.
+	relocBase := func(env string) (string, bool) {
+		v := os.Getenv(env)
+		if !filepath.IsAbs(v) {
+			return "", false
+		}
+		c := filepath.Clean(v)
+		return c, shieldable(c)
+	}
 
 	// A relocated XDG base moves a whole class of entries at once, so it is derived from
 	// the defaults rather than from a list of its own: every rule Home placed under an
@@ -1162,9 +1177,11 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 					continue
 				}
 				// A relative base is invalid per the spec and ignored by conforming tools,
-				// which fall back to the default location - already shielded by Home.
-				base := os.Getenv(b.env)
-				if base == "" || !filepath.IsAbs(base) || isDefault(filepath.Clean(base), b.def) {
+				// which fall back to the default location - already shielded by Home. An
+				// unshieldable one is dropped by relocBase, which is what keeps
+				// XDG_CONFIG_HOME=$HOME from restating this whole class at the home root.
+				base, ok := relocBase(b.env)
+				if !ok || isDefault(base, b.def) {
 					continue
 				}
 				// The same two guards every block below runs. sub is non-empty by
@@ -1208,11 +1225,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// config beside profiles.yml), and for CURL_HOME the directory is a home. So the file
 	// is shielded on its own and the directory is left alone.
 	for _, de := range dirFileEnvs {
-		base := os.Getenv(de.env)
-		if !filepath.IsAbs(base) {
-			continue
-		}
-		if c := filepath.Clean(base); !isDefault(c, de.def) {
+		if c, ok := relocBase(de.env); ok && !isDefault(c, de.def) {
 			if p := filepath.Join(c, de.file); !covered(p) && shieldable(p) {
 				rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: de.env})
 			}
@@ -1341,7 +1354,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			rules = append(rules, Rule{Path: p, Deny: DenyWrite, Source: source})
 		}
 	}
-	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) && !isDefault(filepath.Clean(zdotdir), "") {
+	if zdotdir, ok := relocBase("ZDOTDIR"); ok && !isDefault(zdotdir, "") {
 		// .zshrc.local is sourced by the widely-copied grml zshrc from ${ZDOTDIR:-$HOME},
 		// so it relocates with the rest of the group (the default is shielded above).
 		for _, f := range []string{".zshenv", ".zshrc", ".zshrc.local", ".zprofile", ".zlogin", ".zlogout"} {
@@ -1410,8 +1423,8 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// rather than here, where every rule is file-shaped. The DenyAll files go in first so
 	// addWriteShield's collision guard sees them; a write grant over the relocated dir is
 	// refused upstream for containing the credential shields, as for the default ~/.cargo.
-	if base := os.Getenv("CARGO_HOME"); filepath.IsAbs(base) {
-		if c := filepath.Clean(base); !isDefault(c, ".cargo") {
+	if c, ok := relocBase("CARGO_HOME"); ok {
+		if !isDefault(c, ".cargo") {
 			for _, f := range []string{"credentials.toml", "credentials"} {
 				if p := filepath.Join(c, f); !covered(p) && shieldable(p) {
 					rules = append(rules, Rule{Path: p, Deny: DenyAll, Holds: HoldsCredentials, Source: "CARGO_HOME"})
@@ -1430,17 +1443,13 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// underDenyAll drops a restatement of one for it, while covered() cannot see a
 	// DenyWrite duplicate at all - so a COMPOSER_HOME pointed at the legacy root would
 	// emit the same rule twice.
-	if base := os.Getenv("COMPOSER_HOME"); filepath.IsAbs(base) {
-		if c := filepath.Clean(base); !isDefault(c, ".config/composer") && !isDefault(c, ".composer") {
+	if c, ok := relocBase("COMPOSER_HOME"); ok {
+		if !isDefault(c, ".config/composer") && !isDefault(c, ".composer") {
 			addWriteShield(filepath.Join(c, "config.json"), "COMPOSER_HOME")
 		}
 	}
 	for _, de := range dirSubEnvs {
-		base := os.Getenv(de.env)
-		if !filepath.IsAbs(base) {
-			continue
-		}
-		if c := filepath.Clean(base); !isDefault(c, de.def) {
+		if c, ok := relocBase(de.env); ok && !isDefault(c, de.def) {
 			if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
 				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
 			}
@@ -1461,7 +1470,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// in turn, so following it would be a read chased by another read.
 	if gobin := os.Getenv("GOBIN"); gobin == "" {
 		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && filepath.IsAbs(gopath[0]) {
-			if c := filepath.Clean(gopath[0]); !isDefault(c, "go") {
+			if c := filepath.Clean(gopath[0]); !isDefault(c, "go") && shieldable(c) {
 				// isDefault on the target too, not just on GOPATH: covered() screens
 				// DenyAll trees, so GOPATH=$HOME lands exactly on the ~/bin default and
 				// restates it under a GOPATH source, attributing a default shield to a
@@ -1477,12 +1486,8 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// a directory and leave every entry beside it plantable. Same guards otherwise, and
 	// last so a DenyAll target from any block above already sits in covered().
 	for _, de := range writeOnlyDirEnvs {
-		base := os.Getenv(de.env)
-		if !filepath.IsAbs(base) {
-			continue
-		}
-		c := filepath.Clean(base)
-		if isDefault(c, de.def) {
+		c, ok := relocBase(de.env)
+		if !ok || isDefault(c, de.def) {
 			continue
 		}
 		// A row carries one default, and a tool can have two: composer prefers ~/.composer
