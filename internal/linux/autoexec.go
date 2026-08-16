@@ -3,13 +3,21 @@
 package linux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
+
+// hookResolveTimeout bounds one `git rev-parse --git-path hooks`, so a grant whose
+// object store sits on an unresponsive network mount cannot hang the preflight before
+// the sandbox is built. Expiring is an error like any other: it leaves the grant
+// unresolved and the report says so.
+var hookResolveTimeout = 5 * time.Second
 
 // The auto-executing files a write grant legitimately contains. Each runs on the host
 // without anyone reading it first - the criterion the shields are built on - but each is
@@ -108,8 +116,20 @@ var autoExecDirs = []string{
 // Where the grant is not a repo at all, git discovers upward, so an enclosing checkout's
 // hooks directory can be the answer. It is reported only if it too is under a write
 // grant, which is the same question asked of any other answer.
-func hookRunnerDir(grant string, writes []string) string {
-	cmd := exec.Command("git", "rev-parse", "--git-path", "hooks")
+//
+// An error is returned rather than folded into the empty answer: a git that does not
+// answer does not mean the grant has no hook directory, it means this run cannot see the
+// one it has, and an empty report from such a host would otherwise read exactly like an
+// empty report from a clean one.
+func hookRunnerDir(grant string, writes []string) (string, error) {
+	// The deadline is this call's own rather than the run's: changed() asks again after
+	// the target, on the cancelled path too, and a cancelled run's context would fail
+	// every resolution there and report the answer unseeable when it was merely late to
+	// be asked. What this bounds is a grant whose object store sits on a dead mount,
+	// where cmd.Output() otherwise blocks for as long as git does.
+	ctx, cancel := context.WithTimeout(context.Background(), hookResolveTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "hooks")
 	cmd.Dir = grant
 	// GIT_* out of the environment, or the answer is not this grant's. GIT_DIR and
 	// GIT_WORK_TREE override cmd.Dir outright (measured), and GIT_CONFIG_COUNT with
@@ -121,11 +141,11 @@ func hookRunnerDir(grant string, writes []string) string {
 	})
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("git rev-parse --git-path hooks in %s: %w", grant, err)
 	}
 	dir := strings.TrimSpace(string(out))
 	if dir == "" {
-		return ""
+		return "", nil
 	}
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(grant, dir)
@@ -134,10 +154,10 @@ func hookRunnerDir(grant string, writes []string) string {
 	for _, w := range writes {
 		rel, err := filepath.Rel(resolved(w), dir)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-			return dir
+			return dir, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // resolved is EvalSymlinks with the path itself as the answer when it cannot be walked.
@@ -163,8 +183,9 @@ type autoExecState map[string]string
 // hint stops being read. So the answer is taken once, before the target runs, and the
 // after-snapshot walks that.
 type autoExecBaseline struct {
-	state autoExecState
-	hooks []string
+	state      autoExecState
+	hooks      []string
+	unresolved []string
 }
 
 // changed re-stamps the same paths the baseline stamped and names what the run altered,
@@ -173,12 +194,18 @@ type autoExecBaseline struct {
 // not the silence: see redirectedHooks. The two answers stay apart because they are
 // different claims - one is a file this run wrote, the other a directory it may never have
 // touched - and a caller with one flat list can only word them alike.
-func (b autoExecBaseline) changed(writes []string) (changed, redirected []string) {
+func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresolved []string) {
 	changed = changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
 	slices.Sort(changed)
-	redirected = redirectedHooks(b.hooks, hookRunnerDirs(writes))
+	after, afterUnresolved := hookRunnerDirs(writes)
+	redirected = redirectedHooks(b.hooks, after)
 	slices.Sort(redirected)
-	return slices.Compact(changed), slices.Compact(redirected)
+	// Either side's failure makes the redirect answer short: a grant unresolvable before
+	// the run has no baseline to compare against, and one unresolvable after has nothing
+	// to compare.
+	unresolved = append(slices.Clone(b.unresolved), afterUnresolved...)
+	slices.Sort(unresolved)
+	return slices.Compact(changed), slices.Compact(redirected), slices.Compact(unresolved)
 }
 
 // snapshotAutoExec stats the auto-executing files under each write grant. Errors are
@@ -221,20 +248,26 @@ func snapshotAutoExec(writes, hooks []string) autoExecState {
 // baselineAutoExec is the preflight snapshot: the one that resolves core.hooksPath, per
 // grant, and keeps the answer for every snapshot after it.
 func baselineAutoExec(writes []string) autoExecBaseline {
-	hooks := hookRunnerDirs(writes)
-	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks}
+	hooks, unresolved := hookRunnerDirs(writes)
+	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks, unresolved: unresolved}
 }
 
 // hookRunnerDirs is every hook directory the write grants resolve to, deduplicated. The
 // order follows the grants, so two snapshots of one run list them alike.
-func hookRunnerDirs(writes []string) []string {
-	var hooks []string
+// unresolved names the grants git could not answer for, so the caller can say the report
+// is short rather than let a host where git failed read like a clean one.
+func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
 	for _, w := range writes {
-		if h := hookRunnerDir(w, writes); h != "" && !slices.Contains(hooks, h) {
+		h, err := hookRunnerDir(w, writes)
+		if err != nil {
+			unresolved = append(unresolved, w)
+			continue
+		}
+		if h != "" && !slices.Contains(hooks, h) {
 			hooks = append(hooks, h)
 		}
 	}
-	return hooks
+	return hooks, unresolved
 }
 
 // redirectedHooks names a hook directory the run itself put in play - the answer git gives

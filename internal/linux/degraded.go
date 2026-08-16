@@ -234,7 +234,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// Carried out through the cancel for the reason the full tier's is: a target killed
 		// partway is the run least likely to be looked at and most likely to have left an
 		// auto-executing file behind.
-		changedAuto, redirected := autoExecBefore.changed(writes)
+		changedAuto, redirected, unresolvedHooks := autoExecBefore.changed(writes)
 		// A cancel that lands before the launcher ever started leaves no status at all -
 		// killedByCancel reads a nil ProcessState as the cancel, which is how a context
 		// already cancelled when runDegraded was called arrives here - and -1 is what os
@@ -252,7 +252,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// Exposed naming what it could not shield, and the target reached those credentials
 		// whether or not it lived to finish. Dropping the list here reports a cancelled run
 		// as having exposed nothing.
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 	switch {
 	case cmd.ProcessState == nil:
@@ -272,18 +272,18 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		// leaked descendant held the pipes past WaitDelay.
 		code, signaled, sig := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
-		changedAuto, redirected := autoExecBefore.changed(writes)
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, nil
+		changedAuto, redirected, unresolvedHooks := autoExecBefore.changed(writes)
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	default:
 		// As on the cancel arm above: the target may already have run, so these are the only
 		// things on this path that say what the host now holds and what it was left reachable.
 		// The reconcile and the record ride out with them for the same reason - the launcher
 		// was dispatched (the nil-ProcessState arm above caught the runs where it was not),
 		// so what it reported applying is the only account of this run there is.
-		changedAuto, redirected := autoExecBefore.changed(writes)
+		changedAuto, redirected, unresolvedHooks := autoExecBefore.changed(writes)
 		code, _, _ := exitStatusOf(cmd.ProcessState)
 		setup := parseApplied(appliedReport).reconcile(&report, block, strictBlock, false, code)
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected}, fmt.Errorf("linux: running degraded sandbox: %w", err)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: degradedExecRecord(opts.RecordExec), ShieldedGrants: reportedOptIns(optIns), Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running degraded sandbox: %w", err)
 	}
 }
 

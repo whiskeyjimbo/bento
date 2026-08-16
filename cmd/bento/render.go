@@ -1567,7 +1567,17 @@ func writeChangedAutoExecNotice(w io.Writer, res enforce.Result) {
 // run did not necessarily change anything in there, it chose where the host's next commit
 // executes from - which is worth knowing on its own, and reads as routine noise mixed into
 // a list of edited files.
+// The grants git could not answer for ride in the same notice: they say the list below
+// them is short, and an operator reading an empty list has to be told when it is empty
+// because nothing was asked rather than because nothing was found.
 func writeRedirectedHooksNotice(w io.Writer, res enforce.Result) {
+	if len(res.UnresolvedHooks) > 0 {
+		fmt.Fprintln(w, "[bento] note: bento could not ask git where these grants run their hooks,")
+		fmt.Fprintln(w, "[bento] so any hook directory under them went unchecked this run:")
+		for _, p := range res.UnresolvedHooks {
+			fmt.Fprintf(w, "[bento]   %q\n", p)
+		}
+	}
 	if len(res.RedirectedHooks) == 0 {
 		return
 	}

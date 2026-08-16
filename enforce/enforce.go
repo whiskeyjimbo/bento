@@ -523,6 +523,15 @@ type Result struct {
 	// Sorted, and carried on the same arms as ChangedAutoExec, the cancel path included.
 	// The same quoting caveat applies: a directory name can carry bytes a prior run chose.
 	RedirectedHooks []string
+	// UnresolvedHooks names the write GRANTS whose hook directory could not be resolved,
+	// because git did not answer for them. It is what keeps the two lists above readable:
+	// both are empty on a clean run and equally empty on a host where the question was
+	// never answered, and only this says which happened. An operator told to read the
+	// hook report has to know when the report is short.
+	//
+	// Sorted, and carried on the same arms as the two lists it qualifies. The same quoting
+	// caveat applies: a grant path can carry bytes a prior run chose.
+	UnresolvedHooks []string
 }
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path

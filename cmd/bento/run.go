@@ -329,6 +329,9 @@ type streamRefusalJSON struct {
 	// RedirectedHooks travels beside it for the same reason, and separately from it because
 	// it is a different claim; see enforce.Result.
 	RedirectedHooks []string `json:"redirected_hooks,omitempty"`
+	// The grants whose hook directory git could not resolve, so a consumer can tell a
+	// short report from a clean one; see enforce.Result.UnresolvedHooks.
+	UnresolvedHooks []string `json:"unresolved_hooks,omitempty"`
 	// The shield audit is the failed event's alone as well, and under the verdict's names.
 	// A run that began engaged its boundary, and on the degraded tier left credentials
 	// reachable; dropping the record because the run then failed reports the exposure as
@@ -364,7 +367,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: res.UnresolvedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -511,6 +514,9 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// The hook directories the run pointed the checkout at. Separate from the list
 			// above because it is a different claim; see enforce.Result.RedirectedHooks.
 			RedirectedHooks []string `json:"redirected_hooks,omitempty"`
+			// The grants whose hook directory git could not resolve; see
+			// enforce.Result.UnresolvedHooks.
+			UnresolvedHooks []string `json:"unresolved_hooks,omitempty"`
 			// ExecRecord is present only for a run that asked with --record-exec, and is
 			// then present whatever came back: a run the recorder could not watch reports
 			// that and why, which is the answer an empty list would misreport as "nothing
@@ -536,7 +542,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// rather than the operator's - to the read grant that would have fixed it. On
 			// stderr it is prose; a lane harness can only gate on it here.
 			ShadowedPathDirs []string `json:"shadowed_path_dirs,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads, shadowedPathDirs(p, env)})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toReportJSON(res.Report), shortfall != nil, missingReads, shadowedPathDirs(p, env)})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)
