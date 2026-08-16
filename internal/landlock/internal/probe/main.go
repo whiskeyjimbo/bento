@@ -54,6 +54,24 @@
 // filter structurally cannot revoke. Were it keyed on creation instead, that arm would
 // print OK and the fence would buy nothing.
 //
+// Usage: probe scopedipc <read-dir> <write-dir> <outside-path> <abstract-name> <pathname-socket> <port>
+// Applies the DEGRADED ruleset, then reports every residual the tier's IPC posture rests
+// on at once, so all three of its domains are observed in one process: a connect to an
+// abstract unix socket and a signal to a process outside the domain (both governed by the
+// scoped domain, which BestEffort installs only from ABI 6), a pathname socket and a
+// same-domain signal (which scoping must NOT touch), an outside read (the path domain) and
+// a TCP connect (the net domain). Prints "scoped_abstract_baseline=... scoped_abstract=...
+// scoped_signal_outside=... scoped_signal_samedomain=... scoped_pathname=...
+// scoped_outsideread=... scoped_tcp=...", each OK|DENIED.
+//
+// Both sockets are bound by the CALLER: scoping is a check on where the peer's domain sits
+// relative to this one, unlike the net hooks, so a socket this process bound itself before
+// restricting would leave "outside" ambiguous and the verdict meaningless. The signalled
+// process outside the domain is a child started BEFORE the ruleset, which is the position
+// every host process is in relative to a degraded run; the same-domain one is started
+// after and is the control that separates scoping from a host that forbids the signal
+// anyway. The baseline arm is the same control for the abstract socket.
+//
 // Usage: probe procmem <read-dir>
 // Starts a child, reaches into its /proc/<pid>/mem and /proc/<pid>/fd once unrestricted,
 // then applies the DEGRADED ruleset with read-dir as the sole read grant and reaches
@@ -130,6 +148,10 @@ func main() {
 	}
 	if len(os.Args) == 4 && os.Args[1] == "degradednet" {
 		degradedNet(os.Args[2], os.Args[3])
+		return
+	}
+	if len(os.Args) == 8 && os.Args[1] == "scopedipc" {
+		scopedIPC(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6], os.Args[7])
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "procmem" {
@@ -299,6 +321,60 @@ func degradedNet(read, port string) {
 		base, connectLoopback(pre, p), connectLoopback(fresh, p))
 }
 
+func scopedIPC(read, write, outside, abstract, pathSock, port string) {
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "port:", err)
+		os.Exit(2)
+	}
+	// Opened before the ruleset, and handed to both sleepers so neither inherits this
+	// process's stdout: a sleeper that outlives the probe would otherwise hold the
+	// caller's CombinedOutput pipe open and hang the read for the full hour it sleeps.
+	quiet, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "devnull:", err)
+		os.Exit(2)
+	}
+	defer quiet.Close()
+
+	outsideChild, err := startSleeper(quiet)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sleeper:", err)
+		os.Exit(2)
+	}
+	defer func() { _ = outsideChild.Kill() }()
+
+	baseline := dial(abstract)
+
+	if err := landlock.RestrictDegraded([]string{read}, []string{write}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+
+	// The same-domain child re-execs this binary from inside the domain, so the caller
+	// must grant read on the directory the probe itself lives in.
+	sameDomain, err := startSleeper(quiet)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sleeper:", err)
+		os.Exit(2)
+	}
+	defer func() { _ = sameDomain.Kill() }()
+
+	fresh, err := tcpSocket()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "socket:", err)
+		os.Exit(2)
+	}
+
+	// A real signal rather than the zero probe: signal 0 is a permission check whose
+	// route through the LSM hook is not worth resting an arm on when a deliverable one
+	// answers the same question. Both children are killed on the way out regardless.
+	fmt.Printf("scoped_abstract_baseline=%s scoped_abstract=%s scoped_signal_outside=%s scoped_signal_samedomain=%s scoped_pathname=%s scoped_outsideread=%s scoped_tcp=%s\n",
+		baseline, dial(abstract),
+		verdict(outsideChild.Signal(syscall.SIGTERM)), verdict(sameDomain.Signal(syscall.SIGTERM)),
+		dial(pathSock), readable(outside), connectLoopback(fresh, p))
+}
+
 func tcpSocket() (int, error) {
 	return unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
 }
@@ -318,7 +394,7 @@ func connectLoopback(fd, port int) string {
 // forbids the read outright reports DENIED for both, and the caller skips rather than
 // crediting Landlock with a denial the host would have made anyway.
 func procMem(read string) {
-	child, err := startSleeper()
+	child, err := startSleeper(os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -349,7 +425,7 @@ func procMemSameDomain(read string) {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
-	child, err := startSleeper()
+	child, err := startSleeper(os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -359,16 +435,18 @@ func procMemSameDomain(read string) {
 	fmt.Printf("procmem_samedomain=%s procfd_samedomain=%s\n", mem, fdReachable(child.Pid))
 }
 
-// startSleeper re-execs this binary in its sleeper mode. Its descriptors are the
-// probe's own already-open ones: the default would have os/exec open /dev/null, which
-// a restricted caller has no write grant for.
-func startSleeper() (*os.Process, error) {
+// startSleeper re-execs this binary in its sleeper mode with stdio as all three of its
+// descriptors. It is passed in rather than defaulted because os/exec would open /dev/null
+// for a nil stream, which a restricted caller has no write grant for - and because a
+// sleeper that outlives the probe holds whatever it inherited open, so a caller reading
+// the probe with CombinedOutput must hand it something other than that pipe.
+func startSleeper(stdio *os.File) (*os.Process, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(self, "sleeper")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdio, stdio, stdio
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

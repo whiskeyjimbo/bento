@@ -599,3 +599,83 @@ func TestRestrictDegradedFencesTCPConnect(t *testing.T) {
 		}
 	}
 }
+
+// The degraded tier's three domains, observed together on a real kernel. Two of its
+// residuals - an abstract unix socket and a signal to a same-user host process - are
+// closed only by the scoped domain, which BestEffort installs from ABI 6; below that they
+// stay open, and the degraded report discloses them against ScopedIPCRestricted. The
+// expectation table branches on that rather than skipping, so every arm runs at any ABI:
+// the ABI-4 column pins the disclosure to what the kernel actually does today, and the
+// day a host reaches ABI 6 the same test asserts the closure instead of being the first
+// thing ever to execute the path.
+//
+// The arms that scoping must NOT touch are half the point: a pathname socket, a signal
+// within the domain, and the other two domains' verdicts are identical in both columns,
+// so a scoped set that over-reached would fail here rather than in a user's X11 session.
+func TestRestrictDegradedScopesIPC(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t)
+	dir := t.TempDir()
+
+	// Bound here, not in the probe: scoping judges where the peer's domain sits relative
+	// to the probe's, so a socket the probe bound itself would make "outside" ambiguous.
+	abstract := "@bento-scopedipc-" + strconv.Itoa(os.Getpid())
+	for _, addr := range []string{abstract, filepath.Join(dir, "sock")} {
+		l, err := net.Listen("unix", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+	}
+
+	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	port := strconv.Itoa(tcp.Addr().(*net.TCPAddr).Port)
+
+	// The probe's own directory is the read grant: its same-domain control child is this
+	// binary re-exec'd from inside the domain, which an unreadable one could not be.
+	out, err := exec.Command(bin, "scopedipc", filepath.Dir(bin), dir, "/etc/hostname",
+		abstract, filepath.Join(dir, "sock"), port).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, "scoped_abstract_baseline=OK") {
+		t.Fatalf("the abstract socket did not answer before the ruleset was applied, so the verdict below proves nothing: %q", got)
+	}
+
+	scoped := "OK"
+	if effectiveABI() >= 6 {
+		scoped = "DENIED"
+	}
+	tcpWant := "OK"
+	if effectiveABI() >= 4 {
+		tcpWant = "DENIED"
+	}
+	for arm, want := range map[string]string{
+		"scoped_abstract":          scoped,
+		"scoped_signal_outside":    scoped,
+		"scoped_signal_samedomain": "OK",
+		"scoped_pathname":          "OK",
+		"scoped_outsideread":       "DENIED",
+		"scoped_tcp":               tcpWant,
+	} {
+		if !strings.Contains(got, arm+"="+want) {
+			t.Errorf("%s: got %q, want %s=%s (ABI %d)", arm, got, arm, want, effectiveABI())
+		}
+	}
+}
