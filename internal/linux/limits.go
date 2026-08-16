@@ -36,6 +36,15 @@ import (
 // bound of each remaining probe.
 const scopeProbeTimeout = 5 * time.Second
 
+// probeWaitDelay is what makes the deadlines above actually bound anything. Every probe
+// here reads its command's output, and that read waits for the output PIPE to close, not
+// for the process to die: killing systemd-run on the deadline leaves the scope's own
+// command alive and still holding the descriptor it inherited, which is precisely the busy
+// user manager scopeProbeTimeout exists to survive. WaitDelay makes exec close the pipe
+// itself shortly after the kill, so the probe returns with exec.ErrWaitDelay - a failure,
+// which is the fail-closed direction - instead of blocking admission indefinitely.
+const probeWaitDelay = time.Second
+
 // cacheProbe memoizes a host measurement, but only once it has ANSWERED: measure's
 // bool reports whether the probe reached a verdict, not whether the verdict was yes,
 // and a probe that reached none is re-run on the next call.
@@ -173,6 +182,7 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	exe, args := wrapWithLimits(trueBinary(), nil, l, "")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Env = env
+	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -307,7 +317,9 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
 		"--", shBinary(), "-c", readControllers,
 	}
-	out, err := exec.CommandContext(ctx, "systemd-run", args...).Output()
+	cmd := exec.CommandContext(ctx, "systemd-run", args...)
+	cmd.WaitDelay = probeWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, false
 	}

@@ -455,8 +455,8 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
 	// the output pipe to close, and any descendant still holding it keeps the probe
 	// blocked for as long as it lives - which is the stall the deadline exists to stop.
-	// WaitDelay makes exec close the pipe itself shortly after the kill.
-	cmd.WaitDelay = time.Second
+	// See probeWaitDelay, which the limits probes share.
+	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return &usernsError{output: string(out), err: err, ctxErr: ctx.Err()}
