@@ -172,6 +172,7 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return fmt.Errorf("internal: the scope probe was asked to prove zero limits, which creates no scope")
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, scopeProbeTimeout)
 	defer cancel()
 
@@ -184,6 +185,7 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	cmd.Env = env
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.CombinedOutput()
+	noteProbeDeadline(parent, ctx)
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
@@ -299,6 +301,7 @@ var unifiedCgroupReadable = sync.OnceValue(func() bool {
 // known is false only when the probe scope could not be created or read at all
 // (no systemd user manager, or the read failed): that is the fail-closed signal.
 func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, scopeProbeTimeout)
 	defer cancel()
 
@@ -320,6 +323,7 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	cmd := exec.CommandContext(ctx, "systemd-run", args...)
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
+	noteProbeDeadline(parent, ctx)
 	if err != nil {
 		return nil, false
 	}

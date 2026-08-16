@@ -62,6 +62,7 @@ func bounded[T any](what string, call func() (T, error)) (T, error) {
 	case a := <-ch:
 		return a.v, a.err
 	case <-t.C:
+		probeDeadlines.Add(1)
 		var zero T
 		return zero, fmt.Errorf("linux: %s %w within %s, which is what an unresponsive network mount looks like", what, errDidNotAnswer, credentialWalkTimeout)
 	}

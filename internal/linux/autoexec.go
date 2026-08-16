@@ -140,6 +140,9 @@ func hookRunnerDir(grant string, writes []string) (string, error) {
 		return strings.HasPrefix(kv, "GIT_")
 	})
 	out, err := cmd.Output()
+	// The deadline is this call's own (see above), so there is no caller to have given up
+	// first: the parent is Background and noteProbeDeadline's live-parent test is free.
+	noteProbeDeadline(context.Background(), ctx)
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --git-path hooks in %s: %w", grant, err)
 	}
