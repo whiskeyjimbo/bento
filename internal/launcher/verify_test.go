@@ -29,8 +29,8 @@ const sentinelVerifyRun = "BENTO_TEST_VERIFY_RUN"
 
 // The check is worth nothing if Run stops calling it, and a fixture test on the predicate
 // cannot see that. This runs a launch stage in a sandbox weakened in exactly one place -
-// the host's /tmp bound in where the fresh tmpfs belongs, which is what the shim under
-// bv2-uuzlm left behind - and requires the refusal. In a child because Run makes the
+// the host's /tmp bound in where the fresh tmpfs belongs, which is what a shim filtering
+// that flag out of argv leaves behind - and requires the refusal. In a child because Run makes the
 // process permanently non-dumpable.
 func TestRunRefusesTheHostsTmp(t *testing.T) {
 	if os.Getenv(sentinelVerifyRun) != "" {

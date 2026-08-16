@@ -242,9 +242,12 @@ func TestAdversarialGatekeeperPanicsAndCancels(t *testing.T) {
 	}
 
 	p := New(nil, WithGatekeeper(panickingGate))
-	admitted := p.callGate(context.Background(), "evil.com", "443")
+	admitted, faulted := p.callGate(context.Background(), "evil.com", "443")
 	if admitted {
 		t.Fatal("callGate must return false when gatekeeper panics")
+	}
+	if !faulted {
+		t.Fatal("callGate reported a panicking gatekeeper as an ordinary refusal, which reads as a supervisor saying no")
 	}
 }
 

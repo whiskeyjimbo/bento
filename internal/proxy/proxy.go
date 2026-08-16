@@ -56,6 +56,15 @@ const (
 	// supervisor who said no, which under the prompt-on-every-host mode (an empty
 	// network: block and a gate) is every refusal there is.
 	GateDenied Decision = "gate-deny"
+	// GateFaulted marks a connection the static allowlist did not permit and a gatekeeper
+	// panicked on. The connection is refused exactly as GateDenied is - a gate that cannot
+	// answer has not admitted anything - but it is reported apart because the operator
+	// remedy is the opposite one: a GateDenied destination was declined by a working
+	// supervisor and is fixed by naming it in the manifest or answering yes, while this
+	// one means the gate itself is broken and no supervisor decided anything. Without the
+	// distinction a crash-looping embedder gatekeeper is indistinguishable from a human
+	// declining every prompt.
+	GateFaulted Decision = "gate-fault"
 	// Untunneled marks a request the proxy refused because it was not a CONNECT: the
 	// shape a client sends for plain http:// through a proxy. It is distinct from Denied
 	// because no rule can fix it - the destination may be granted and still never carry
@@ -186,9 +195,10 @@ func WithObserver(observe func(d Decision, host, port string)) Option {
 // the rule, reaches the gate, and would carry a grant into private space if the
 // grant were derived after admission.
 //
-// A panic in the gate is treated as a denial (the connection gets a 403 and is
-// reported GateDenied, like any other refusal by a gate that was consulted),
-// never swallowed silently.
+// A panic in the gate is treated as a denial (the connection gets a 403, like any
+// other refusal by a gate that was consulted), never swallowed silently. It is
+// reported GateFaulted rather than GateDenied: the connection was refused either way,
+// but only one of the two says a supervisor actually decided.
 //
 // A pending prompt pins one of the proxy's bounded handler slots with no
 // deadline, so a hostile target can fire many undeclared CONNECTs to flood the
@@ -794,13 +804,17 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 
 	admittedByGate := false
 	if !policy.Allows(p.rules, host, port) {
-		if !p.callGate(ctx, host, port) {
-			// Which of the two refused is recorded, because the remedy differs and only
+		admit, faulted := p.callGate(ctx, host, port)
+		if !admit {
+			// Which of the three refused is recorded, because the remedy differs and only
 			// this frame knows: downstream sees one destination and one verdict. A gate
-			// that panicked is reported here too - it was consulted and did not admit,
-			// which is what the report claims and all it claims.
+			// that panicked did not admit either, but it also did not decide, so it is
+			// reported apart from a supervisor who said no.
 			decision := Denied
-			if p.gate != nil {
+			switch {
+			case faulted:
+				decision = GateFaulted
+			case p.gate != nil:
 				decision = GateDenied
 			}
 			report(decision, host, port)
@@ -904,20 +918,25 @@ func (p *Proxy) report(d Decision, host, port string) {
 }
 
 // callGate consults the gatekeeper for a host the allowlist did not permit,
-// returning whether to admit it. A nil gate denies. A panic is recovered here
-// and treated as a denial: handle's own recover would otherwise swallow a
-// panicking embedder gate into a silently dropped connection with no 403 and no
-// report(), so the outcome would neither surface nor even count.
-func (p *Proxy) callGate(ctx context.Context, host, port string) (admit bool) {
+// returning whether to admit it and whether the gate panicked answering. A nil gate
+// denies without faulting. A panic is recovered here and treated as a denial: handle's
+// own recover would otherwise swallow a panicking embedder gate into a silently dropped
+// connection with no 403 and no report(), so the outcome would neither surface nor even
+// count.
+//
+// faulted is returned rather than folded into the denial because this is the only frame
+// that knows the difference: past the return, a crash-looping gate and a supervisor
+// declining every prompt look the same.
+func (p *Proxy) callGate(ctx context.Context, host, port string) (admit, faulted bool) {
 	if p.gate == nil {
-		return false
+		return false, false
 	}
 	defer func() {
 		if recover() != nil {
-			admit = false
+			admit, faulted = false, true
 		}
 	}()
-	return p.gate(ctx, host, port)
+	return p.gate(ctx, host, port), false
 }
 
 // maxRequestBytes bounds the CONNECT request line plus headers the proxy reads

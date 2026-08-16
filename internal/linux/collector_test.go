@@ -159,3 +159,40 @@ func TestLostRecordsDegradeAnEnforcedNetworkLayer(t *testing.T) {
 		t.Errorf("degradations = %+v, want the lost-record count: this note is the count's only channel", degradations)
 	}
 }
+
+// A crash-looping gate and a supervisor declining every prompt refuse the same
+// destinations, so the destination list cannot separate them and does not try: the host
+// is named either way. The count is the separation, and noteGateFault is its only channel.
+func TestCollectorCountsAGateFaultApartFromAGateDenial(t *testing.T) {
+	c := &egressCollector{}
+	c.observe(proxy.GateDenied, "declined.example", "443")
+	c.observe(proxy.GateFaulted, "crashed.example", "443")
+
+	want := []enforce.HostPort{{Host: "crashed.example", Port: "443"}, {Host: "declined.example", Port: "443"}}
+	if got := c.gateRefused(); !slices.Equal(got, want) {
+		t.Errorf("gateRefused() = %v, want %v: a destination a broken gate refused is still one the operator must see", got, want)
+	}
+	if got := c.gateFaultCount(); got != 1 {
+		t.Errorf("gateFaultCount() = %d, want 1: without it a broken gate reads as a supervisor saying no", got)
+	}
+	if got := c.counted(); got != 2 {
+		t.Errorf("counted() = %d, want 2: both are connections the proxy handled", got)
+	}
+}
+
+// The count's only effect, and the reason it exists: an Enforced network layer cannot
+// stand over destinations the report attributes to a supervisor that never decided them.
+func TestGateFaultDegradesAnEnforcedNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteGateFault(&r, 3)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("LayerNetwork = %v, want Degraded after a panicking gate", got)
+	}
+	degradations := r.Degradations()
+	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "panicked on 3 connection(s)") {
+		t.Errorf("degradations = %+v, want the gate-fault count: noteGateFault is the count's only channel", degradations)
+	}
+}

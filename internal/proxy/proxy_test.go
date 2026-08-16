@@ -1491,8 +1491,33 @@ func TestGatekeeperPanicIsDeny(t *testing.T) {
 	if !strings.Contains(status, "403") {
 		t.Fatalf("status = %q, want 403 (a panicking gate denies)", status)
 	}
-	// Reported as a gate denial, not an allowlist one: the gate was consulted and did not
-	// admit, which is what that decision claims and the whole of what it claims.
+	// Reported apart from a gate denial, which is the point: a supervisor declining every
+	// prompt and a gate crash-looping produce the same 403 and the same refused
+	// destination, and only the decision tells the operator which remedy is theirs.
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(GateFaulted)) {
+		t.Errorf("observer saw %v, want a single gate fault", seen)
+	}
+}
+
+// The other half of that claim: a gate that answers no still reports a denial. Without
+// this the test above passes just as well with every gate refusal renamed a fault, and
+// the distinction the operator needs would be gone in the other direction.
+func TestGatekeeperRefusalIsNotAFault(t *testing.T) {
+	var seen []string
+	p := New(
+		nil,
+		WithGatekeeper(func(context.Context, string, string) bool { return false }),
+		WithObserver(func(d Decision, host, port string) { seen = append(seen, string(d)+" "+host) }),
+	)
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "undeclared.com:443")
+	if !strings.Contains(status, "403") {
+		t.Fatalf("status = %q, want 403 (a gate that says no denies)", status)
+	}
 	if len(seen) != 1 || !strings.HasPrefix(seen[0], string(GateDenied)) {
 		t.Errorf("observer saw %v, want a single gate deny", seen)
 	}
