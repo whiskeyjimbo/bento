@@ -488,6 +488,9 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 	// all, so it cannot appear in the loop above and the count this line reports is the one
 	// an untouched host would print. Said on the run rather than only in doctor because it
 	// is the run that hands out the store.
+	// The error arm is empty because it cannot be reached with shields in hand: a run
+	// without anchors is refused before it enforces anything, and this function returns
+	// early on an empty shield set.
 	if anchors, err := denylist.HomeAnchors(); err == nil {
 		dropped := denylist.UnshieldableRelocations(anchors)
 		for _, env := range slices.Sorted(maps.Keys(dropped)) {

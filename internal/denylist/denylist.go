@@ -370,7 +370,18 @@ func UnshieldableRelocations(homes []string) map[string]string {
 		if raw == "" {
 			continue
 		}
-		if filepath.IsAbs(raw) && Shieldable(filepath.Clean(raw), homes) {
+		c := filepath.Clean(raw)
+		if filepath.IsAbs(raw) && Shieldable(c, homes) {
+			continue
+		}
+		// Two values Shieldable refuses leave nothing exposed, so reporting them would be
+		// noise on an ordinary host - and the advice the report gives ("point it outside
+		// every home") is wrong for both. /dev/null is the documented "no config" idiom for
+		// a whole family of these variables: there is no store, so nothing to shield. And a
+		// variable whose conventional location IS the anchor names its DEFAULT when it
+		// names one - ZDOTDIR=$HOME is how zsh is ordinarily configured - where Home
+		// already shields the files that hang off it.
+		if c == "/dev/null" || (isDefaultAt(c, "", homes) && defaultsAtAnchor(env)) {
 			continue
 		}
 		if out == nil {
@@ -379,6 +390,34 @@ func UnshieldableRelocations(homes []string) map[string]string {
 		out[env] = raw
 	}
 	return out
+}
+
+// defaultsAtAnchor reports whether env's conventional location is a home anchor itself, so
+// a value naming one is that variable's DEFAULT and not a relocation at all: ZDOTDIR=$HOME
+// is how zsh is ordinarily configured, and CURL_HOME, GEM_HOME, GHCUP_INSTALL_BASE_PREFIX
+// and DOTNET_CLI_HOME each hang their entry off the home by default. Home shields those
+// entries under the anchor already, so nothing is exposed.
+//
+// Read off the tables rather than listed by name, so a row added later is covered by
+// construction. The mark is an empty def beside a NON-empty name to hang off it: an empty
+// def alone means "no conventional location to compare against" (HISTFILE, MISE_ENV_FILE),
+// which is a different thing and not this. ZDOTDIR has no row at all - its emit site
+// spells the same compare inline as isDefault(c, "") - so it is named here.
+func defaultsAtAnchor(env string) bool {
+	if env == "ZDOTDIR" {
+		return true
+	}
+	for _, e := range dirFileEnvs {
+		if e.env == env && e.def == "" && e.file != "" {
+			return true
+		}
+	}
+	for _, e := range writeOnlyDirEnvs {
+		if e.env == env && e.def == "" && e.sub != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Shieldable reports whether a relocation target can carry a deny rule at all, given the
@@ -405,10 +444,13 @@ func UnshieldableRelocations(homes []string) map[string]string {
 // from one, so the worst case is an inert rule. Teaching a reader to resolve without
 // teaching it to re-test here would turn that inert rule into a shield over a whole home.
 //
-// Nothing covers the store a refusal here declines. The rule is dropped, not replaced, and
-// the default location the variable moved the store OFF keeps a rule that now shields an
-// empty directory - so the refusal is invisible in the rule set and has to be reported
-// from the environment instead, which is what UnshieldableRelocations is for.
+// Where the refused value is a real relocation, nothing covers the store it declines. The
+// rule is dropped, not replaced, and the default location the variable moved the store OFF
+// keeps a rule that now shields an empty directory - so the refusal is invisible in the
+// rule set and has to be reported from the environment instead, which is what
+// UnshieldableRelocations is for. Not every refusal here is that: /dev/null and a value
+// that IS the variable's default are refused too and expose nothing, which is why the
+// reporter screens them out rather than reading this predicate alone.
 func Shieldable(p string, homes []string) bool {
 	if p == "/" {
 		return false

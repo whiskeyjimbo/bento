@@ -2275,10 +2275,66 @@ func TestRelocatedScreensTheBaseAndNotOnlyTheJoinedPath(t *testing.T) {
 				if env == "XDG_RUNTIME_DIR" {
 					return // reported by UnshieldableRuntimeDir instead
 				}
+				// The exemptions are for the values that expose nothing, and a
+				// variable whose default location is the anchor names its default
+				// when it names one - see the skips in UnshieldableRelocations.
+				if defaultsAtAnchor(env) && base == "/home/u" {
+					return
+				}
 				if _, ok := UnshieldableRelocations([]string{"/home/u"})[env]; !ok {
 					t.Errorf("%s=%s emitted no shield and is not reported as dropped either, so nothing in the output changes", env, base)
 				}
 			})
 		}
+	}
+}
+
+// The report is for a store left exposed, and two values Shieldable refuses leave nothing
+// exposed. /dev/null is the documented "no config" idiom for a whole family of these
+// variables, so there is no store at all; and a variable whose conventional location IS
+// the anchor names its default when it names one, where Home already shields the entry
+// that hangs off it. Reported, both draw a WARNING on every run of an ordinarily
+// configured host, telling the operator to move a variable that is exactly where it
+// belongs.
+func TestUnshieldableRelocationsSkipsTheHarmlessRefusals(t *testing.T) {
+	for _, env := range RelocationVars() {
+		t.Setenv(env, "")
+		os.Unsetenv(env)
+	}
+	homes := []string{"/home/u"}
+
+	for _, tc := range []struct{ env, value string }{
+		{"HISTFILE", "/dev/null"},
+		{"GIT_CONFIG_GLOBAL", "/dev/null"},
+		{"ZDOTDIR", "/home/u"},
+		{"CURL_HOME", "/home/u"},
+		{"GEM_HOME", "/home/u"},
+		{"DOTNET_CLI_HOME", "/home/u"},
+	} {
+		t.Run(tc.env+"="+tc.value, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, ok := UnshieldableRelocations(homes)[tc.env]; ok {
+				t.Errorf("%s=%s was reported as leaving a store unshielded, but nothing hangs off it that Home does not already cover", tc.env, tc.value)
+			}
+			t.Setenv(tc.env, "")
+			os.Unsetenv(tc.env)
+		})
+	}
+
+	// The exemption is for the value that is the default, not for the variable: the same
+	// names pointed anywhere else unshieldable are still the bead's case.
+	for _, tc := range []struct{ env, value string }{
+		{"ZDOTDIR", "/"},
+		{"CURL_HOME", "/home"},
+		{"GNUPGHOME", "/home/u"},
+	} {
+		t.Run(tc.env+"="+tc.value, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, ok := UnshieldableRelocations(homes)[tc.env]; !ok {
+				t.Errorf("%s=%s emits no rule and must be reported", tc.env, tc.value)
+			}
+			t.Setenv(tc.env, "")
+			os.Unsetenv(tc.env)
+		})
 	}
 }
