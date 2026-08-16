@@ -2268,6 +2268,16 @@ func TestRelocatedScreensTheBaseAndNotOnlyTheJoinedPath(t *testing.T) {
 						t.Errorf("%s=%s emitted a shield at %q, but no rule can hang off a base that is the root or a home anchor", env, base, r.Path)
 					}
 				}
+				// The two halves have to agree: a variable that emits nothing is
+				// exactly the one UnshieldableRelocations must name, and a variable
+				// reported as dropped must not also appear in the relocation list
+				// doctor builds from the emitted Sources.
+				if env == "XDG_RUNTIME_DIR" {
+					return // reported by UnshieldableRuntimeDir instead
+				}
+				if _, ok := UnshieldableRelocations([]string{"/home/u"})[env]; !ok {
+					t.Errorf("%s=%s emitted no shield and is not reported as dropped either, so nothing in the output changes", env, base)
+				}
 			})
 		}
 	}
