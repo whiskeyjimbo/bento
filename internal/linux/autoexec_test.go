@@ -494,8 +494,8 @@ func TestTheAutoExecReportLayerReportsAHostWithNoGit(t *testing.T) {
 	if got.Layer.Tier() != enforce.TierHardening {
 		t.Errorf("%s is tier %v, want hardening - a core layer refuses every run on a host with no git", got.Layer, got.Layer.Tier())
 	}
-	if slices.Contains(enforce.BaselineLayers(), got.Layer) {
-		t.Errorf("%s is a baseline layer, so doctor would exit non-zero on a host that merely cannot hint", got.Layer)
+	if !got.Layer.ReportOnly() {
+		t.Errorf("%s is a layer a manifest can require, so a host with no git would refuse runs over a missing hint", got.Layer)
 	}
 
 	// Through Probe, not just the function: doctor renders the report, so a layer the

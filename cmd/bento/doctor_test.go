@@ -147,6 +147,28 @@ func TestDegradedSummaryNamesOnlyTheLayersThatFellShort(t *testing.T) {
 	}
 }
 
+// A layer no manifest can ask for is not a gap any run has. The generic sentences were
+// written when every hardening layer was manifest-selectable, and applied to this one
+// they say three false things at once: that a manifest can need it, that a run reports
+// the gap (admission judges only the layers the policy requires, so a run's report never
+// carries this layer at all), and that --strict refuses over it.
+func TestDegradedSummaryDoesNotPromiseARefusalNoManifestCanTrigger(t *testing.T) {
+	var hostOnly enforce.Report
+	hostOnly.Add(enforce.LayerAutoExecReport, enforce.Unavailable, "git is not on this host's PATH")
+
+	var b strings.Builder
+	writeDegradedSummary(&b, hostOnly.Degradations())
+	got := strings.Join(strings.Fields(b.String()), " ")
+	if !strings.Contains(got, "no run is refused or changed by it") {
+		t.Errorf("the summary must say a report-only layer costs no run anything; got %q", got)
+	}
+	for _, wrong := range []string{"runs with the gap reported", "refused by default", "--strict refuses any"} {
+		if strings.Contains(got, wrong) {
+			t.Errorf("the summary claims %q about a layer admission never sees; got %q", wrong, got)
+		}
+	}
+}
+
 // doctor gates its exit code only on core guarantees every manifest needs. Network
 // egress control is core but conditionally required (only a manifest that declares
 // egress needs it), so a host that cannot fence egress still runs every no-network

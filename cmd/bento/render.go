@@ -1729,15 +1729,22 @@ func writePlatform(w io.Writer) {
 // refused reads as a warning about this host, and the reader cannot tell which half of
 // it applies.
 func writeDegradedSummary(w io.Writer, short []enforce.LayerStatus) {
-	var all, refused, reported []string
+	var all, refused, reported, hostOnly []string
 	for _, l := range short {
 		all = append(all, string(l.Layer))
+		switch {
+		// A layer no manifest can ask for is not a gap any run has: admission judges the
+		// layers the policy requires, and this is in no policy's set, so saying a manifest
+		// needing it runs with the gap reported would send a reader looking for something
+		// that cannot happen. Strict does not reach it either.
+		case l.Layer.ReportOnly():
+			hostOnly = append(hostOnly, string(l.Layer))
 		// The two halves of admit(): a core layer refuses when the manifest needs it, and
 		// so does a requested limit - unlike the other hardening layers, a limit protects
 		// the host, so running unbounded is not an option the run gets to take.
-		if l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU {
+		case l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU:
 			refused = append(refused, string(l.Layer))
-		} else {
+		default:
 			reported = append(reported, string(l.Layer))
 		}
 	}
@@ -1755,7 +1762,12 @@ func writeDegradedSummary(w io.Writer, short []enforce.LayerStatus) {
 	if len(reported) > 0 {
 		s += fmt.Sprintf("A manifest that needs %s runs with the gap reported. ", strings.Join(reported, " or "))
 	}
-	s += "--strict refuses any."
+	if len(hostOnly) > 0 {
+		s += fmt.Sprintf("%s is a fact about this host that no manifest can ask for, so no run is refused or changed by it - read the note above for what it costs. ", strings.Join(hostOnly, " and "))
+	}
+	if len(refused) > 0 || len(reported) > 0 {
+		s += "--strict refuses any."
+	}
 	for _, line := range wrapText(s, textWidth) {
 		fmt.Fprintln(w, line)
 	}

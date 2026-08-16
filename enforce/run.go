@@ -342,6 +342,22 @@ func BaselineLayers() []Layer {
 	return requiredLayers(&policy.Policy{Exec: policy.ExecAll}, Options{})
 }
 
+// ReportOnly reports whether a layer is one no policy and no option can ask for, so its
+// state never admits or refuses a run and it is visible only in a host report like
+// doctor's. LayerAutoExecReport is the case: it covers a hint, not a guarantee.
+//
+// Derived from requiredLayers over a policy asking for everything rather than named
+// here, so a layer added to one of them cannot drift from the other - a frontend saying
+// "a manifest that needs this runs with the gap reported" about a layer no manifest can
+// name is telling a reader to check something that cannot happen.
+func (l Layer) ReportOnly() bool {
+	return !slices.Contains(requiredLayers(&policy.Policy{
+		Network: []policy.NetworkRule{{}},
+		Exec:    policy.ExecNoneStrict,
+		Limits:  policy.Limits{Memory: "1", CPU: "1%", PIDs: 1},
+	}, Options{}), l)
+}
+
 // requiredLayers returns the layers a run actually depends on - what the policy
 // declares plus what the caller's Options bring.
 //
