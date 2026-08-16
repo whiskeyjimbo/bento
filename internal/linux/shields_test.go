@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -1308,5 +1309,37 @@ func TestAGrantAtARedirectedShieldGetsTheRedirectSentence(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "symlinked directory component redirects it") {
 		t.Errorf("the run refused with the wrong sentence, so the redirect check no longer runs first: %v", err)
+	}
+}
+
+// The cleanup runs on a defer on all three entry paths, after the target has exited and
+// the sandbox is torn down - worst on Profile, where it is the last thing between the
+// observation and the caller. Unbounded, a shield path under a write grant whose mount
+// died during the run holds the process there forever, with the run already over and no
+// output left to print.
+func TestRemoveCreatedShieldsIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	artifact := filepath.Join(dir, "config.worktree")
+	if err := os.WriteFile(artifact, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	setWalkTimeout(t, 100*time.Millisecond)
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	real := shieldLstat
+	shieldLstat = func(p string) (os.FileInfo, error) { <-hung; return real(p) }
+	t.Cleanup(func() { shieldLstat = real })
+
+	done := make(chan struct{})
+	go func() { removeCreatedShields(nil, []string{artifact}); close(done) }()
+	select {
+	case <-done:
+		// An expiry leaves the artifact, which is what a kill here already does.
+		if _, err := os.Stat(artifact); err != nil {
+			t.Errorf("the artifact should simply be left behind by an expired cleanup: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("removeCreatedShields never returned: a write grant whose mount died during the run holds the process on a defer after the run is over")
 	}
 }

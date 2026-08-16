@@ -491,12 +491,12 @@ func writeChangedAutoExec(w io.Writer, t theme, res enforce.Result) {
 // the list above because it is a different claim: the run need not have planted anything
 // there yet, and what the human just approved did not include choosing where their next
 // commit executes from.
-// The grants git could not answer for share the writer: they say the list is short, and
+// The grants that could not be read whole share the writer: they say the list is short, and
 // an operator reading an empty one has to be told when it is empty because nothing was
 // asked rather than because nothing was found.
 func writeRedirectedHooks(w io.Writer, t theme, res enforce.Result) {
 	if len(res.UnresolvedHooks) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("bento could not ask git where these grants run their hooks, so any hook directory under them went unchecked:"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("bento could not read these grants whole this run, so their hook directories and auto-exec files went unchecked:"))
 		for _, g := range res.UnresolvedHooks {
 			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
 		}

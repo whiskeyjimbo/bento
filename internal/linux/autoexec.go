@@ -168,12 +168,24 @@ func hookRunnerDir(grant string, writes []string) (string, error) {
 }
 
 // resolved is EvalSymlinks with the path itself as the answer when it cannot be walked.
+//
+// Under the walks' bound, because EvalSymlinks lstats every component and a hook
+// directory on a mount that stopped answering blocks it for as long as the mount hangs -
+// after the bounded git call has already returned, and on the after-run path too. An
+// expiry lands on the fallback the function already has for a path it cannot walk.
 func resolved(path string) string {
-	if p, err := filepath.EvalSymlinks(path); err == nil {
-		return p
+	p, err := bounded("the symlink resolution of "+path, func() (string, error) {
+		return evalSymlinks(path)
+	})
+	if err != nil {
+		return path
 	}
-	return path
+	return p
 }
+
+// evalSymlinks is behind a var for autoExecStat's reason: the mount its bound exists for
+// cannot be stood up in a test otherwise.
+var evalSymlinks = filepath.EvalSymlinks
 
 // autoExecState is one snapshot of those files: absolute path to a size-and-mtime stamp,
 // with a missing file simply absent. Comparing two of them names what a run created,
@@ -202,8 +214,6 @@ type autoExecBaseline struct {
 // different claims - one is a file this run wrote, the other a directory it may never have
 // touched - and a caller with one flat list can only word them alike.
 func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresolved []string) {
-	changed = changedAutoExec(b.state, snapshotAutoExec(writes, b.hooks))
-	slices.Sort(changed)
 	after, afterUnresolved := hookRunnerDirs(writes)
 	redirected = redirectedHooks(b.hooks, after)
 	slices.Sort(redirected)
@@ -211,9 +221,33 @@ func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresol
 	// the run has no baseline to compare against, and one unresolvable after has nothing
 	// to compare.
 	unresolved = append(slices.Clone(b.unresolved), afterUnresolved...)
+
+	// The whole snapshot under one bound, not each stat: the names are seventeen per grant
+	// plus the directories, so a bound per call would still block for hours. This runs
+	// AFTER the target has exited, with the sandbox torn down and nothing left to print,
+	// so a grant whose mount died during the run otherwise hangs Run forever with no
+	// output - the same total failure the baseline is wrapped against on both tiers.
+	state, err := bounded("the auto-exec snapshot of the write grants", func() (autoExecState, error) {
+		return snapshotAutoExec(writes, b.hooks), nil
+	})
+	if err != nil {
+		// An expired snapshot is empty, and comparing an empty one against the baseline
+		// names every file it stamped as removed - a report invented out of a mount that
+		// stopped answering, which is worse than the silence. The grants go into
+		// unresolved instead, which already says the report is short.
+		unresolved = append(unresolved, writes...)
+	} else {
+		changed = changedAutoExec(b.state, state)
+	}
+	slices.Sort(changed)
 	slices.Sort(unresolved)
 	return slices.Compact(changed), slices.Compact(redirected), slices.Compact(unresolved)
 }
+
+// autoExecStat is the snapshot's stat behind a var, for probe.go's reason: it is a raw
+// host call with no seam, so the mount this snapshot is bounded against cannot be stood
+// up in a test at all and the bound could be deleted with everything still green.
+var autoExecStat = os.Stat
 
 // snapshotAutoExec stats the auto-executing files under each write grant. Errors are
 // dropped rather than surfaced: a path that cannot be stat'd is one this run also could
@@ -225,7 +259,7 @@ func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresol
 func snapshotAutoExec(writes, hooks []string) autoExecState {
 	state := autoExecState{}
 	stamp := func(p string) {
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+		if fi, err := autoExecStat(p); err == nil && fi.Mode().IsRegular() {
 			state[p] = fmt.Sprintf("%d:%d", fi.Size(), fi.ModTime().UnixNano())
 		}
 	}

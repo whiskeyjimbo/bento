@@ -577,19 +577,33 @@ func insideAWriteGrant(path string, writes []string) bool {
 // with the unlink: a write landing between the two is removed with the file.
 //
 // Best effort throughout: a kill before this runs leaves the artifact, as before.
+//
+// The whole cleanup under one bound rather than each Lstat, because the paths are many
+// and a bound per call would still block for hours. It runs on a defer on all three entry
+// paths, after the target has exited - worst on Profile, where it is the last thing
+// between the observation and the caller - so a write grant whose mount died during the
+// run otherwise holds the process forever with the sandbox already torn down. An expiry
+// leaves the artifact, which is what a kill here already does.
 func removeCreatedShields(dirs, files []string) {
-	for _, f := range files {
-		if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
-			continue
+	_, _ = bounded("the cleanup of the shield mount points", func() (struct{}, error) {
+		for _, f := range files {
+			if fi, err := shieldLstat(f); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+				continue
+			}
+			os.Remove(f)
 		}
-		os.Remove(f)
-	}
-	// dirs is deepest first, so the mount points inside an intermediate directory are
-	// gone by the time it is tried.
-	for _, d := range dirs {
-		_ = syscall.Rmdir(d)
-	}
+		// dirs is deepest first, so the mount points inside an intermediate directory are
+		// gone by the time it is tried.
+		for _, d := range dirs {
+			_ = syscall.Rmdir(d)
+		}
+		return struct{}{}, nil
+	})
 }
+
+// shieldLstat is behind a var for autoExecStat's reason: the mount the bound above exists
+// for cannot be stood up in a test otherwise.
+var shieldLstat = os.Lstat
 
 // shieldNeeded decides whether a deny rule needs a shield mount, given what the
 // grants expose. Beyond protecting the path, this avoids asking bwrap to bind a

@@ -406,3 +406,65 @@ func TestAnUnresolvablePathIsComparedAsWritten(t *testing.T) {
 		t.Errorf("resolved = %q, want the path as written", got)
 	}
 }
+
+// The after-run snapshot is the last thing Run does with the write grants, with the
+// target already exited and the sandbox torn down. Unbounded, a grant whose mount died
+// during the run - after the deadMount gate let the launch through - blocks Run forever
+// there, with no output and no exit. The baseline was wrapped against exactly this on
+// both tiers and the re-ask was not carried along.
+func TestTheAfterRunAutoExecSnapshotIsBounded(t *testing.T) {
+	grant := t.TempDir()
+	if err := os.WriteFile(filepath.Join(grant, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := baselineAutoExec([]string{grant})
+
+	setWalkTimeout(t, 100*time.Millisecond)
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	real := autoExecStat
+	autoExecStat = func(p string) (os.FileInfo, error) { <-hung; return real(p) }
+	t.Cleanup(func() { autoExecStat = real })
+
+	done := make(chan []string, 1)
+	go func() {
+		changed, _, unresolved := before.changed([]string{grant})
+		done <- append(changed, unresolved...)
+	}()
+	select {
+	case got := <-done:
+		// The grant is named unresolved rather than its files reported changed: an
+		// expired snapshot is empty, and comparing an empty one against the baseline
+		// would report every file the baseline stamped as removed by the run - a report
+		// invented out of a mount that stopped answering.
+		if !slices.Equal(got, []string{grant}) {
+			t.Errorf("changed+unresolved = %v, want just the grant %q; a snapshot that never answered must make the report short, not fabricate one", got, grant)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("changed() never returned: a write grant whose mount died during the run hangs Run after the target has exited, with nothing left to print")
+	}
+}
+
+// resolved is reached from hookRunnerDir after its bounded git call has returned, and
+// again from changed()'s redirect question. EvalSymlinks lstats every component, so a
+// hook directory on a dead mount blocks it exactly as thoroughly as the git call the
+// bound beside it exists for.
+func TestResolvedIsBounded(t *testing.T) {
+	setWalkTimeout(t, 100*time.Millisecond)
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	real := evalSymlinks
+	evalSymlinks = func(p string) (string, error) { <-hung; return real(p) }
+	t.Cleanup(func() { evalSymlinks = real })
+
+	done := make(chan string, 1)
+	go func() { done <- resolved("/export/checkout/.git/hooks") }()
+	select {
+	case got := <-done:
+		if got != "/export/checkout/.git/hooks" {
+			t.Errorf("resolved = %q, want the path itself - the answer it already gives for a path it cannot walk", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("resolved never returned: a hook directory on a dead mount hangs the run there")
+	}
+}

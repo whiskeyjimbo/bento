@@ -529,8 +529,11 @@ type Result struct {
 	// Sorted, and carried on the same arms as ChangedAutoExec, the cancel path included.
 	// The same quoting caveat applies: a directory name can carry bytes a prior run chose.
 	RedirectedHooks []string
-	// UnresolvedHooks names the write GRANTS whose hook directory could not be resolved,
-	// because git did not answer for them. It is what keeps the two lists above readable:
+	// UnresolvedHooks names the write GRANTS the run could not read whole: git did not
+	// answer where they run their hooks, or the grant itself stopped answering and the
+	// after-run snapshot of its auto-executing files gave up on it. Either way the two
+	// lists above are short for that grant, which is the one thing a reader needs to know
+	// and the same thing whichever seam went quiet. It is what keeps them readable:
 	// both are empty on a clean run and equally empty on a host where the question was
 	// never answered, and only this says which happened. An operator told to read the
 	// hook report has to know when the report is short.
