@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -35,7 +36,7 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 		dir := fakeScope(t, map[string]string{"memory.max": "67108864\n", "pids.max": "64\n", "cpu.max": "50000 100000\n"})
 
 		r := enforced()
-		noteScopeLimits(&r, limits, scopeLimits{dir: dir})
+		noteScopeLimits(&r, limits, readScopeCaps(dir))
 		for _, l := range []enforce.Layer{enforce.LayerLimitsMemory, enforce.LayerLimitsPIDs, enforce.LayerLimitsCPU} {
 			if got := r.StateOf(l); got != enforce.Enforced {
 				t.Errorf("%v = %v over a scope that carries its cap, want enforced", l, got)
@@ -50,7 +51,7 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 		dir := fakeScope(t, map[string]string{"pids.max": "64\n", "cpu.max": "50000 100000\n"})
 
 		r := enforced()
-		noteScopeLimits(&r, limits, scopeLimits{dir: dir})
+		noteScopeLimits(&r, limits, readScopeCaps(dir))
 		if got := r.StateOf(enforce.LayerLimitsMemory); got != enforce.Unavailable {
 			t.Errorf("memory = %v over a scope with no memory.max, want unavailable - the target ran unbounded", got)
 		}
@@ -67,7 +68,7 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 		dir := fakeScope(t, map[string]string{"memory.max": "max\n", "pids.max": "max\n", "cpu.max": "max 100000\n"})
 
 		r := enforced()
-		noteScopeLimits(&r, limits, scopeLimits{dir: dir})
+		noteScopeLimits(&r, limits, readScopeCaps(dir))
 		for _, l := range []enforce.Layer{enforce.LayerLimitsMemory, enforce.LayerLimitsPIDs, enforce.LayerLimitsCPU} {
 			if got := r.StateOf(l); got != enforce.Unavailable {
 				t.Errorf("%v = %v over an uncapped controller, want unavailable", l, got)
@@ -77,7 +78,9 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 
 	// A target that finishes before the sample lands leaves no scope to read, and that is
 	// not a finding: faulting a completed run for being fast would refuse correct runs,
-	// which is worse than the gap it closes.
+	// which is worse than the gap it closes. It is also what a --collect'd scope looks like
+	// a millisecond after the wrapper exits, which is why the caps are read at sampling
+	// time rather than from the path afterwards.
 	t.Run("no scope found", func(t *testing.T) {
 		r := enforced()
 		noteScopeLimits(&r, limits, scopeLimits{})
@@ -85,6 +88,27 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 			t.Errorf("memory = %v with nothing sampled, want the probe's verdict left alone", got)
 		}
 	})
+}
+
+// --collect removes the transient scope's cgroup about a millisecond after the wrapper
+// exits, and a removed cgroup answers ENOENT for memory.max - byte-identical to the
+// controller never having been there. A reading that kept the path and read the files
+// post-run would therefore accuse every healthy limited run whose post-run bookkeeping
+// (stopProxy's drain, parseApplied) took longer than that millisecond, and fail it under
+// the default posture. The verdicts are taken while the target is alive for that reason.
+func TestScopeLimitsSurviveTheScopeBeingCollected(t *testing.T) {
+	dir := fakeScope(t, map[string]string{"memory.max": "67108864\n", "pids.max": "64\n", "cpu.max": "50000 100000\n"})
+	a := readScopeCaps(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	var r enforce.Report
+	r.Add(enforce.LayerLimitsMemory, enforce.Enforced, "")
+	noteScopeLimits(&r, policy.Limits{Memory: "64M"}, a)
+	if got := r.StateOf(enforce.LayerLimitsMemory); got != enforce.Enforced {
+		t.Errorf("memory = %v after the scope was collected, want enforced: the caps were read while the target was alive and the run was fine", got)
+	}
 }
 
 // The reading has to find the scope's cgroup from the wrapper's pid alone, which is the
@@ -110,15 +134,19 @@ func TestAttestScopeLimitsFindsTheTransientScope(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	a := attestScopeLimits(cmd.Process.Pid)
-	if a.dir == "" {
+	dir, ok := scopeCgroupOf(cmd.Process.Pid)
+	for deadline := time.Now().Add(scopeSampleTimeout); !ok && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		dir, ok = scopeCgroupOf(cmd.Process.Pid)
+	}
+	if !ok {
 		t.Fatal("the scope's cgroup was not found from the wrapper's pid")
 	}
 	own, _ := cgroupPathOf(strconv.Itoa(os.Getpid()))
-	if a.dir == filepath.Join("/sys/fs/cgroup", own) {
-		t.Fatalf("the reading found this process's own cgroup (%s), not the scope the wrapper was placed in", a.dir)
+	if dir == filepath.Join("/sys/fs/cgroup", own) {
+		t.Fatalf("the reading found this process's own cgroup (%s), not the scope the wrapper was placed in", dir)
 	}
-	if bound, known := controllerBound(filepath.Join(a.dir, "memory.max")); !known || !bound {
+	if bound, known := readScopeCaps(dir).caps["memory.max"]; !known || !bound {
 		t.Errorf("memory.max of the scope reads unbound (known=%v bound=%v); the requested 64M did not land", known, bound)
 	}
 }
@@ -145,7 +173,7 @@ func TestRunReconcilesTheLimitsLayersItGot(t *testing.T) {
 
 	orig := attestScopeLimits
 	attestScopeLimits = func(int) scopeLimits {
-		return scopeLimits{dir: fakeScope(t, map[string]string{"pids.max": "64\n"})}
+		return readScopeCaps(fakeScope(t, map[string]string{"pids.max": "64\n"}))
 	}
 	t.Cleanup(func() { attestScopeLimits = orig })
 

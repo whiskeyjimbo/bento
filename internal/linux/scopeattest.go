@@ -35,40 +35,73 @@ import (
 // cpu.max: the values the kernel will enforce on this run, not a property the manager
 // accepted.
 
-// scopeLimits is one parent-side reading of the transient scope's cgroup.
+// scopeLimits is one parent-side reading of the transient scope's cgroup, taken while the
+// target is alive and carrying the verdicts rather than the path.
 //
-// dir is empty when the scope's cgroup could not be found at all, which a target that
-// finishes before the reading lands produces as readily as a broken one. That case
-// attests nothing and changes no layer: faulting a completed run on a sample that arrived
-// late would refuse correct runs for being fast, which is worse than the gap it closes.
-// A cgroup that WAS found and does not carry a controller's file is the positive finding -
-// the controller is not on this scope, so the cap the report claims is not bound.
+// The values have to be read at sampling time, not later: --collect removes the scope's
+// cgroup about a millisecond after the wrapper exits (measured), and a removed cgroup
+// answers ENOENT for memory.max, which is byte-identical to the controller never having
+// been there. Reading post-run would therefore accuse every healthy limited run whose
+// bookkeeping took longer than that millisecond.
+//
+// caps holds a controller file only where the question was answerable. An empty map is the
+// reading that attests nothing - no scope found - which a target finishing before the
+// sample lands produces as readily as a broken host. That worsens no layer: faulting a
+// completed run for being fast is worse than the gap it leaves.
 type scopeLimits struct {
-	dir string
+	caps map[string]bool
 }
 
-// scopeSampleTimeout bounds the wait for the scope's command to appear. systemd-run has to
-// reach the manager and get the scope created first, so the child does not exist the
-// instant Start returns; this is a backstop on a manager that never gets there, and the
-// run is already under way throughout, so it costs the sample and not the target.
+// scopeSampleTimeout bounds the wait for the wrapper to land in its scope. systemd-run has
+// to reach the manager and get the scope created first, so it is not there the instant
+// Start returns; this is a backstop on a manager that never gets there, and the run is
+// already under way throughout, so it costs the sample and not the target.
 const scopeSampleTimeout = 2 * time.Second
 
-// attestScopeLimits reads the cgroup of the scope the wrapper was placed in, given the pid
-// of systemd-run itself. It is a var for delegatedControllers' reason: the host this
-// reconcile exists for - one whose manager accepts a property it does not apply - cannot be
-// constructed in-package, so the run-path wiring is otherwise unreachable from a test, and
-// a call site that dropped the reading would still pass.
+// controllerFiles are the cgroup-v2 files carrying the caps wrapWithLimits requests. Only
+// memory.max is read for the memory layer: memory.swap.max rides the same controller, so
+// the undelegated-controller failure this attests cannot split them.
+var controllerFiles = []string{"memory.max", "pids.max", "cpu.max"}
+
+// attestScopeLimits reads the scope the wrapper was placed in, given the pid of systemd-run
+// itself. It is a var for delegatedControllers' reason: the host this reconcile exists for
+// - one whose manager accepts a property it does not apply - cannot be constructed
+// in-package, so the run-path wiring is otherwise unreachable from a test, and a call site
+// that dropped the reading would still pass.
 var attestScopeLimits = func(pid int) scopeLimits {
 	deadline := time.Now().Add(scopeSampleTimeout)
 	for {
-		if dir, ok := scopeCgroupOf(pid); ok {
-			return scopeLimits{dir: dir}
+		dir, ok := scopeCgroupOf(pid)
+		if ok {
+			return readScopeCaps(dir)
 		}
-		if time.Now().After(deadline) {
+		// A wrapper that died before it was ever seen in a scope leaves a zombie whose
+		// cgroup line keeps the name with a "(deleted)" marker, and no directory to stat -
+		// waiting out the full bound there would hold Wait, and the cancellation arm with
+		// it, for a scope that is never coming.
+		if gone(pid) || time.Now().After(deadline) {
 			return scopeLimits{}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// readScopeCaps takes the verdicts, one file at a time, recording only the answerable ones.
+func readScopeCaps(dir string) scopeLimits {
+	caps := make(map[string]bool)
+	for _, f := range controllerFiles {
+		if bound, known := controllerBound(filepath.Join(dir, f)); known {
+			caps[f] = bound
+		}
+	}
+	return scopeLimits{caps: caps}
+}
+
+// gone reports whether the process has exited or its cgroup has been reaped out from under
+// it, which is what a wrapper that failed before the scope existed looks like.
+func gone(pid int) bool {
+	p, ok := cgroupPathOf(strconv.Itoa(pid))
+	return !ok || strings.HasSuffix(p, "(deleted)")
 }
 
 // scopeCgroupOf reads the cgroup of the scope the wrapper was placed in, given the
@@ -117,9 +150,6 @@ func cgroupPathOf(pid string) (string, bool) {
 // carries. It only ever WORSENS a layer, like the applied report's own reconcile: the
 // probe answers what this host can enforce, and this answers what this run got.
 func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
-	if a.dir == "" {
-		return
-	}
 	for _, c := range []struct {
 		layer     enforce.Layer
 		requested bool
@@ -133,7 +163,7 @@ func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
 		if !c.requested || r.StateOf(c.layer) != enforce.Enforced {
 			continue
 		}
-		if bound, known := controllerBound(filepath.Join(a.dir, c.file)); known && !bound {
+		if bound, known := a.caps[c.file]; known && !bound {
 			r.Set(c.layer, enforce.Unavailable, "the scope this run was given carries no "+c.name+
 				" cap: systemd accepted the property and did not apply it, which is what an undelegated "+
 				c.name+" controller does, so the target ran unbounded rather than under the limit the manifest asked for")
