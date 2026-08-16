@@ -127,7 +127,21 @@ type Proxy struct {
 
 	// served marks that Serve has been entered, so a Proxy is used at most once.
 	served atomic.Bool
+
+	// internalFaults counts the proxy's own faults that no observer call could carry:
+	// a panicking observer, whose decision is simply gone, and a handler panic after
+	// its decision was already reported, which Faulted deliberately does not
+	// re-report. Both leave the run's egress record short of what happened, and
+	// without this nothing downstream can tell a short record from a complete one.
+	// Written from handler goroutines and from Serve's accept goroutine.
+	internalFaults atomic.Int64
 }
+
+// InternalFaults reports how many times the proxy recovered a fault of its own that
+// left no decision in the observer's record. Read it after Serve returns: a non-zero
+// count means the run's egress record is short by that many events, so a caller that
+// turns observed destinations into a proposed manifest must not present it as complete.
+func (p *Proxy) InternalFaults() int { return int(p.internalFaults.Load()) }
 
 // Option configures a Proxy.
 type Option func(*Proxy)
@@ -141,7 +155,8 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // on the deciding connection's goroutine - and for the Refused decision the
 // concurrency limit produces, on Serve's accept goroutine - so it must not block: a slow observer stalls the connection it
 // reports, and on the accept path it stalls every connection behind it. A panic is
-// contained and the connection proceeds; the decision it carried is simply lost.
+// contained and the connection proceeds; the decision it carried is lost, and
+// InternalFaults counts it so the shortfall is visible.
 //
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries them only sometimes,
@@ -172,7 +187,8 @@ func WithObserver(observe func(d Decision, host, port string)) Option {
 // grant were derived after admission.
 //
 // A panic in the gate is treated as a denial (the connection gets a 403 and is
-// reported Denied), never swallowed silently.
+// reported GateDenied, like any other refusal by a gate that was consulted),
+// never swallowed silently.
 //
 // A pending prompt pins one of the proxy's bounded handler slots with no
 // deadline, so a hostile target can fire many undeclared CONNECTs to flood the
@@ -715,6 +731,11 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		// one connection twice and degrade a layer that did enforce the manifest on it.
 		if !reported {
 			p.report(Faulted, "", "")
+		} else {
+			// The decision stands, so this is not Faulted - but the proxy still broke on a
+			// connection it enforced, and re-reporting is the only thing suppressed here,
+			// not the fault itself.
+			p.internalFaults.Add(1)
 		}
 		if established {
 			return
@@ -874,7 +895,11 @@ func (p *Proxy) report(d Decision, host, port string) {
 	if p.observe == nil {
 		return
 	}
-	defer func() { _ = recover() }()
+	defer func() {
+		if recover() != nil {
+			p.internalFaults.Add(1)
+		}
+	}()
 	p.observe(d, host, port)
 }
 

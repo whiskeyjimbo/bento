@@ -1995,4 +1995,27 @@ func TestPanicAfterTheTunnelDoesNotReportAFault(t *testing.T) {
 	if !slices.Equal(seen, []Decision{Allowed}) {
 		t.Errorf("decisions = %v, want exactly [%s]", seen, Allowed)
 	}
+	if n := p.InternalFaults(); n != 1 {
+		t.Errorf("InternalFaults() = %d, want 1: not re-reporting the decision must not erase the fault", n)
+	}
+}
+
+func TestAPanickingObserverCountsTheDecisionItLost(t *testing.T) {
+	p := New([]policy.NetworkRule{{Host: "*", Port: "*"}},
+		WithObserver(func(Decision, string, string) { panic("observer") }),
+		WithDialer(fakeDialer("tunnel")))
+	dialProxy, stop := startProxy(t, p)
+	defer stop()
+
+	c := dialProxy()
+	defer c.Close()
+	status, _ := connect(t, c, "example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (a faulty observer must not refuse the connection)", status)
+	}
+	// The observer runs before the 200, so the count is already in by the time the
+	// status line is read.
+	if n := p.InternalFaults(); n != 1 {
+		t.Errorf("InternalFaults() = %d, want 1: a swallowed decision leaves the egress record short and nothing else says so", n)
+	}
 }

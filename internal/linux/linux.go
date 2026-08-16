@@ -132,7 +132,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// a gate admitted during target teardown is recorded before the result is read.
 	// It is idempotent (sync.OnceFunc inside startProxy), so the defer stays as a
 	// safety net for the error paths without double-closing.
-	stopProxy := func() error { return nil }
+	stopProxy := func() (int, error) { return 0, nil }
 	// A run with no proxy socket reads its egress numbers off this zero collector,
 	// which reports what such a run in fact saw: no connections, nothing admitted,
 	// nothing blocked.
@@ -142,7 +142,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if err != nil {
 			return enforce.Result{}, err
 		}
-		defer func() { _ = stopProxy() }()
+		defer func() { _, _ = stopProxy() }()
 	}
 
 	// The in-sandbox launcher reports what it actually applied through this file, and
@@ -255,7 +255,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// cancelled run (Serve returns nil when the run had already ended when accepting
 		// stopped), so noteDeadListener does not manufacture a dead listener out of the
 		// cancel itself.
-		serveErr := stopProxy()
+		lostRecords, serveErr := stopProxy()
 		a := parseApplied(appliedReport)
 		// The wrapper's real status, not a literal 0: reconcile stamps it into the reason
 		// for a stage that reported nothing, and a SIGKILLed child did not end with exit
@@ -271,6 +271,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteLostRecords(&report, lostRecords)
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		// No ExitCode or Signaled: the kill was the cancel's, and a SIGKILLed target has
 		// no outcome of its own to report. That separation is what tells an operator who
@@ -280,18 +281,19 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	switch err := runErr; {
 	case err == nil:
-		serveErr := stopProxy()
+		lostRecords, serveErr := stopProxy()
 		a := parseApplied(appliedReport)
 		setup := a.reconcile(&report, blockWanted, strictWanted, true, 0)
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteLostRecords(&report, lostRecords)
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
-		serveErr := stopProxy()
+		lostRecords, serveErr := stopProxy()
 		// A signal here killed the wrapper, not the target: bwrap reports a signaled
 		// target as 128+signal itself. What reaches this branch signaled is the scope
 		// coming down around the run, which is how a cgroup limit ends it.
@@ -301,6 +303,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteLostRecords(&report, lostRecords)
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	default:
@@ -309,7 +312,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// The shield and egress audit rides out beside it on the same reasoning - what the
 		// boundary engaged and what went through it is no less true for the run having
 		// failed on its way out.
-		serveErr := stopProxy()
+		lostRecords, serveErr := stopProxy()
 		// The applied report is on disk for the same reason - the launcher wrote it before
 		// the wait failed - and it is reconciled here like every other arm. The failure says
 		// nothing about which layers the run reached, and that is the argument FOR the
@@ -330,6 +333,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
+		noteLostRecords(&report, lostRecords)
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
 		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
@@ -360,6 +364,21 @@ func noteProxyFault(r *enforce.Report, faults int) {
 	}
 	worsenNetwork(r, enforce.Degraded,
 		fmt.Sprintf("the egress proxy dropped %d connection(s) on an internal fault, so their handlers did not run to an outcome", faults))
+}
+
+// noteLostRecords records the proxy's own faults that left nothing in the collector:
+// a decision a panicking observer swallowed, and a handler panic after its decision
+// was already reported. Neither weakened the fence - the allowlist was applied either
+// way - but the report's egress record is short by that many events, and a layer
+// reported as Enforced would present an incomplete record as a complete one. That is
+// the same claim noteProxyFault makes about a connection with no decision at all, from
+// the other side: there the outcome is missing, here the record of it is.
+func noteLostRecords(r *enforce.Report, lost int) {
+	if lost == 0 {
+		return
+	}
+	worsenNetwork(r, enforce.Degraded,
+		fmt.Sprintf("the egress proxy recovered %d internal fault(s) that left no record, so this report's egress is short by that many events", lost))
 }
 
 // noteRefusedAtCapacity records connections the proxy turned away with a 503 because
@@ -847,7 +866,7 @@ func writeEmptyFile(path string) error {
 // the proxy (a zero count on an egress-capable run tells the frontend the target never
 // went through the proxy - used no network, or bypassed it), the hosts the gate
 // admitted beyond the manifest, and the ones the upstream guard refused to dial.
-func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func() error, collected *egressCollector, err error) {
+func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enforce.NetworkGate) (stop func() (int, error), collected *egressCollector, err error) {
 	c := &egressCollector{}
 	// Discover the host's NAT64 prefix so a synthesized RFC1918 target cannot reach
 	// the LAN through a permitted public hostname (RFC 7050). The profiling path
@@ -861,7 +880,7 @@ func startProxy(ctx context.Context, p *policy.Policy, socket string, gate enfor
 	if err != nil {
 		return nil, nil, err
 	}
-	return sync.OnceValue(stop), c, nil
+	return sync.OnceValues(stop), c, nil
 }
 
 // egressCollector records the proxy's per-connection decisions for the run
@@ -1023,7 +1042,7 @@ func sortedHostPorts(m map[string]enforce.HostPort) []enforce.HostPort {
 // Accept that failed in the same instant as teardown from one caused by it, and
 // answers nil - so noteDeadListener under-reports that overlap rather than
 // inventing a Degraded run out of a race.
-func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func() error, err error) {
+func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observe func(proxy.Decision, string, string), opts ...proxy.Option) (stop func() (int, error), err error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("linux: starting egress proxy: %w", err)
@@ -1033,9 +1052,12 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 	// serveErr is written before done is closed and read only after it, so the close
 	// carries the handoff.
 	var serveErr error
+	pr := proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...)
 	go func() {
-		serveErr = proxy.New(p.Network, append([]proxy.Option{proxy.WithObserver(observe)}, opts...)...).Serve(proxyCtx, l)
+		serveErr = pr.Serve(proxyCtx, l)
 		close(done)
 	}()
-	return func() error { cancel(); <-done; return serveErr }, nil
+	// The fault count is read after done, which is after Serve's wg.Wait, so every
+	// handler that could still add to it has finished.
+	return func() (int, error) { cancel(); <-done; return pr.InternalFaults(), serveErr }, nil
 }

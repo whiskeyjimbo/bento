@@ -141,3 +141,21 @@ func TestRunDispatchesToTheDegradedTier(t *testing.T) {
 		t.Errorf("LayerNetwork = %v, want Unavailable: Run did not dispatch to the degraded tier", got)
 	}
 }
+
+// noteLostRecords is the proxy's internal-fault count's only consumer, and a degraded
+// network layer its only effect: an Enforced layer would present an egress record short
+// by those events as a complete one.
+func TestLostRecordsDegradeAnEnforcedNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteLostRecords(&r, 3)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("LayerNetwork = %v, want Degraded after a proxy fault that left no record", got)
+	}
+	degradations := r.Degradations()
+	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "3 internal fault(s)") {
+		t.Errorf("degradations = %+v, want the lost-record count: this note is the count's only channel", degradations)
+	}
+}

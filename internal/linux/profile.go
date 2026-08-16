@@ -145,7 +145,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	sb.observe = true
 
 	var rec recordedEgress
-	var stopProxy func()
+	// stopProxy reports the proxy's own recovered faults, which named no destination
+	// and so are counted rather than recorded; see profile.Observation.DroppedConnections.
+	var stopProxy func() int
 	// Safety net for early error returns; the happy path stops it explicitly below.
 	defer func() {
 		if stopProxy != nil {
@@ -202,11 +204,13 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// Stop the recording proxy before reading hosts, so a destination the target reached
 	// during teardown is recorded before the snapshot, not lost to the still-running
 	// handler. Run stops its proxy before reading its report for the same reason.
+	lostRecords := 0
 	if stopProxy != nil {
-		stopProxy()
+		lostRecords = stopProxy()
 		stopProxy = nil
 	}
 	rec.into(&obs)
+	obs.DroppedConnections += lostRecords
 	obs.Interpreter = sb.interpreter
 	obs.InterpreterName = sb.interpreterName
 	return obs, nil
@@ -285,7 +289,7 @@ func (r *recordedEgress) into(obs *profile.Observation) {
 //
 // Nothing else distinguishes one recorded host from another: the discovery allowlist is
 // *:* and there is no gate.
-func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(d proxy.Decision, host, port string)) (func(), error) {
+func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, allowNetwork bool, record func(d proxy.Decision, host, port string)) (func() int, error) {
 	var opts []proxy.Option
 	if allowNetwork {
 		// Forwarding mode dials upstream, so it needs the same SSRF hardening as the
@@ -303,7 +307,9 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 	}
 	// The profiling run's report has no network layer to degrade, so a listener that
 	// dies mid-profile shows up as the hosts it never recorded, not as an error here.
-	return func() { _ = stop() }, nil
+	// The fault count is not discarded with it: a proposed manifest that is silently
+	// short is the failure DroppedConnections exists to prevent.
+	return func() int { lost, _ := stop(); return lost }, nil
 }
 
 // parseObservations reads the launcher's observation report: "R <path>" and
