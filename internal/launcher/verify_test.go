@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -104,4 +105,51 @@ func TestRunRefusesTheHostsPidNamespace(t *testing.T) {
 	if !strings.Contains(string(out), "pid namespace is not the unshared one") {
 		t.Errorf("Run failed without the pid-namespace refusal: %q", out)
 	}
+}
+
+// The bounding set is what stops a target from remounting bento's read-only shields
+// read-write, so the parse has to read a held capability as one. The masks are real: the
+// first is what an ordinary host process holds, the second what a sandboxed one does.
+func TestCapBoundingReadsAHeldCapability(t *testing.T) {
+	const held = "Name:\tbash\nCapInh:\t0000000000000000\nCapBnd:\t000001ffffffffff\nSeccomp:\t0\n"
+	if got, err := capBounding([]byte(held)); err != nil || got == 0 {
+		t.Fatalf("capBounding = %016x, %v; want the host's full bounding set, or a stray --cap-add goes unnoticed", got, err)
+	}
+	const empty = "Name:\tbento\nCapInh:\t0000000000000000\nCapBnd:\t0000000000000000\n"
+	if got, err := capBounding([]byte(empty)); err != nil || got != 0 {
+		t.Errorf("capBounding = %016x, %v; want an empty set, which is what a sandboxed run holds", got, err)
+	}
+	// A kernel that does not answer must not read as one answering "none".
+	if _, err := capBounding([]byte("Name:\tbento\n")); err == nil {
+		t.Error("capBounding accepted a status dump with no CapBnd line as an empty bounding set")
+	}
+}
+
+// The whole function, read seam included, against the state it exists to refuse: the test
+// process runs on the host, where the bounding set is full. A fixture cannot show that the
+// path from /proc/self/status to the verdict is connected.
+func TestVerifyEmptyCapBoundRefusesAHostBoundingSet(t *testing.T) {
+	held, err := capBounding(mustReadStatus(t))
+	if err != nil {
+		t.Skipf("cannot read this host's bounding set: %v", err)
+	}
+	if held == 0 {
+		t.Skip("this process already holds an empty bounding set, so there is nothing here to refuse")
+	}
+	err = verifyEmptyCapBound()
+	if err == nil {
+		t.Fatal("verifyEmptyCapBound accepted the host's own capability bounding set")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%016x", held)) {
+		t.Errorf("error = %q, want it to name the set it saw (%016x)", err, held)
+	}
+}
+
+func mustReadStatus(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(procSelfStatus)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", procSelfStatus, err)
+	}
+	return data
 }

@@ -26,6 +26,10 @@ const boundSelf = "/tmp/bento-launcher.test"
 // exercised: a sandbox weakened in exactly one place is the shimmed bwrap the checks exist
 // to catch, and every other check still passes, so the refusal under test is the one that
 // fires. "" builds the whole sandbox.
+//
+// There is no arm for the capability bounding set: unprivileged bwrap empties it whether
+// or not --cap-drop ALL is passed, so dropping that flag builds the same sandbox. Only a
+// setuid bwrap produces the state verifyEmptyCapBound refuses, and a test cannot make one.
 func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
@@ -46,9 +50,7 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	if weaken != "pid" {
 		args = append(args, "--unshare-pid")
 	}
-	if weaken != "cap" {
-		args = append(args, "--cap-drop", "ALL")
-	}
+	args = append(args, "--cap-drop", "ALL")
 	args = append(args, "--die-with-parent", boundSelf)
 
 	cmd.Args = append(args, cmd.Args[1:]...)

@@ -160,6 +160,11 @@ func Run(cfg Config) (int, error) {
 	if err := verifyPidNamespace(); err != nil {
 		return 0, err
 	}
+	// And the capability half, which is not a hole on an ordinary host but is the whole
+	// of the guarantee on one with a setuid bwrap. See verifyEmptyCapBound.
+	if err := verifyEmptyCapBound(); err != nil {
+		return 0, err
+	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without

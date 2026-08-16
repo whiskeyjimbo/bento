@@ -94,3 +94,52 @@ func foreignPids(names []string, self int) []string {
 	}
 	return extra
 }
+
+// procSelfStatus carries the caller's capability sets, among much else. It is read from
+// inside the sandbox for verifyEmptyNetns' reason: the kernel's own answer is the one leg
+// that is not the suspect bwrap's word.
+const procSelfStatus = "/proc/self/status"
+
+// verifyEmptyCapBound is the launcher's own check that the capability bounding set is the
+// empty one the run was admitted on. Unlike the other three this is not a hole on an
+// ordinary host - unprivileged bwrap already yields an empty bounding set whether or not
+// --cap-drop ALL is passed - and that is exactly why bento asks for it explicitly: the
+// reliance becomes bento's own rather than an unstated bwrap default, robust to a setuid
+// bwrap or a stray --cap-add (see internal/linux's namespaceFlags). Those are the hosts
+// where a shim filtering the flag out of argv matters, and they are the hosts this check
+// speaks for.
+//
+// It is load-bearing beyond the flag: the read-only shields are plain bind mounts, and
+// what stops the target from remounting them read-write is having no CAP_SYS_ADMIN.
+func verifyEmptyCapBound() error {
+	data, err := os.ReadFile(procSelfStatus)
+	if err != nil {
+		return fmt.Errorf("launcher: reading %s to verify the capability bounding set: %w", procSelfStatus, err)
+	}
+	held, err := capBounding(data)
+	if err != nil {
+		return fmt.Errorf("launcher: %w", err)
+	}
+	if held != 0 {
+		return fmt.Errorf("launcher: the sandbox's capability bounding set is not the empty one this run was admitted on; it holds %016x, so the target can remount bento's read-only shields read-write", held)
+	}
+	return nil
+}
+
+// capBounding parses the CapBnd mask out of a /proc/<pid>/status dump. A dump with no
+// CapBnd line is an error rather than a zero: a missing line is a kernel that does not
+// answer the question, not one answering "none".
+func capBounding(status []byte) (uint64, error) {
+	for _, line := range strings.Split(string(status), "\n") {
+		mask, ok := strings.CutPrefix(line, "CapBnd:")
+		if !ok {
+			continue
+		}
+		held, err := strconv.ParseUint(strings.TrimSpace(mask), 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parsing the capability bounding set %q from %s: %w", strings.TrimSpace(mask), procSelfStatus, err)
+		}
+		return held, nil
+	}
+	return 0, fmt.Errorf("%s named no capability bounding set, so the sandbox's cannot be vouched for", procSelfStatus)
+}
