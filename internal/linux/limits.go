@@ -41,8 +41,10 @@ const scopeProbeTimeout = 5 * time.Second
 // for the process to die: killing systemd-run on the deadline leaves the scope's own
 // command alive and still holding the descriptor it inherited, which is precisely the busy
 // user manager scopeProbeTimeout exists to survive. WaitDelay makes exec close the pipe
-// itself shortly after the kill, so the probe returns with exec.ErrWaitDelay - a failure,
-// which is the fail-closed direction - instead of blocking admission indefinitely.
+// itself shortly after the kill, so the probe returns an error - the fail-closed
+// direction - instead of blocking admission indefinitely. Which error it is varies:
+// exec reports ErrWaitDelay only where Wait would otherwise have succeeded, and here it
+// usually reports the kill instead, so nothing may key on the one shape.
 const probeWaitDelay = time.Second
 
 // cacheProbe memoizes a host measurement, but only once it has ANSWERED: measure's

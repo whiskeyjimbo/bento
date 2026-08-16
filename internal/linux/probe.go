@@ -423,6 +423,7 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// siblings are, so a caller that has already given up is not held for the bound of
 	// each remaining probe. The deadline is a probe failure, not a host finding, and
 	// classifyUnshare reports it as one.
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -458,6 +459,7 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// See probeWaitDelay, which the limits probes share.
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.CombinedOutput()
+	noteProbeDeadline(parent, ctx)
 	if err != nil {
 		return &usernsError{output: string(out), err: err, ctxErr: ctx.Err()}
 	}

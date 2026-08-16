@@ -8,8 +8,8 @@ import (
 )
 
 // probeDeadlines counts the host probes this process gave up on because their OWN bound
-// expired - the scope probes' scopeProbeTimeout, the hook resolution's
-// hookResolveTimeout, and bounded's credentialWalkTimeout. Each of those limits is
+// expired - scopeProbeTimeout at the two scope probes, canUnshare's own bound,
+// hookResolveTimeout at the hook resolution, and bounded's credentialWalkTimeout. Each of those limits is
 // decided and then either returned as an error or dropped, so a host that has started
 // answering too slowly is invisible until it stops answering altogether.
 //

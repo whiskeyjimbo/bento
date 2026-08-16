@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -43,6 +44,20 @@ func TestProbeDeadlinesCountsTheProbesOwnExpiry(t *testing.T) {
 		}
 		if got := ProbeDeadlines() - before; got != 1 {
 			t.Errorf("ProbeDeadlines rose by %d over an expiry of scopeProbeTimeout, want 1", got)
+		}
+	})
+
+	// canUnshare runs on the hot path of every Run, so its expiry is the one an operator
+	// most needs counted.
+	t.Run("a namespace probe that never answers", func(t *testing.T) {
+		dir := shimPATH(t, "bwrap", "#!/bin/sh\nexec sleep 60\n")
+
+		before := ProbeDeadlines()
+		if err := canUnshare(context.Background(), filepath.Join(dir, "bwrap")); err == nil {
+			t.Fatal("canUnshare returned success from a shim that never answers")
+		}
+		if got := ProbeDeadlines() - before; got != 1 {
+			t.Errorf("ProbeDeadlines rose by %d over an expiry of canUnshare's bound, want 1", got)
 		}
 	})
 

@@ -131,6 +131,10 @@ func hookRunnerDir(grant string, writes []string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "hooks")
 	cmd.Dir = grant
+	// Without this the deadline above bounds nothing, for probeWaitDelay's reason: Output
+	// waits for the pipe, and a git wedged on the dead mount this bound exists for ignores
+	// the kill in uninterruptible sleep while still holding it.
+	cmd.WaitDelay = probeWaitDelay
 	// GIT_* out of the environment, or the answer is not this grant's. GIT_DIR and
 	// GIT_WORK_TREE override cmd.Dir outright (measured), and GIT_CONFIG_COUNT with
 	// GIT_CONFIG_KEY_0=core.hooksPath sets the value directly - all three are set
