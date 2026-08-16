@@ -97,8 +97,11 @@
 // execute would be a bypass rather than a fix.
 //
 // Usage: probe sleeper
-// Sleeps until killed. The two modes above re-exec this as their child rather than
-// depending on a sleep(1) on PATH.
+// Sleeps until its parent exits. The modes above re-exec this as their child rather than
+// depending on a sleep(1) on PATH. It watches for the exit rather than waiting to be
+// killed because a child started BEFORE the degraded ruleset is outside the domain the
+// probe then enters, and from ABI 6 signal scoping denies the probe the kill - leaving a
+// sleeper that holds the caller's CombinedOutput pipe open for as long as it sleeps.
 //
 // Usage: probe available
 // Prints "available=true|false" - so a test can observe Available() in a process
@@ -123,7 +126,21 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/landlock"
 )
 
+// quiet is the sleepers' stdio, opened before any mode restricts itself: /dev/null is
+// unopenable once a ruleset is in force (no write grant covers it), and a sleeper must not
+// inherit this process's stdout - a caller reading the probe with CombinedOutput waits on
+// that pipe, so a sleeper holding it open blocks the read until the sleeper exits, and
+// from ABI 6 the probe cannot kill one it started before entering the domain.
+var quiet *os.File
+
 func main() {
+	q, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "devnull:", err)
+		os.Exit(2)
+	}
+	quiet = q
+
 	if len(os.Args) == 5 && os.Args[1] == "otherthread" {
 		otherThread(os.Args[2], os.Args[3], os.Args[4])
 		return
@@ -141,9 +158,12 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "sleeper" {
-		// A bare select{} would trip the runtime's deadlock detector and abort, leaving
-		// the parent reading a process that has already died.
-		time.Sleep(time.Hour)
+		// Reparenting to init is the exit signal: a bare select{} would trip the runtime's
+		// deadlock detector and abort, leaving the parent reading a process that has
+		// already died, and an unconditional sleep outlives a probe that cannot kill it.
+		for parent := os.Getppid(); os.Getppid() == parent; {
+			time.Sleep(100 * time.Millisecond)
+		}
 		return
 	}
 	if len(os.Args) == 4 && os.Args[1] == "degradednet" {
@@ -216,7 +236,7 @@ func spawnable(argv ...string) string {
 	// temp directory that open is denied - so every arm would report DENIED for a reason
 	// that has nothing to do with the execute right under test. A real run does not meet
 	// this: /dev is in the sandbox's writable mounts.
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = quiet, quiet, quiet
 	err := cmd.Run()
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -327,17 +347,7 @@ func scopedIPC(read, write, outside, abstract, pathSock, port string) {
 		fmt.Fprintln(os.Stderr, "port:", err)
 		os.Exit(2)
 	}
-	// Opened before the ruleset, and handed to both sleepers so neither inherits this
-	// process's stdout: a sleeper that outlives the probe would otherwise hold the
-	// caller's CombinedOutput pipe open and hang the read for the full hour it sleeps.
-	quiet, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "devnull:", err)
-		os.Exit(2)
-	}
-	defer quiet.Close()
-
-	outsideChild, err := startSleeper(quiet)
+	outsideChild, err := startSleeper()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -353,7 +363,7 @@ func scopedIPC(read, write, outside, abstract, pathSock, port string) {
 
 	// The same-domain child re-execs this binary from inside the domain, so the caller
 	// must grant read on the directory the probe itself lives in.
-	sameDomain, err := startSleeper(quiet)
+	sameDomain, err := startSleeper()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -394,7 +404,7 @@ func connectLoopback(fd, port int) string {
 // forbids the read outright reports DENIED for both, and the caller skips rather than
 // crediting Landlock with a denial the host would have made anyway.
 func procMem(read string) {
-	child, err := startSleeper(os.Stderr)
+	child, err := startSleeper()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -425,7 +435,7 @@ func procMemSameDomain(read string) {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
-	child, err := startSleeper(os.Stderr)
+	child, err := startSleeper()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sleeper:", err)
 		os.Exit(2)
@@ -435,18 +445,15 @@ func procMemSameDomain(read string) {
 	fmt.Printf("procmem_samedomain=%s procfd_samedomain=%s\n", mem, fdReachable(child.Pid))
 }
 
-// startSleeper re-execs this binary in its sleeper mode with stdio as all three of its
-// descriptors. It is passed in rather than defaulted because os/exec would open /dev/null
-// for a nil stream, which a restricted caller has no write grant for - and because a
-// sleeper that outlives the probe holds whatever it inherited open, so a caller reading
-// the probe with CombinedOutput must hand it something other than that pipe.
-func startSleeper(stdio *os.File) (*os.Process, error) {
+// startSleeper re-execs this binary in its sleeper mode on quiet's descriptors - see
+// there for why they are neither the default nor this process's own.
+func startSleeper() (*os.Process, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(self, "sleeper")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdio, stdio, stdio
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = quiet, quiet, quiet
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
