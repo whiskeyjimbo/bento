@@ -155,6 +155,11 @@ func Run(cfg Config) (int, error) {
 	if err := verifyFreshTmp(); err != nil {
 		return 0, err
 	}
+	// And the process half, which nothing backstops at all: Landlock has no
+	// pid-namespace analogue. See verifyPidNamespace.
+	if err := verifyPidNamespace(); err != nil {
+		return 0, err
+	}
 
 	// Drop every descriptor bento's parent leaked into this process before anything
 	// downstream can inherit it. A file descriptor the host process held open without

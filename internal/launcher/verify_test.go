@@ -5,6 +5,7 @@ package launcher
 import (
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,5 +67,41 @@ func TestRunAcceptsTheSandboxBentoBuilds(t *testing.T) {
 	inSandbox(t, cmd, "")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Run refused the sandbox bento itself asks bwrap for: %v\n%s", err, out)
+	}
+}
+
+// A launch stage that has spawned nothing sees its namespace's init and itself. Anything
+// else is a process bento did not start, which is what a bwrap whose --unshare-pid was
+// filtered out of argv leaves the sandbox looking at.
+func TestForeignPidsNamesProcessesBentoDidNotStart(t *testing.T) {
+	host := []string{"1", "2", "417", "9021", "self", "meminfo", "net"}
+	if got := foreignPids(host, 2); !slices.Equal(got, []string{"417", "9021"}) {
+		t.Fatalf("foreignPids = %v, want the two host processes; a stripped --unshare-pid would go unnoticed", got)
+	}
+	if got := foreignPids([]string{"1", "2", "self", "meminfo"}, 2); len(got) != 0 {
+		t.Errorf("foreignPids = %v, want none: an unshared namespace holds init and the launcher", got)
+	}
+}
+
+// The check is worth nothing if Run stops calling it. Same shape as the /tmp refusal: a
+// real sandbox weakened in exactly one place, here by leaving --unshare-pid out while the
+// fresh procfs is still mounted - so /proc lists the host's processes.
+func TestRunRefusesTheHostsPidNamespace(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "pid")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded in the host's pid namespace:\n%s", out)
+	}
+	if !strings.Contains(string(out), "pid namespace is not the unshared one") {
+		t.Errorf("Run failed without the pid-namespace refusal: %q", out)
 	}
 }
