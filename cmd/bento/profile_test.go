@@ -46,7 +46,7 @@ func TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites(t *testing.T) {
 		Read:  []string{"/srv/app/config", "/etc/thing/data"},
 		Write: []string{"/srv/app", "/etc"}, // /srv/app is narrow (kept); /etc is top-level (dropped)
 	}
-	_, _, _, _, broadWrites := clampProposal(p)
+	_, _, _, _, broadWrites, _ := clampProposal(p)
 
 	if !slices.Contains(broadWrites, "/etc") {
 		t.Fatalf("the top-level /etc write must be surfaced as too broad, got %v", broadWrites)
@@ -76,7 +76,7 @@ func TestClampProposalDropsBroadReads(t *testing.T) {
 	underHome := home + "/.config/app/config" // a specific path the script really read
 	p := &policy.Policy{Read: []string{home, "/", "/etc", underHome, "/srv/app/data"}}
 
-	_, _, _, broadReads, _ := clampProposal(p)
+	_, _, _, broadReads, _, _ := clampProposal(p)
 
 	for _, want := range []string{home, "/", "/etc"} {
 		if !slices.Contains(broadReads, want) {
@@ -1808,7 +1808,7 @@ func TestEveryDegradedTierNoteNamesASurvivingGrant(t *testing.T) {
 		t.Skip("no home directory to build broad grants from")
 	}
 	p := &policy.Policy{Write: []string{"/", home, "/etc", filepath.Join(home, ".pyenv")}}
-	_, _, aboveWriteShield, _, broadWrites := clampProposal(p)
+	_, _, aboveWriteShield, _, broadWrites, _ := clampProposal(p)
 
 	if len(broadWrites) == 0 {
 		t.Fatal("the root, the home and /etc must all be dropped as too broad; nothing was")

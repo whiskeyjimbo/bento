@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
@@ -304,7 +305,7 @@ func homeRoot(path string) (string, bool) {
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
 // the shielded, degraded-tier-refused, over-broad read, and over-broad write paths to
 // warn about.
-func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, aboveWriteShield, broadReads, broadWrites []string) {
+func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, aboveWriteShield, broadReads, broadWrites []string, refused []refusedGrant) {
 	// A set the host cannot anchor at all - not merely an unusable $HOME, which drops to
 	// the passwd home - leaves the proposal unclamped: there are no shields to clamp
 	// against, and the run this proposal feeds would be refused for that same reason.
@@ -314,6 +315,7 @@ func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, abo
 	p.Write, broadWrites = partitionBroad(p.Write)
 	p.Read, broadReads = partitionBroad(p.Read)
 	p.Read = profile.DropCovered(p.Read, p.Write)
+	refused = withholdRunRefused(p)
 	// Last, over the grants that SURVIVED: this one is a note about a grant the proposal
 	// keeps, and raised over a dropped one it would tell the reviewer to narrow a grant
 	// they were just told was withheld. The set is asked again rather than carried down
@@ -321,7 +323,59 @@ func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, abo
 	if set, err := commandShieldSet(); err == nil {
 		aboveWriteShield = aboveWriteShieldGrants(set, p.Write)
 	}
-	return shielded, writeShielded, aboveWriteShield, broadReads, broadWrites
+	return shielded, writeShielded, aboveWriteShield, broadReads, broadWrites, refused
+}
+
+// refusedGrant is a grant the run refuses before the script's first step, withheld from
+// the proposal with the run's own sentence to say why.
+type refusedGrant struct {
+	Kind    string // "read" or "write"
+	Path    string
+	Problem string
+}
+
+// withholdRunRefused removes from p every grant gate.Refusals names, which is the whole of
+// the backend's checkGrants the gate can answer: a looping grant, one landing on a managed
+// mount (/dev/shm, /dev/pts - the clamps above catch the other three only as an accident of
+// isBroadDir), a write that is a file, a write the invoker cannot stat, a write of the root.
+// The clamp's own shield half runs first and is strictly stronger than gate's, so what this
+// adds is the non-shield families, which nothing between the observer and the manifest asked
+// about: canon is lexical, the floors stat for their own purposes, and a proposal carrying
+// any of them dies at run's first step - under converge, mid-session with the round spent.
+//
+// gate.Refusals rather than a restatement of its checks, because that is the set validate
+// and approve answer from, and a check added to one and not the other is how a manifest
+// gets stamped for a permission that does not exist. It is asked unconditionally, unlike
+// the shield clamp above: these are facts about the manifest and the filesystem that the
+// shield set has no part in, so they are answerable on a host that cannot anchor at all.
+//
+// Grants are passed as the proposal spells them, not resolved: each of the non-shield checks
+// resolves for itself, and pre-resolving would change what the shield mirrors answer.
+func withholdRunRefused(p *policy.Policy) []refusedGrant {
+	// The whole proposal first, so the ordinary clean case pays for one walk of the
+	// credential stores rather than one per grant; the per-grant probes below are only for
+	// attributing a refusal back to the grant that earned it.
+	if len(gate.Refusals(p)) == 0 {
+		return nil
+	}
+	var refused []refusedGrant
+	keep := func(kind string, grants []string) (kept []string) {
+		for _, g := range grants {
+			one := &policy.Policy{Read: []string{g}}
+			if kind == "write" {
+				one = &policy.Policy{Write: []string{g}}
+			}
+			if problems := gate.Refusals(one); len(problems) > 0 {
+				refused = append(refused, refusedGrant{Kind: kind, Path: g, Problem: problems[0]})
+			} else {
+				kept = append(kept, g)
+			}
+		}
+		return kept
+	}
+	p.Read = keep("read", p.Read)
+	p.Write = keep("write", p.Write)
+	return refused
 }
 
 // partitionBroad splits grants into those safe to bind whole and those too broad

@@ -1229,7 +1229,7 @@ func printUnrepresentable(out io.Writer, obs profile.Observation) []accessNoteJS
 // over-broad grants from the auto-proposal) and prints why each was withheld, so a
 // path the tool wants but bento will not auto-grant is never silently missing.
 func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged []accessNoteJSON) {
-	shielded, writeShielded, aboveWriteShield, broadReads, broadWrites := clampProposal(p)
+	shielded, writeShielded, aboveWriteShield, broadReads, broadWrites, refused := clampProposal(p)
 	for _, d := range shielded {
 		// The reason is bucket-neutral, matching its write sibling below; what the shield
 		// holds rides beside it so a consumer switching on the reason keeps one code to
@@ -1248,6 +1248,13 @@ func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged [
 	for _, d := range broadWrites {
 		withheld = append(withheld, accessNoteJSON{Kind: "write", Path: d, Reason: "too-broad"})
 		fmt.Fprintf(out, "[bento] not proposing write access to %q%s - too broad to grant automatically; add a narrower write: directory by hand if the script needs it.\n", d, resolvedNote(d))
+	}
+	for _, d := range refused {
+		withheld = append(withheld, accessNoteJSON{Kind: d.Kind, Path: d.Path, Reason: "run-refused"})
+		// The run's own sentence rides along rather than being paraphrased: it already
+		// names the host fact and the remedy, and a second wording for one refusal is what
+		// grantrefusal exists to prevent.
+		fmt.Fprintf(out, "[bento] not proposing %s access to %q - the run refuses that grant before the script starts, so a manifest holding it would die at its first step: %s\n", d.Kind, d.Path, d.Problem)
 	}
 	for _, d := range aboveWriteShield {
 		flagged = append(flagged, accessNoteJSON{Kind: "write", Path: d, Reason: "above-write-shield"})
