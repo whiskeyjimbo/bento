@@ -337,7 +337,18 @@ func permanentStatus(code int) bool {
 }
 
 func fetch(url string) (string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	// A redirect is refused rather than followed. Neither upstream URL redirects today, so
+	// one appearing means the profile moved - the same permanent condition as a 404, and
+	// left on the pass-over status it prints "offline?" and greens the gate forever. Refused
+	// at the hop rather than by naming 3xx in permanentStatus, because a chain past the
+	// client's own limit never reaches the status check at all: it surfaces as a transport
+	// error, which is the pass-over arm. This collapses both into one.
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			return fmt.Errorf("%w: it redirects to %s, so the profile is no longer at the address this audit knows", errRefuse, req.URL)
+		},
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", err

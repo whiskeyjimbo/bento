@@ -19,7 +19,8 @@
 # build - fix the list or file a bead), 3 means the upstream fetch failed (offline or
 # GitHub down), which is an infrastructure condition, not a deny-list regression, so
 # this wrapper reports it and passes rather than turning network flakiness into red, and
-# 4 means a corpus arrived but is not the profile it should be, which is a real red, and 5
+# 4 means a corpus is not there to be had - the URL redirects, so the profile moved - or it
+# arrived and is not the profile it should be; either is a real red, and 5
 # means the audit could not clear the relocation variables that make its own list CI's
 # rather than this host's - red too, and separate from 4 so a reader is not sent after an
 # upstream corpus that is fine.
@@ -60,7 +61,7 @@ case "$status" in
 	exit 0
 	;;
 4)
-	echo "denylist-audit: an upstream corpus is not the profile it should be (see above); the audit proved nothing." >&2
+	echo "denylist-audit: an upstream corpus moved or is not the profile it should be (see above); the audit proved nothing." >&2
 	exit 1
 	;;
 5)

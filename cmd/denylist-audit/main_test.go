@@ -561,3 +561,39 @@ func TestReportNamesWhatTheParserCouldNotRead(t *testing.T) {
 		t.Errorf("the report must name the profile and the count; got %q", b.String())
 	}
 }
+
+// A permanently moved upstream URL is the same condition as a 404 - the profile is not at
+// the address the audit knows - but it arrives as a redirect the client would follow, and
+// a chain past the hop limit arrives as a transport error rather than a status at all.
+// Left on the pass-over status the wrapper prints "offline?" and greens the gate forever,
+// so a gap opened after the move is never surfaced. Neither of these URLs redirects today,
+// so a redirect IS the move.
+func TestFetchRefusesARedirect(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"moved permanently", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/moved", http.StatusMovedPermanently)
+		}},
+		{"found", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/elsewhere", http.StatusFound)
+		}},
+		{"redirect loop past the hop limit", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+
+			_, err := fetch(srv.URL)
+			if err == nil {
+				t.Fatal("a redirected fetch returned no error")
+			}
+			if !errors.Is(err, errRefuse) {
+				t.Errorf("a redirect was not refused (%v); the wrapper passes over a non-refusal, so a moved URL would green the gate forever", err)
+			}
+		})
+	}
+}
