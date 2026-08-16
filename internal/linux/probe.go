@@ -604,10 +604,16 @@ func exhaustedAllowanceReason(out string, allowanceZero bool) string {
 // doctor report, a run's refusal message, and whatever collects those.
 const probeOutputCap = 400
 
-// envAssignment matches the shape a leaked environment entry has in a tool's output. It is
-// deliberately narrow - an uppercase name with a value attached - because bwrap's own
-// messages contain paths and errnos, and a wider scrub would take the diagnosis with it.
-var envAssignment = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,}=[^\s]+`)
+// envAssignment matches the shape a leaked environment entry has in a tool's output. Case
+// is not part of the shape: the proxy pair (http_proxy, no_proxy) is conventionally
+// lowercase and carries a URL with credentials in it, which is the most realistic leak of
+// the class. It still requires a name-shaped word with a value attached, because bwrap's and
+// systemd-run's own messages carry paths and errnos and a wider scrub would take the
+// diagnosis with it.
+//
+// The value is taken to the next whitespace, so a value that contains a space keeps its
+// tail. The cap below is what bounds that residue.
+var envAssignment = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9_]{2,}=\S+`)
 
 // forReason is bwrap's output made safe to put in a user-facing reason: capped, and with
 // environment-shaped assignments stripped of their values. A misconfigured host can have

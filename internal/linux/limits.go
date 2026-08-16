@@ -113,7 +113,7 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		// verdict behind that says it did: the reason names the abandonment rather than
 		// blaming the user manager, and nothing is cached either way.
 		if ctx.Err() != nil {
-			return scopeVerdict{reason: "the resource-limit probe did not finish (" + ctx.Err().Error() + "), so whether this host can enforce limits is unknown"}, false
+			return scopeVerdict{reason: abandonedProbeReason(ctx)}, false
 		}
 		// A scope propagates its command's exit status, so the failure above is equally a
 		// scope that was never created and a canary that would not run - and the second is
@@ -121,7 +121,14 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		// manager that is fine. Running the canary bare separates them, and only here: this
 		// is the failure path, so a healthy host pays nothing for it.
 		canary := trueBinary()
-		if cerr := exec.CommandContext(ctx, canary).Run(); cerr != nil {
+		cerr := exec.CommandContext(ctx, canary).Run()
+		// Re-read, because the caller can give up between the check above and this run: a
+		// killed canary is not a canary that will not run, and blaming it would be the same
+		// misattribution one branch down.
+		if ctx.Err() != nil {
+			return scopeVerdict{reason: abandonedProbeReason(ctx)}, false
+		}
+		if cerr != nil {
 			return scopeVerdict{reason: "the resource-limit probe's canary (" + canary + ") does not run on this host, so whether limits can be enforced was never measured: " + cerr.Error()}, false
 		}
 		// The scope could not be created, which is the failure a busy or restarting user
@@ -198,13 +205,23 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	out, err := cmd.CombinedOutput()
 	noteProbeDeadline(parent, ctx)
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
+		// Scrubbed and capped like bwrap's, and for the same reason: this text becomes
+		// measureScope's reason, which travels into the doctor report and into a run's
+		// refusal message, and systemd-run's output is bounded by nothing.
+		msg := forReason(string(out))
 		if msg == "" {
 			return err
 		}
 		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+// abandonedProbeReason names a probe the caller gave up on, which measured nothing about
+// this host. It is one sentence rather than two spellings, because measureScope can reach
+// the abandonment from either of its subprocess runs.
+func abandonedProbeReason(ctx context.Context) string {
+	return "the resource-limit probe did not finish (" + ctx.Err().Error() + "), so whether this host can enforce limits is unknown"
 }
 
 func trueBinary() string {

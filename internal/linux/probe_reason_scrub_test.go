@@ -34,6 +34,21 @@ func TestProbeReasonsDoNotEchoUnboundedOutput(t *testing.T) {
 		}
 	})
 
+	// The proxy pair is conventionally lowercase and carries credentials in a URL, so it is
+	// the most realistic leak of this class rather than an edge of it.
+	t.Run("a lowercase proxy variable", func(t *testing.T) {
+		const secret = "user:hunter2@proxy.internal"
+		out := "bwrap: something went wrong, http_proxy=http://" + secret + "/"
+
+		_, reason := classifyUnshare(&usernsError{output: out, err: errors.New("exit status 1")})
+		if strings.Contains(reason, "hunter2") {
+			t.Errorf("the reason reproduces proxy credentials verbatim: %q", reason)
+		}
+		if !strings.Contains(reason, "http_proxy") {
+			t.Errorf("the reason lost the variable's name along with its value, which is the half worth keeping: %q", reason)
+		}
+	})
+
 	t.Run("output far longer than a diagnosis", func(t *testing.T) {
 		out := "bwrap: " + strings.Repeat("x", 10000)
 
