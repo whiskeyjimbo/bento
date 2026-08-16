@@ -1462,7 +1462,11 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	if gobin := os.Getenv("GOBIN"); gobin == "" {
 		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && filepath.IsAbs(gopath[0]) {
 			if c := filepath.Clean(gopath[0]); !isDefault(c, "go") {
-				if p := filepath.Join(c, "bin"); !covered(p) && shieldable(p) {
+				// isDefault on the target too, not just on GOPATH: covered() screens
+				// DenyAll trees, so GOPATH=$HOME lands exactly on the ~/bin default and
+				// restates it under a GOPATH source, attributing a default shield to a
+				// relocation nobody made.
+				if p := filepath.Join(c, "bin"); !isDefault(p, "bin") && !covered(p) && shieldable(p) {
 					rules = append(rules, Rule{Path: p, Deny: DenyWrite, Dir: true, Source: "GOPATH"})
 				}
 			}
