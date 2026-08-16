@@ -1050,16 +1050,25 @@ func mountinfoPaths(r io.Reader, devs []uint64) (paths, behindNetwork []string, 
 	for scan.Scan() {
 		// id parent major:minor root mountpoint options... - fstype source superopts
 		fields := strings.Fields(scan.Text())
+		// A line this function cannot read whole is the same failure as a scan that
+		// stopped early, and it goes the same way (see scan.Err below). Dropping it
+		// returns the short list this must never produce - and the truncated shape is
+		// worse than a missing mount: a final line cut mid-path clears the field bar and
+		// contributes a PREFIX of a real mountpoint, which mountAliases then joins each
+		// credential's relative path onto and refuses a run over a path holding nothing.
 		if len(fields) < 5 {
-			continue
+			return nil, nil, fmt.Errorf("mountinfo line %q has %d fields, want at least 5: the table cannot be read whole and a partial mount list reads as a complete one", scan.Text(), len(fields))
 		}
 		e := mountEntry{parent: fields[1], path: unescapeMount(fields[4]), want: wanted[fields[2]]}
 		// The optional-fields run between the options and the "-" separator, so the fstype
-		// is found by the separator rather than by index. A line without one is malformed;
-		// treating it as non-network matches how it was read before the screen existed.
-		if sep := slices.Index(fields, "-"); sep >= 0 && sep+1 < len(fields) {
-			e.network = networkFstypes[fields[sep+1]]
+		// is found by the separator rather than by index. A line without one is truncated
+		// or not mountinfo at all: its fstype is unreadable, so calling it non-network
+		// would be the screen answering "safe" about a mount it never saw.
+		sep := slices.Index(fields, "-")
+		if sep < 0 || sep+1 >= len(fields) {
+			return nil, nil, fmt.Errorf("mountinfo line %q has no fstype after its %q separator, so it cannot be screened for a network filesystem", scan.Text(), "-")
 		}
+		e.network = networkFstypes[fields[sep+1]]
 		if _, dup := byID[fields[0]]; !dup {
 			order = append(order, fields[0])
 		}

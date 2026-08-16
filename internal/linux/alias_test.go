@@ -709,6 +709,33 @@ func TestMountinfoPathsRefusesATruncatedScan(t *testing.T) {
 	}
 }
 
+// A line the parse cannot read whole is the same failure as a scan that stopped early,
+// and it must go the same way. Dropping it produced the short list hostMountpoints' doc
+// says the scan must never return - and the truncated shape is worse still: a final line
+// cut mid-path clears the field bar, so /mnt/b comes back as a mountpoint of its own and
+// mountAliases fabricates an alias under a path that holds no credential.
+func TestMountinfoPathsRefusesALineItCannotReadWhole(t *testing.T) {
+	dev := uint64(unix.Mkdev(8, 2))
+	const whole = "26 30 8:2 / / rw - ext4 /dev/sda2 rw\n27 30 8:2 / /mnt/bind rw - ext4 /dev/sda2 rw\n"
+
+	got, _, err := mountinfoPaths(strings.NewReader(whole), []uint64{dev})
+	if err != nil || !slices.Equal(got, []string{"/", "/mnt/bind"}) {
+		t.Fatalf("mountinfoPaths on a whole table = %v, %v; want both mountpoints and no error", got, err)
+	}
+
+	for _, tc := range []struct{ name, info string }{
+		{"a short line", whole[:len(whole)-1] + "\n27 30 8:2\n"},
+		// Scanner hands back a final line with no newline, so a table cut mid-record
+		// arrives with its path intact and its fstype gone.
+		{"a line truncated mid-record", "26 30 8:2 / / rw - ext4 /dev/sda2 rw\n27 30 8:2 / /mnt/b"},
+	} {
+		paths, _, err := mountinfoPaths(strings.NewReader(tc.info), []uint64{dev})
+		if err == nil {
+			t.Errorf("mountinfoPaths with %s returned %v and no error; a mount list short by one line, or holding a prefix of a real mountpoint, reads to its caller as the whole picture", tc.name, paths)
+		}
+	}
+}
+
 // A full-node wallet client's keys sit in a named location inside a data directory that
 // is shielded whole - the chain data around them is far too large to enumerate. That
 // makes the anchor a path the deny list has no rule for, so selecting rules by
