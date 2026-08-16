@@ -149,6 +149,34 @@ func (p *Proxy) discoverNAT64(ctx context.Context) {
 	}
 }
 
+// mayWrapUnroutableV4 reports whether any RFC 6052 position of ip decodes to an IPv4 a
+// name must not steer the sandbox at: RFC1918, CGNAT, loopback or link-local. It asks the
+// prefix-independent question the discovered prefixes cannot - whether these bytes COULD
+// be a synthesis wrapping such an address - so it is a guess about an address rather than
+// a decode of one, and only the classes an attacker would actually aim at count.
+//
+// Deliberately not every class classifyIP refuses: 0.0.0.0/8, 240/4 and the benchmarking
+// range are what a native AAAA's zero and high bytes read as at these offsets, and no
+// NAT64 gateway routes a synthesis to them, so counting them would refuse ordinary IPv6
+// destinations to close nothing.
+func mayWrapUnroutableV4(ip net.IP) bool {
+	ip16 := ip.To16()
+	if ip16 == nil || ip.To4() != nil {
+		return false
+	}
+	for _, length := range rfc6052Lengths {
+		pos := rfc6052Positions[length]
+		v4 := net.IPv4(ip16[pos[0]], ip16[pos[1]], ip16[pos[2]], ip16[pos[3]])
+		if v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() {
+			return true
+		}
+		if b := v4.To4(); b[0] == 100 && b[1]&0xc0 == 64 {
+			return true
+		}
+	}
+	return false
+}
+
 // classify groups ip for the egress guard, extending classifyIP with any
 // discovered NAT64 prefix: a synthesized address classifyIP passes as public is
 // re-checked against its embedded IPv4, so a Pref64-wrapped RFC1918 target is
@@ -193,6 +221,20 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 	}
 	if matched {
 		return strictest
+	}
+	// Discovery learns the prefixes the resolver synthesized ipv4only.arpa under, which on
+	// a site publishing more than one Pref64 need not be all of them: an address wrapped
+	// by a prefix discovery never saw reaches here unmatched, and returning c would pass a
+	// synthesized RFC1918 target as public - the SSRF shape this decode exists to close.
+	// So on a site known to run DNS64, an address whose bytes could spell a synthesis of
+	// something unroutable is private - reachable under a literal grant, refused when only
+	// a hostname pointed there, which is the same verdict and the same reasoning as the
+	// inconclusive case below. It is private rather than host-reserved even where the
+	// decode is loopback: nothing here proves the address IS a synthesis, and an outright
+	// refusal is not a verdict to reach on a guess. Only the dangerous decodes count, so
+	// native IPv6 egress on a DNS64 site keeps working - see mayWrapUnroutableV4.
+	if len(p.nat64) > 0 && mayWrapUnroutableV4(ip) {
+		return ipPrivate
 	}
 	if p.nat64Inconclusive && embeddedIPv4(ip) == nil {
 		return ipPrivate

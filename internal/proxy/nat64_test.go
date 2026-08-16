@@ -334,3 +334,33 @@ func TestNAT64MultiplePrefixesTakeTheStrictestVerdict(t *testing.T) {
 		}
 	}
 }
+
+// A site can publish two Pref64s while its resolver answers ipv4only.arpa under only one
+// of them. Discovery is then conclusive and incomplete at once: an address synthesized
+// under the prefix it never saw matches nothing, and the inconclusive fallback does not
+// fire, so before the fix a Pref64-wrapped RFC1918 target was reported public - the SSRF
+// shape the decode exists to close.
+func TestNAT64PartialDiscoveryStillRefusesTheOtherPrefix(t *testing.T) {
+	p := New(egressRules, WithNAT64Discovery(fakeLookup(net.ParseIP("2001:db8:1:2:3:4:c000:aa"))))
+	p.discoverNAT64(context.Background())
+	if len(p.nat64) != 1 || p.nat64Inconclusive {
+		t.Fatalf("discovery = %+v inconclusive=%v, want one prefix and a conclusive answer", p.nat64, p.nat64Inconclusive)
+	}
+
+	// Under a SECOND, undiscovered /96: 2001:db8:9:9:9:9::/96 wrapping 192.168.1.1.
+	if got := p.classify(net.ParseIP("2001:db8:9:9:9:9:c0a8:101")); got != ipPrivate {
+		t.Errorf("an address synthesized under an undiscovered Pref64 classified %d, want ipPrivate (%d)", got, ipPrivate)
+	}
+	// Loopback under the same undiscovered prefix. Private rather than host-reserved:
+	// nothing here proves the address is a synthesis at all, so the verdict a guess earns
+	// is the recoverable one - refused through a name, reachable under a literal grant.
+	if got := p.classify(net.ParseIP("2001:db8:9:9:9:9:7f00:1")); got != ipPrivate {
+		t.Errorf("a synthesized loopback classified %d, want ipPrivate (%d)", got, ipPrivate)
+	}
+	// Native IPv6 egress is what the blanket fail-closed would have cost, so it is
+	// asserted here rather than left to the case above: a DNS64 site must still reach
+	// ordinary AAAA destinations that decode to nothing dangerous.
+	if got := p.classify(net.ParseIP("2606:4700::1111")); got != ipPublic {
+		t.Errorf("a native public AAAA classified %d, want ipPublic (%d)", got, ipPublic)
+	}
+}
