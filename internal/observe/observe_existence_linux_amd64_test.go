@@ -451,10 +451,10 @@ except OSError:
 // bind - and decoding chmod but not its siblings is the under-grant this file's own
 // fchmodat2 note warns about; this is the row it stopped short of.
 //
-// Issued through syscall(2) rather than a libc wrapper, and it does not matter that this
-// host's kernel (6.8) answers ENOSYS: the mutating decode happens at the ENTRY stop,
-// before the kernel has looked at the number at all. That is what makes a syscall this
-// host cannot run still testable here.
+// Issued through syscall(2) rather than a libc wrapper, and it does not matter whether
+// the host's kernel is old enough to answer ENOSYS: the mutating decode happens at the
+// ENTRY stop, before the kernel has looked at the number at all. That is what makes a
+// syscall the host cannot run still testable here.
 //
 // The reader half of the family - getxattrat/listxattrat, decoded in inspectExistence -
 // is asserted separately by TestTraceDecodesTheXattratReaders, which has to reach a
