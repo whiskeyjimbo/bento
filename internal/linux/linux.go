@@ -197,8 +197,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			exe, cargs = wrapWithLimits(bwrap, args, p.Limits, opts.RunID)
 			// An undelegated cpu controller is reported by the probe as LayerLimitsCPU
 			// Unavailable and refused at admission; a run that reaches here with a cpu
-			// limit was either delegated or explicitly permitted under --allow-degraded,
-			// and the probe's LayerLimitsCPU state carries through to the final report.
+			// limit was either delegated or explicitly permitted under --allow-degraded.
+			// The probe's state is where the final report starts, not where it ends:
+			// noteScopeLimits reads the scope this run was actually given and worsens any
+			// layer the kernel shows uncapped.
 		}
 	}
 
