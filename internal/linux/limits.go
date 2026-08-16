@@ -113,6 +113,15 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		if ctx.Err() != nil {
 			return scopeVerdict{reason: "the resource-limit probe did not finish (" + ctx.Err().Error() + "), so whether this host can enforce limits is unknown"}, false
 		}
+		// A scope propagates its command's exit status, so the failure above is equally a
+		// scope that was never created and a canary that would not run - and the second is
+		// the rare cause the common wording hides, sending an operator to debug a user
+		// manager that is fine. Running the canary bare separates them, and only here: this
+		// is the failure path, so a healthy host pays nothing for it.
+		canary := trueBinary()
+		if cerr := exec.CommandContext(ctx, canary).Run(); cerr != nil {
+			return scopeVerdict{reason: "the resource-limit probe's canary (" + canary + ") does not run on this host, so whether limits can be enforced was never measured: " + cerr.Error()}, false
+		}
 		// The scope could not be created, which is the failure a busy or restarting user
 		// manager produces transiently: no verdict, so nothing is cached.
 		return scopeVerdict{reason: "no usable systemd user manager for resource limits: " + err.Error()}, false

@@ -82,9 +82,14 @@ func within[T any](t *testing.T, d time.Duration, f func() T) (T, bool) {
 func shimPATH(t *testing.T, name, script string) string {
 	t.Helper()
 	dir := t.TempDir()
+	writeShim(t, dir, name, script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func writeShim(t *testing.T, dir, name, script string) {
+	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return dir
 }
