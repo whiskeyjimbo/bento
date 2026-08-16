@@ -80,6 +80,36 @@ func TestProbeDeadlinesCountsTheProbesOwnExpiry(t *testing.T) {
 	})
 }
 
+// bounded cannot cancel the walk it abandons, so every expiry parks a goroutine on the
+// mount. For the single-shot CLI that is one stack and the process exits; a long-lived
+// embedder against a flapping mount accumulates one per expiry with nothing saying so.
+// The count has to be a gauge rather than probeDeadlines' tally: what an operator can act
+// on is how many are held now, which falls back when the mount answers again.
+func TestParkedHostCallsCountsTheGoroutinesBoundedAbandons(t *testing.T) {
+	setWalkTimeout(t, time.Millisecond)
+
+	hung := make(chan struct{})
+	before := ParkedHostCalls()
+	_, err := bounded("a test call", func() (int, error) { <-hung; return 0, nil })
+	if !errors.Is(err, errDidNotAnswer) {
+		t.Fatalf("bounded did not expire: %v", err)
+	}
+	if got := ParkedHostCalls() - before; got != 1 {
+		t.Fatalf("ParkedHostCalls rose by %d while a goroutine sat blocked on the mount, want 1", got)
+	}
+
+	// The mount answering releases it, which is the difference between this and a tally:
+	// a gauge that only climbs reports a permanent leak on a mount that recovered.
+	close(hung)
+	deadline := time.Now().Add(10 * time.Second)
+	for ParkedHostCalls() != before {
+		if time.Now().After(deadline) {
+			t.Fatalf("ParkedHostCalls stayed at %d after the call answered, want back to %d", ParkedHostCalls(), before)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func setWalkTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := credentialWalkTimeout

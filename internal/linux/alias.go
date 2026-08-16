@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,14 +46,26 @@ var errDidNotAnswer = errors.New("did not answer")
 // the lstat, which never returns to the walk function, so a flag the walk function
 // checks is never reached. The abandoned goroutine stays blocked on the mount for as
 // long as it hangs; one leaked stack is the price of the caller getting an answer at
-// all, and the run it belongs to is refused either way.
+// all, and the run it belongs to is refused either way. How many are held at once is
+// reported by ParkedHostCalls, so an embedder against a flapping mount can see the price
+// accumulate instead of only paying it.
 func bounded[T any](what string, call func() (T, error)) (T, error) {
 	type answer struct {
 		v   T
 		err error
 	}
 	ch := make(chan answer, 1)
-	go func() { v, err := call(); ch <- answer{v, err} }()
+	// Whichever of the two arrives second knows whether the call was abandoned, so a call
+	// that answers just as the timer fires neither leaks a phantom nor decrements a count
+	// nobody incremented. See parkedHostCalls.
+	var abandoned atomic.Bool
+	go func() {
+		v, err := call()
+		if !abandoned.CompareAndSwap(false, true) {
+			parkedHostCalls.Add(-1)
+		}
+		ch <- answer{v, err}
+	}()
 	// A timer that is stopped rather than time.After, which holds its timer alive for the
 	// full duration: sb.exists runs per deny-list rule and per ancestor in the shield
 	// walks, so the answered calls are thousands, not the nine the walks were.
@@ -63,6 +76,9 @@ func bounded[T any](what string, call func() (T, error)) (T, error) {
 		return a.v, a.err
 	case <-t.C:
 		probeDeadlines.Add(1)
+		if abandoned.CompareAndSwap(false, true) {
+			parkedHostCalls.Add(1)
+		}
 		var zero T
 		return zero, fmt.Errorf("linux: %s %w within %s, which is what an unresponsive network mount looks like", what, errDidNotAnswer, credentialWalkTimeout)
 	}

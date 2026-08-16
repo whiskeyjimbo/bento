@@ -24,6 +24,21 @@ var probeDeadlines atomic.Int64
 // deadline. It is a monotonic count for the life of the process.
 func ProbeDeadlines() int { return int(probeDeadlines.Load()) }
 
+// parkedHostCalls is how many goroutines bounded has abandoned on the host and that have
+// not answered since. Unlike probeDeadlines it is a gauge, not a tally: bounded cannot
+// cancel the walk it gave up on (see bounded), so each expiry leaves a goroutine and its
+// stack blocked on the mount until the mount answers, and what an operator needs is how
+// many are held right now rather than how many there have ever been.
+//
+// It matters for a long-lived embedder (examples/supervise) against a flapping mount,
+// where the count climbs run over run; the single-shot CLI exits before it can grow. A
+// limit enforced without reporting that it was reached is the gap this closes.
+var parkedHostCalls atomic.Int64
+
+// ParkedHostCalls reports how many abandoned host filesystem calls are still blocked in
+// this process. It falls back as the mounts they are parked on start answering again.
+func ParkedHostCalls() int { return int(parkedHostCalls.Load()) }
+
 // noteProbeDeadline counts an expiry of probe's bound, but only when parent is still
 // live. A probe whose caller has already given up measured nothing about the host and
 // says nothing about its speed: counting it would make this a tally of caller impatience,
