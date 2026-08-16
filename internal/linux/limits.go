@@ -325,7 +325,14 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// would over-report); on a legacy-hybrid host the v2 hierarchy is mounted under
 	// /sys/fs/cgroup/unified, so the derived path is wrong and the cat fails. Either
 	// way the scope exits nonzero and known is false.
-	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; cat /sys/fs/cgroup$p/cgroup.controllers`
+	//
+	// The snippet announces itself before the cat, and only what follows that line is
+	// read: the exit status alone is no oracle for WHERE the output came from, and the
+	// whole fail-closed limits story rests on this one reading - anything else printed on
+	// stdout would otherwise become a delegated controller and report a cap the host will
+	// not enforce as Enforced. The marker is proof the snippet ran and reached its read,
+	// which is a different question from whether the scope exited 0.
+	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; echo ` + controllersMarker + `; cat /sys/fs/cgroup$p/cgroup.controllers`
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
@@ -338,12 +345,22 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	if err != nil {
 		return nil, false
 	}
+	_, read, found := strings.Cut(string(out), controllersMarker+"\n")
+	if !found {
+		return nil, false
+	}
 	set := make(map[string]bool)
-	for c := range strings.FieldsSeq(string(out)) {
+	for c := range strings.FieldsSeq(read) {
 		set[c] = true
 	}
 	return set, true
 }
+
+// controllersMarker is what readControllers prints immediately before the controller
+// read, so the reading has an oracle beyond the scope's exit status. It is spelled
+// unlike any cgroup controller name, and matched with its newline, so a controller list
+// cannot contain it.
+const controllersMarker = "bento-delegated-controllers:"
 
 func shBinary() string {
 	if p, err := exec.LookPath("sh"); err == nil {
