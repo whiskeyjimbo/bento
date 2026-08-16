@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -1495,5 +1496,35 @@ func TestMountinfoPathsScansAMountThatIsItselfTheNetworkFilesystem(t *testing.T)
 func TestOverbroadAcknowledgementCatchesATreeInsideAnAnchor(t *testing.T) {
 	if !overbroadAcknowledgement("/home/u/.ssh/keys", []string{"/home/u/.ssh", "/home/u/.ssh/keys/id_rsa"}) {
 		t.Error("a tree between an anchor and a credential it holds is still an off-switch for that credential")
+	}
+}
+
+// A credential store on an unresponsive network mount blocks the walk that identifies
+// it for as long as the mount hangs - before the sandbox is built, with no output, no
+// timeout and no exit. The scan has to give up on it and say so.
+func TestACredentialWalkThatNeverAnswersIsBounded(t *testing.T) {
+	credentialWalkTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
+
+	// Stands in for the walk of a hung export: it answers only when the test is over.
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	sb := sandbox{homes: []string{t.TempDir()}, resolve: hostResolve, isDir: hostIsDir,
+		listDir: hostListDir, mountpoints: hostMountpoints, statID: hostStatIDOK,
+		fileIDs:      func(string) ([]identifiedFile, error) { <-hung; return nil, nil },
+		aliasesUnder: hostAliasesUnder}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := aliasedCredentials(sb, nil, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "did not answer within") {
+			t.Fatalf("aliasedCredentials error = %v, want one naming the walk that never answered", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("aliasedCredentials never returned: a credential store on a dead mount hangs the preflight with no output and no exit")
 	}
 }

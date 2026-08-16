@@ -82,11 +82,11 @@ func shields(sb sandbox) shield.Set {
 		// them would let the scan and the shield check tell different stories about the
 		// same host.
 		SameFile: func(a, b string) bool {
-			ida, ok := sb.statID(a)
+			ida, ok := sb.boundedStatID(a)
 			if !ok {
 				return false
 			}
-			idb, ok := sb.statID(b)
+			idb, ok := sb.boundedStatID(b)
 			return ok && ida == idb
 		},
 	}, sb.homes, sb.runtimeDir, sb.extraDeny)

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -22,6 +23,57 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
+
+// credentialWalkTimeout bounds one host filesystem call over a credential store or a
+// granted tree. A store or a write grant on an unresponsive network mount otherwise
+// blocks the alias scan for as long as the mount hangs - before the sandbox is built,
+// with no output and no exit - which is the same total failure hookResolveTimeout
+// bounds for the hook-directory git call.
+var credentialWalkTimeout = 30 * time.Second
+
+// bounded runs a host filesystem call that a dead mount can block forever and stops
+// waiting for it after credentialWalkTimeout.
+//
+// The call moves off this goroutine rather than taking a deadline because
+// filepath.WalkDir cannot be cancelled from outside: the block is inside the readdir or
+// the lstat, which never returns to the walk function, so a flag the walk function
+// checks is never reached. The abandoned goroutine stays blocked on the mount for as
+// long as it hangs; one leaked stack is the price of the caller getting an answer at
+// all, and the run it belongs to is refused either way.
+func bounded[T any](what string, call func() (T, error)) (T, error) {
+	type answer struct {
+		v   T
+		err error
+	}
+	ch := make(chan answer, 1)
+	go func() { v, err := call(); ch <- answer{v, err} }()
+	select {
+	case a := <-ch:
+		return a.v, a.err
+	case <-time.After(credentialWalkTimeout):
+		var zero T
+		return zero, fmt.Errorf("linux: %s did not answer within %s, which is what an unresponsive network mount looks like", what, credentialWalkTimeout)
+	}
+}
+
+// boundedStatID is sb.statID under the same bound, because a single Lstat on a dead
+// mount hangs as thoroughly as a walk of it.
+//
+// An expiry answers "no identity", which is what an unstattable path already means to
+// both callers, rather than a new error path. It is not a silent fallback: every path
+// stat'd here is a credential store, one of its ancestors, or a shielded name derived
+// from one, and the bounded walk of that same store is fatal - so a mount that expires
+// here refuses the run a moment later, from credentialFiles, where the error names it.
+func (sb sandbox) boundedStatID(path string) (fileID, bool) {
+	id, err := bounded("the stat of "+path, func() (fileID, error) {
+		id, ok := sb.statID(path)
+		if !ok {
+			return fileID{}, errors.New("no identity")
+		}
+		return id, nil
+	})
+	return id, err == nil
+}
 
 // fileID identifies a file's content on the host. A hardlink and a bind alias both
 // share their (device, inode) with the file they alias, which is the only handle this
@@ -194,7 +246,9 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	var out []credentialAlias
 	if linked {
 		for _, t := range trees {
-			aliases, err := sb.aliasesUnder(t, want)
+			aliases, err := bounded("the scan of "+t+" for credential aliases", func() ([]credentialAlias, error) {
+				return sb.aliasesUnder(t, want)
+			})
 			if err != nil {
 				return aliasScan{}, err
 			}
@@ -437,7 +491,7 @@ func mountAliases(sb sandbox, creds []identifiedFile, shielded map[string]bool, 
 		if id, done := ids[path]; done {
 			return id, id != fileID{}
 		}
-		id, ok := sb.statID(path)
+		id, ok := sb.boundedStatID(path)
 		if !ok {
 			id = fileID{}
 		}
@@ -577,7 +631,9 @@ func credentialFiles(sb sandbox, literalOptIns []string) (files []identifiedFile
 		// A symlinked credential's target is not chased. A store that deduplicates
 		// identical files by hardlinking them (Nix) gives every linked dotfile an extra
 		// link by design, and following the link would make that the normal case.
-		ids, err := sb.fileIDs(path)
+		ids, err := bounded("the walk of "+path, func() ([]identifiedFile, error) {
+			return sb.fileIDs(path)
+		})
 		if err != nil {
 			return nil, nil, false, err
 		}
