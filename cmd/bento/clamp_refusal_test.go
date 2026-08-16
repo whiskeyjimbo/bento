@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,5 +112,32 @@ func TestARunRefusedGrantIsReportedNotSilentlyDropped(t *testing.T) {
 	}
 	if refused[0].Kind != "write" || refused[0].Problem == "" {
 		t.Errorf("the report must carry the kind and the run's own sentence, got %+v", refused[0])
+	}
+}
+
+// The clamp order is load-bearing in a third place. DropCovered removes a read a write
+// already covers, and it has no report channel - so a withhold that runs after it takes
+// the read with the write, silently. The read is what the script actually did, and the
+// write it hid under is the one being withheld: leaving it out is the same failure
+// TestClampProposalDedupsReadsOnlyAfterDroppingBroadWrites pins for the broad clamp, one
+// clamp later. That test uses a broad write and so cannot see this one.
+func TestAReadUnderARunRefusedWriteSurvivesTheDedup(t *testing.T) {
+	dir := t.TempDir()
+	// A write grant that is a file, which converge reaches by ordinary sequence: one round
+	// collapses a file write to its parent, and the parent is a file by the next round.
+	file := filepath.Join(dir, "sub")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	read := filepath.Join(file, "config")
+
+	p := &policy.Policy{Read: []string{read}, Write: []string{file}}
+	_, _, _, _, _, refused := clampProposal(p)
+
+	if len(refused) != 1 || refused[0].Path != file {
+		t.Fatalf("the file write must be withheld as run-refused, got %+v", refused)
+	}
+	if !slices.Contains(p.Read, read) {
+		t.Errorf("the read under the withheld write must survive - nothing else reports it; Read=%v", p.Read)
 	}
 }

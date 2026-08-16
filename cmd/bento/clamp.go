@@ -295,9 +295,12 @@ func homeRoot(path string) (string, bool) {
 
 // clampProposal filters a synthesized proposal for review, in an order that is
 // load-bearing: drop grants inside a mandatory shield, then drop over-broad
-// read and write grants, and ONLY THEN dedup reads a surviving write already covers.
+// read and write grants, then withhold the grants the run itself refuses, and ONLY THEN
+// dedup reads a surviving write already covers.
 // Deduping last is what keeps a read near a credential store (~/.ssh under a $HOME-level
-// write) from being swallowed by a broad write before the shield clamp can surface it.
+// write) from being swallowed by a broad write before the shield clamp can surface it -
+// and equally, a read under a write the run refuses from vanishing with it, since
+// DropCovered is the one step here with no report channel.
 // The broad-read clamp is the read-side twin of the write clamp: a proposal of read: ~
 // (or read: /) - which a script that lists its home or the root produces - would, once
 // approved, bind the whole tree minus only the enumerated shields, re-exposing every
@@ -314,8 +317,8 @@ func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, abo
 	}
 	p.Write, broadWrites = partitionBroad(p.Write)
 	p.Read, broadReads = partitionBroad(p.Read)
-	p.Read = profile.DropCovered(p.Read, p.Write)
 	refused = withholdRunRefused(p)
+	p.Read = profile.DropCovered(p.Read, p.Write)
 	// Last, over the grants that SURVIVED: this one is a note about a grant the proposal
 	// keeps, and raised over a dropped one it would tell the reviewer to narrow a grant
 	// they were just told was withheld. The set is asked again rather than carried down
