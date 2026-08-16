@@ -119,8 +119,10 @@ func (d *deadMount) expired() error {
 
 // boundHostSeams puts the three seams that answer without an error under the same bound
 // as the walks: resolve, isDir and listDir each block for as long as an unresponsive
-// mount does, and between them they are every remaining way a dead credential store or
-// write grant hangs the preflight with no output, no timeout and no exit.
+// mount does. They are the seams whose fallback SILENTLY NARROWS a shield, which is why
+// they are bounded here and their expiry is fatal - not every seam a dead mount blocks.
+// sb.exists and sb.writable are raw Lstat and access(2) and hang the preflight just as
+// thoroughly; bounding them is open work.
 //
 // Wrapped here, once, rather than at each of their call sites - there are nine, and a
 // tenth added later would otherwise be unbounded again. sb.deadMount is what makes the

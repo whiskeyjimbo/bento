@@ -130,6 +130,17 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// out of a granted tree.
 	exposed := exposedShields(sb, visible, writes, shield.Targets(optIns))
 
+	// The same refusal compile makes on the bwrap path, because this tier never reaches
+	// compile and is the third launch path: every grant check, exposure report and shield
+	// set above came from the host seams, and one that stopped answering handed back a
+	// fallback that reads as a real answer. This tier is where it matters most - its
+	// Landlock rules ARE the confinement, with no bind ordering behind them - and where a
+	// checkout on a network mount is most plausible, since it is the tier a host without
+	// user namespaces falls to. See deadMount.
+	if err := sb.deadMount.expired(); err != nil {
+		return enforce.Result{}, err
+	}
+
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
 	// host /tmp (and other tenants' scratch), which the read/write set excludes.

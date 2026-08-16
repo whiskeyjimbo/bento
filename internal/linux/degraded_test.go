@@ -1074,3 +1074,36 @@ func TestDegradedCancelCarriesTheExposureAudit(t *testing.T) {
 		t.Fatalf("cancelled degraded run reports no exposure, but the home read reached ~/.ssh: Exposed=%v", res.Exposed)
 	}
 }
+
+// The bwrap path refuses a run whose host seams expired, in compile. This tier never
+// reaches compile, so without its own check it would launch on the fallback answers -
+// and it is the tier where that costs most, since its Landlock rules are the whole
+// confinement.
+//
+// What this pins is the whole tier, not one check: shrinking the bound expires every
+// bounded call, so the fatal credential walk refuses this run too, and the test stays
+// green with runDegraded's own deadMount check removed. The case that reaches ONLY that
+// check - a live home with a write grant on a dead mount - needs a mount that hangs and
+// is not constructible here. Kept anyway: it fails if this tier ever launches with an
+// expired seam behind it, which is the property, and it costs one policy to state.
+func TestRunDegradedRefusesARunWhoseHostSeamExpired(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Write: []string{dir}, Exec: policy.ExecAll}
+
+	credentialWalkTimeout = 1 * time.Nanosecond
+	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
+
+	var out strings.Builder
+	_, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p,
+		enforce.Process{Stdout: &out, Stderr: &out}, enforce.RunOptions{})
+	if err == nil {
+		t.Fatalf("the degraded tier launched a run whose shields were derived from a mount that never answered\noutput:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "did not answer within") {
+		t.Errorf("runDegraded error = %v, want the expired seam named; any other refusal is not this one", err)
+	}
+}
