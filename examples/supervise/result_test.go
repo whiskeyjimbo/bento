@@ -117,7 +117,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
-		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true,
+		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true, "UnresolvedHooks": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {
