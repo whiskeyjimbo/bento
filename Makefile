@@ -167,11 +167,12 @@ fuzz: ## Fuzz every Fuzz* target for FUZZTIME each (default 30s; not part of che
 	@printf "$(CYAN)$(BOLD)==> Fuzzing every target for $(FUZZTIME)...$(RESET)\n"
 	@set -e; pkgs=$$(GOWORK=off go list ./...); failed=""; \
 	for pkg in $$pkgs; do \
-		listed=$$(GOWORK=off go test -list='^Fuzz' $$pkg); \
+		listed=$$(GOWORK=off go test -list='^Fuzz' $$pkg) \
+			|| { failed="$$failed $$pkg(build)"; continue; }; \
 		for target in $$(printf '%s\n' "$$listed" | grep '^Fuzz' || true); do \
 			printf "$(CYAN)--> $$target ($$pkg)$(RESET)\n"; \
 			GOWORK=off go test -run='^$$' -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) $$pkg \
-				|| failed="$$failed $$target"; \
+				|| failed="$$failed $$target($$pkg)"; \
 		done; \
 	done; \
 	if [ -n "$$failed" ]; then \
