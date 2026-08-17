@@ -143,21 +143,61 @@ func TestRunDispatchesToTheDegradedTier(t *testing.T) {
 	}
 }
 
-// noteLostRecords is the proxy's internal-fault count's only consumer, and a degraded
-// network layer its only effect: an Enforced layer would present an egress record short
-// by those events as a complete one.
-func TestLostRecordsDegradeAnEnforcedNetworkLayer(t *testing.T) {
+// noteLostRecords is the proxy's fault counts' only consumer, and a degraded network
+// layer its only effect: an Enforced layer would present an egress record short by those
+// events as a complete one.
+//
+// The two causes are asserted apart because the remedies are opposite - a panicking
+// observer is the embedder's callback to fix, a post-decision handler panic is this
+// project's own bug - and the disclosure is the only thing that survives to the operator.
+// A count alone cannot answer which happened, so each case asserts that the OTHER
+// cause's sentence is absent as well.
+func TestLostRecordsNameWhichFaultDegradedTheNetworkLayer(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		observer, hander int
+		want, absent     string
+	}{
+		{"observer", 3, 0, "observer panicked on 3 decision(s)", "after deciding them"},
+		{"handler", 0, 2, "panicked on 2 connection(s) after deciding them", "observer panicked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r enforce.Report
+			r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+			noteLostRecords(&r, tc.observer, tc.hander)
+
+			if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+				t.Fatalf("LayerNetwork = %v, want Degraded after a proxy fault", got)
+			}
+			degradations := r.Degradations()
+			if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, tc.want) {
+				t.Fatalf("degradations = %+v, want one naming %q", degradations, tc.want)
+			}
+			if strings.Contains(degradations[0].Reason, tc.absent) {
+				t.Errorf("degradations = %+v, must not also name %q: the operator acts on which of the two happened", degradations, tc.absent)
+			}
+		})
+	}
+}
+
+// Both at once, because a run can hit both and the operator then has two things to do.
+func TestLostRecordsDiscloseBothFaultsWhenBothHappened(t *testing.T) {
 	var r enforce.Report
 	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
 
-	noteLostRecords(&r, 3)
+	noteLostRecords(&r, 1, 1)
 
-	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
-		t.Fatalf("LayerNetwork = %v, want Degraded after a proxy fault that left no record", got)
-	}
+	// worsenNetwork joins successive notes into the layer's one reason, so both sentences
+	// have to be in it; a summed counter can only produce one of them.
 	degradations := r.Degradations()
-	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "3 internal fault(s)") {
-		t.Errorf("degradations = %+v, want the lost-record count: this note is the count's only channel", degradations)
+	if len(degradations) != 1 {
+		t.Fatalf("degradations = %+v, want 1 joined network degradation", degradations)
+	}
+	for _, want := range []string{"observer panicked on 1 decision(s)", "after deciding them"} {
+		if !strings.Contains(degradations[0].Reason, want) {
+			t.Errorf("degradations = %+v, missing %q: summing the two loses the rarer cause in the commoner one", degradations, want)
+		}
 	}
 }
 

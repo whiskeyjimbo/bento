@@ -286,7 +286,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, px.serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		noteLostRecords(&report, px.lostRecords)
+		noteLostRecords(&report, px.observerFaults, px.handlerFaults)
 		noteNAT64Blackout(&report, px.nat64Blackouts)
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
@@ -306,7 +306,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, px.serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		noteLostRecords(&report, px.lostRecords)
+		noteLostRecords(&report, px.observerFaults, px.handlerFaults)
 		noteNAT64Blackout(&report, px.nat64Blackouts)
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
@@ -326,7 +326,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, px.serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		noteLostRecords(&report, px.lostRecords)
+		noteLostRecords(&report, px.observerFaults, px.handlerFaults)
 		noteNAT64Blackout(&report, px.nat64Blackouts)
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
@@ -360,7 +360,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteDeadListener(&report, px.serveErr)
 		noteDeadBridge(&report, bridgeDied)
 		noteProxyFault(&report, collected.faultCount())
-		noteLostRecords(&report, px.lostRecords)
+		noteLostRecords(&report, px.observerFaults, px.handlerFaults)
 		noteNAT64Blackout(&report, px.nat64Blackouts)
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
@@ -415,19 +415,28 @@ func noteGateFault(r *enforce.Report, faults int) {
 		fmt.Sprintf("the supervising network gate panicked on %d connection(s), so they were refused without any supervisor deciding them", faults))
 }
 
-// noteLostRecords records the proxy's own faults that left nothing in the collector:
-// a decision a panicking observer swallowed, and a handler panic after its decision
-// was already reported. Neither weakened the fence - the allowlist was applied either
-// way - but the report's egress record is short by that many events, and a layer
-// reported as Enforced would present an incomplete record as a complete one. That is
-// the same claim noteProxyFault makes about a connection with no decision at all, from
-// the other side: there the outcome is missing, here the record of it is.
-func noteLostRecords(r *enforce.Report, lost int) {
-	if lost == 0 {
-		return
+// noteLostRecords records the proxy's own faults, which reach the report as two counts
+// because they call for two different remedies. Neither weakened the fence - the
+// allowlist was applied either way - and both are the claim noteProxyFault makes about a
+// connection with no decision at all, seen from the other side: there the outcome is
+// missing, here the record of it is.
+//
+// A swallowed decision leaves the report's egress record short by that many events, so an
+// Enforced layer would present an incomplete record as a complete one, and the operator's
+// move is to fix the observer the embedder installed. A post-decision handler panic
+// leaves the record intact and the connection broken, and the operator can do nothing
+// about it but report the bug - which is why the two are said separately rather than
+// summed: in one bucket the rare cause is the one worth acting on and the common one
+// drowns it.
+func noteLostRecords(r *enforce.Report, observerFaults, handlerFaults int) {
+	if observerFaults > 0 {
+		worsenNetwork(r, enforce.Degraded,
+			fmt.Sprintf("the run's egress observer panicked on %d decision(s), so this report's egress is short by that many events", observerFaults))
 	}
-	worsenNetwork(r, enforce.Degraded,
-		fmt.Sprintf("the egress proxy recovered %d internal fault(s) that left no record, so this report's egress is short by that many events", lost))
+	if handlerFaults > 0 {
+		worsenNetwork(r, enforce.Degraded,
+			fmt.Sprintf("the egress proxy panicked on %d connection(s) after deciding them, so the report names those destinations but the connections did not run to completion", handlerFaults))
+	}
 }
 
 // noteNAT64Blackout records destinations the egress guard refused because NAT64 discovery
@@ -1209,7 +1218,8 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 		<-done
 		retries, backoff := pr.AcceptRetries()
 		return proxyOutcome{
-			lostRecords:    pr.InternalFaults(),
+			observerFaults: pr.ObserverFaults(),
+			handlerFaults:  pr.HandlerFaults(),
 			nat64Blackouts: pr.NAT64Blackouts(),
 			acceptRetries:  retries,
 			acceptBackoff:  backoff,
@@ -1218,12 +1228,13 @@ func startProxyWith(ctx context.Context, p *policy.Policy, socket string, observ
 	}, nil
 }
 
-// proxyOutcome is what the run's proxy has to say about itself once it has stopped: the
-// faults that left no record, the egress it refused for reasons that were not the
+// proxyOutcome is what the run's proxy has to say about itself once it has stopped: its
+// own two faults, told apart because their remedies are, the egress it refused for reasons that were not the
 // manifest's, and the listener's terminal error. Each one is a note in the run's report;
 // they travel together because they are all read from the same stopped Proxy.
 type proxyOutcome struct {
-	lostRecords    int
+	observerFaults int
+	handlerFaults  int
 	nat64Blackouts int
 	acceptRetries  int
 	acceptBackoff  time.Duration

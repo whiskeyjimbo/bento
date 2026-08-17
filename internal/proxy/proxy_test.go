@@ -2078,8 +2078,13 @@ func TestPanicAfterTheTunnelDoesNotReportAFault(t *testing.T) {
 	if !slices.Equal(seen, []Decision{Allowed}) {
 		t.Errorf("decisions = %v, want exactly [%s]", seen, Allowed)
 	}
-	if n := p.InternalFaults(); n != 1 {
-		t.Errorf("InternalFaults() = %d, want 1: not re-reporting the decision must not erase the fault", n)
+	if n := p.HandlerFaults(); n != 1 {
+		t.Errorf("HandlerFaults() = %d, want 1: not re-reporting the decision must not erase the fault", n)
+	}
+	// The remedies differ - this one is a bug in this package, an observer fault is a bug
+	// in the embedder's callback - so a panic here must not read as a lost decision.
+	if n := p.ObserverFaults(); n != 0 {
+		t.Errorf("ObserverFaults() = %d, want 0: the observer was called and returned; its record is not short", n)
 	}
 }
 
@@ -2098,8 +2103,11 @@ func TestAPanickingObserverCountsTheDecisionItLost(t *testing.T) {
 	}
 	// The observer runs before the 200, so the count is already in by the time the
 	// status line is read.
-	if n := p.InternalFaults(); n != 1 {
-		t.Errorf("InternalFaults() = %d, want 1: a swallowed decision leaves the egress record short and nothing else says so", n)
+	if n := p.ObserverFaults(); n != 1 {
+		t.Errorf("ObserverFaults() = %d, want 1: a swallowed decision leaves the egress record short and nothing else says so", n)
+	}
+	if n := p.HandlerFaults(); n != 0 {
+		t.Errorf("HandlerFaults() = %d, want 0: the handler ran to completion; only the record of it is missing", n)
 	}
 }
 

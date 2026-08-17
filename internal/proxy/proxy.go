@@ -151,13 +151,18 @@ type Proxy struct {
 	// served marks that Serve has been entered, so a Proxy is used at most once.
 	served atomic.Bool
 
-	// internalFaults counts the proxy's own faults that no observer call could carry:
-	// a panicking observer, whose decision is simply gone, and a handler panic after
-	// its decision was already reported, which Faulted deliberately does not
-	// re-report. Both leave the run's egress record short of what happened, and
-	// without this nothing downstream can tell a short record from a complete one.
-	// Written from handler goroutines and from Serve's accept goroutine.
-	internalFaults atomic.Int64
+	// observerFaults counts decisions a panicking observer swallowed: the decision was
+	// made and is simply gone. The remedy is the embedder's callback. Written from
+	// handler goroutines and from Serve's accept goroutine.
+	observerFaults atomic.Int64
+
+	// handlerFaults counts handler panics that happened after the decision was already
+	// reported, which Faulted deliberately does not re-report. The decision survives;
+	// what is missing is the rest of the connection, and the remedy is in this package,
+	// not the embedder's. Kept apart from observerFaults because the two call for
+	// opposite action and a single number can answer for neither. Written from handler
+	// goroutines.
+	handlerFaults atomic.Int64
 
 	// acceptRetries counts the transient Accept failures Serve backed off and retried,
 	// and acceptBackoff is the time it spent waiting them out: the window during which
@@ -168,11 +173,18 @@ type Proxy struct {
 	acceptBackoff time.Duration
 }
 
-// InternalFaults reports how many times the proxy recovered a fault of its own that
-// left no decision in the observer's record. Read it after Serve returns: a non-zero
-// count means the run's egress record is short by that many events, so a caller that
-// turns observed destinations into a proposed manifest must not present it as complete.
-func (p *Proxy) InternalFaults() int { return int(p.internalFaults.Load()) }
+// ObserverFaults reports how many decisions the embedder's observer panicked on, losing
+// them. Read it after Serve returns: a non-zero count means the run's egress record is
+// short by that many events, so a caller that turns observed destinations into a proposed
+// manifest must not present it as complete. The fault is in the callback.
+func (p *Proxy) ObserverFaults() int { return int(p.observerFaults.Load()) }
+
+// HandlerFaults reports how many connections the proxy panicked on AFTER reporting their
+// decision. Read it after Serve returns. The record carries the decision, so the manifest
+// a caller proposes from it is not short - but the proxy broke on a connection it had
+// already enforced, which is this package's own bug rather than the embedder's. Counted
+// apart from ObserverFaults for that reason: the two call for opposite action.
+func (p *Proxy) HandlerFaults() int { return int(p.handlerFaults.Load()) }
 
 // NAT64Blackouts reports how many connections were refused for no reason but that NAT64
 // discovery could not rule out a site prefix, so an IPv6 destination no transition prefix
@@ -200,7 +212,7 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // concurrency limit produces, on Serve's accept goroutine - so it must not block: a slow observer stalls the connection it
 // reports, and on the accept path it stalls every connection behind it. A panic is
 // contained and the connection proceeds; the decision it carried is lost, and
-// InternalFaults counts it so the shortfall is visible.
+// ObserverFaults counts it so the shortfall is visible.
 //
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries them only sometimes,
@@ -819,7 +831,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			// The decision stands, so this is not Faulted - but the proxy still broke on a
 			// connection it enforced, and re-reporting is the only thing suppressed here,
 			// not the fault itself.
-			p.internalFaults.Add(1)
+			p.handlerFaults.Add(1)
 		}
 		if established {
 			return
@@ -999,7 +1011,7 @@ func (p *Proxy) report(d Decision, host, port string) {
 	}
 	defer func() {
 		if recover() != nil {
-			p.internalFaults.Add(1)
+			p.observerFaults.Add(1)
 		}
 	}()
 	p.observe(d, host, port)
