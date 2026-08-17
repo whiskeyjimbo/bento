@@ -2344,3 +2344,31 @@ func TestUnshieldableRelocationsSkipsTheHarmlessRefusals(t *testing.T) {
 		})
 	}
 }
+
+// homeLocations joins a relocated XDG base onto an entry with no screen on the base, the
+// same gap TestRelocatedScreensTheBaseAndNotOnlyTheJoinedPath closes for the rule
+// emitters. Its output is AliasAnchors, so XDG_CONFIG_HOME=/ anchored the alias scan at
+// /gcloud and every other joined name - not a shield over anything, but a scan of
+// directories the variable never put a credential in.
+//
+// Asserted as set equality against the unset environment: AliasAnchors discards the
+// variable that placed each anchor, and an unshieldable base must leave the anchor set
+// exactly as it found it.
+func TestAliasAnchorsScreenTheRelocatedBase(t *testing.T) {
+	for _, e := range RelocationVars() {
+		t.Setenv(e, "")
+		os.Unsetenv(e)
+	}
+	want := AliasAnchors("/home/u")
+	for _, base := range []string{"/", "/home", "/home/u"} {
+		for _, b := range xdgBases {
+			t.Run(b.env+"="+base, func(t *testing.T) {
+				t.Setenv(b.env, base)
+				got := AliasAnchors("/home/u")
+				if !slices.Equal(got, want) {
+					t.Errorf("%s=%s changed the alias anchors, but no anchor can hang off a base that is the root or a home anchor\n got %v\nwant %v", b.env, base, got, want)
+				}
+			})
+		}
+	}
+}

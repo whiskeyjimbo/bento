@@ -1870,32 +1870,32 @@ func isDefaultAt(p, rel string, anchors []string) bool {
 	return false
 }
 
-// location is one absolute path an entry must be shielded at, carrying the variable that
-// put it there so a relocated copy can be told apart from the default it sits beside.
-type location struct {
-	path   string
-	source string
-}
-
 // homeLocations expands a home-relative deny entry to every absolute path it must be
 // shielded at: its default location, plus the XDG one when the relevant base is
 // relocated.
-func homeLocations(home, entry string, anchors []string) []location {
+func homeLocations(home, entry string, anchors []string) []string {
 	join := func(p string) string { return filepath.Join(home, p) }
 	for _, b := range xdgBases {
 		if rel, ok := strings.CutPrefix(entry, b.prefix); ok {
-			out := []location{{path: join(entry)}}
+			out := []string{join(entry)}
 			// A relative XDG base is invalid per the spec and ignored by conforming
 			// tools, which fall back to the default location - already shielded via
 			// join(entry). Emitting a relative Rule.Path here would shield nothing at
 			// the intended place, so drop it and rely on the default shield.
-			if base := os.Getenv(b.env); base != "" && filepath.IsAbs(base) && !isDefaultAt(filepath.Clean(base), b.def, anchors) {
-				out = append(out, location{filepath.Join(base, rel), b.env})
+			//
+			// The base is screened as well as the join, for the reason relocBase gives:
+			// the joined path is strictly below the base and so clears Shieldable however
+			// broad the base is, which is how XDG_CONFIG_HOME=/ anchored the alias scan
+			// at /gcloud and every other joined name.
+			if base := os.Getenv(b.env); filepath.IsAbs(base) {
+				if c := filepath.Clean(base); Shieldable(c, anchors) && !isDefaultAt(c, b.def, anchors) {
+					out = append(out, filepath.Join(c, rel))
+				}
 			}
 			return out
 		}
 	}
-	return []location{{path: join(entry)}}
+	return []string{join(entry)}
 }
 
 // AliasAnchors returns the absolute paths whose files identify a credential, for detecting
@@ -1913,9 +1913,7 @@ func AliasAnchors(homes ...string) []string {
 		for _, d := range anchors {
 			// An anchor is a place to look for a second readable name, so a relocated copy
 			// counts the same as the default and the variable that moved it does not.
-			for _, l := range homeLocations(home, d, homes) {
-				out = append(out, l.path)
-			}
+			out = append(out, homeLocations(home, d, homes)...)
 		}
 	}
 	// A tool-specific relocation moves a whole store off the XDG bases homeLocations knows
