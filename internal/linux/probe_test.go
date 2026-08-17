@@ -835,3 +835,27 @@ func TestCanUnshareBoundsItselfAndReportsTheDeadline(t *testing.T) {
 		t.Errorf("verdict = %v, want namespacesUnknown (reason %q)", got, reason)
 	}
 }
+
+// doctor's readiness gate (cmd/bento gatedShortfall) covers only the baseline layers, and
+// network is not one of them - so a host that can fence no egress at all exits ready
+// unless something in the baseline is short too. Nothing in cmd/bento holds that up: what
+// does is here, and only here, which is why it is asserted here. Exhaustive over the whole
+// input space of both layers, because a fact two functions happen to agree on today is one
+// a later branch can split without anything failing to compile.
+func TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced(t *testing.T) {
+	for _, ns := range []namespaceProbe{namespacesUsable, namespacesBlocked, namespacesUnknown} {
+		if networkLayer(ns, "no netns").State != enforce.Unavailable {
+			continue
+		}
+		// The seven booleans filesystemLayer reads, every combination: whichever
+		// Landlock rights and degraded-tier fences this kernel has, none of them may
+		// buy back an Enforced filesystem once the namespaces are gone.
+		for bits := range 1 << 7 {
+			b := func(i int) bool { return bits&(1<<i) != 0 }
+			fs := filesystemLayer(ns, "no netns", b(0), b(1), b(2), b(3), b(4), b(5), b(6))
+			if fs.State == enforce.Enforced {
+				t.Fatalf("ns=%v bits=%07b: network Unavailable alongside filesystem Enforced; doctor would call this host ready with no egress fence at all", ns, bits)
+			}
+		}
+	}
+}

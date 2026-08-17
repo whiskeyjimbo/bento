@@ -87,11 +87,7 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	// deny-list shields the host's runtime directory whole (see denylist.Runtime), and
 	// why the residual it documents - a service socket somewhere else that a grant
 	// exposes - is an egress hole as much as a filesystem one.
-	if ns == namespacesUsable {
-		r.Add(enforce.LayerNetwork, enforce.Enforced, "")
-	} else {
-		r.Add(enforce.LayerNetwork, enforce.Unavailable, nsReason)
-	}
+	r.AddStatus(networkLayer(ns, nsReason))
 
 	for _, ls := range execLayers(seccompSupported(), seccompStrictExecSupported()) {
 		r.AddStatus(ls)
@@ -237,6 +233,19 @@ func limitsLayers(scopeOK bool, scopeReason string, per []enforce.LayerStatus) [
 // does not confine - the same paragraph on every degraded host - is Consequences. A
 // refusal prints the first and sends the reader to a fuller report for the second;
 // doctor prints both. Nothing is dropped, only moved out from on top of the remedy.
+// networkLayer decides the egress layer from the same namespace probe filesystemLayer
+// reads. A function rather than an arm in Probe because doctor's readiness gate rests on
+// the two agreeing: gatedShortfall does not fire on an Unavailable network layer, and what
+// saves that verdict is this layer and the filesystem one turning on the same fact, so a
+// host with no netns to fence egress into also has no fully-enforced filesystem and is
+// gated on that. Pinned in TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced.
+func networkLayer(ns namespaceProbe, nsReason string) enforce.LayerStatus {
+	if ns == namespacesUsable {
+		return enforce.LayerStatus{Layer: enforce.LayerNetwork, State: enforce.Enforced}
+	}
+	return enforce.LayerStatus{Layer: enforce.LayerNetwork, State: enforce.Unavailable, Reason: nsReason}
+}
+
 func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncateRestricted, ioctlDevRestricted, resolveUnixRestricted, scopedIPCRestricted, netTCPRestricted, degradedFencesOK bool) enforce.LayerStatus {
 	status := func(state enforce.State, reason string) enforce.LayerStatus {
 		return enforce.LayerStatus{Layer: enforce.LayerFilesystem, State: state, Reason: reason}

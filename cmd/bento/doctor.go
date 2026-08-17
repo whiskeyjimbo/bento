@@ -68,8 +68,9 @@ func newDoctorCmd() *cobra.Command {
 			// nothing. What actually holds it is the Linux probe: it ties LayerNetwork
 			// Unavailable to the same missing namespace that makes filesystemLayer report
 			// Degraded or Unavailable, and filesystem IS in the baseline, so the gate below
-			// fires anyway. That is one line in another package, and nothing here would stop
-			// compiling if it moved.
+			// fires anyway. That is one fact in another package, and nothing here would stop
+			// compiling if it moved, so it is pinned where it lives - internal/linux's
+			// TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced.
 			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
