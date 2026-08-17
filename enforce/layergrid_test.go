@@ -2,6 +2,7 @@ package enforce
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -13,19 +14,28 @@ import (
 // that goes stale the day someone adds one. Parsing the declaration is the only source
 // that cannot drift from the enum: a new constant lands in this set for free, and the
 // tables below then fail until they answer for it.
-func declaredLayers(t *testing.T, path string) []Layer {
+func declaredLayers(t *testing.T, dir string) []Layer {
 	t.Helper()
-	src, err := os.ReadFile(path)
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^\s*Layer[A-Za-z]+\s+Layer\s+=\s+"([^"]+)"`).FindAllStringSubmatch(string(src), -1)
-	if len(m) == 0 {
-		t.Fatalf("no Layer constants found in %s; the enumerator's pattern no longer matches the declaration, so every grid over it would pass vacuously", path)
+	// Every file of the package, not report.go alone: a constant declared beside the code
+	// that emits it would otherwise be invisible here, and a grid that cannot see a layer
+	// passes for it vacuously - the one failure this enumerator exists to prevent.
+	var out []Layer
+	pattern := regexp.MustCompile(`(?m)^\s*Layer\w+\s+Layer\s+=\s+"([^"]+)"`)
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range pattern.FindAllStringSubmatch(string(src), -1) {
+			out = append(out, Layer(g[1]))
+		}
 	}
-	out := make([]Layer, 0, len(m))
-	for _, g := range m {
-		out = append(out, Layer(g[1]))
+	if len(out) == 0 {
+		t.Fatalf("no Layer constants found under %s; the enumerator's pattern no longer matches the declaration, so every grid over it would pass vacuously", dir)
 	}
 	return out
 }
@@ -53,7 +63,7 @@ var layerGrid = map[Layer]struct {
 }
 
 func TestEveryLayerIsClassifiedAndReachable(t *testing.T) {
-	layers := declaredLayers(t, "report.go")
+	layers := declaredLayers(t, ".")
 
 	for _, l := range layers {
 		row, ok := layerGrid[l]

@@ -5,11 +5,13 @@ package linux
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/launcher"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // declaredLayers reads the Layer constants out of enforce's source for the reason the
@@ -18,38 +20,45 @@ import (
 // package boundary because the enum is the thing being enumerated, not a fixture.
 func declaredLayers(t *testing.T) []enforce.Layer {
 	t.Helper()
-	src, err := os.ReadFile("../../enforce/report.go")
+	files, err := filepath.Glob("../../enforce/*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^\s*Layer[A-Za-z]+\s+Layer\s+=\s+"([^"]+)"`).FindAllStringSubmatch(string(src), -1)
-	if len(m) == 0 {
-		t.Fatal("no Layer constants found in enforce/report.go; the enumerator's pattern no longer matches the declaration, so this grid would pass vacuously")
+	// Every file of the package, not report.go alone: a constant declared beside the code
+	// that emits it would otherwise be invisible, and a grid that cannot see a layer passes
+	// for it vacuously.
+	var out []enforce.Layer
+	pattern := regexp.MustCompile(`(?m)^\s*Layer\w+\s+Layer\s+=\s+"([^"]+)"`)
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range pattern.FindAllStringSubmatch(string(src), -1) {
+			out = append(out, enforce.Layer(g[1]))
+		}
 	}
-	out := make([]enforce.Layer, 0, len(m))
-	for _, g := range m {
-		out = append(out, enforce.Layer(g[1]))
+	if len(out) == 0 {
+		t.Fatal("no Layer constants found under enforce/; the enumerator's pattern no longer matches the declaration, so this grid would pass vacuously")
 	}
 	return out
 }
 
 // correctableInRun is the layers this backend can still move after the probe, once the run
-// has said what it actually applied. The rest are attested by the probe alone: whatever
-// the probe said is what the run reports, however the run went.
+// has said what it actually applied. LayerAutoExecReport is the one attested by the probe
+// alone: it confines nothing and no policy requires it, so whatever the probe said about
+// git on PATH is what the run reports, however the run went.
 //
-// The three limits layers are the open column and are written down as open rather than
-// skipped: nothing corrects them after the probe, so a run whose scope was created and
-// whose properties were then silently ignored still reports them as the probe found them.
-// A layer added here has to earn its entry by being moved by one of the two arms below.
+// A layer added here has to earn its entry by being moved by one of the arms below.
 var correctableInRun = map[enforce.Layer]bool{
-	enforce.LayerFilesystem: true,
-	enforce.LayerNetwork:    true,
-	enforce.LayerExec:       true,
-	enforce.LayerExecStrict: true,
+	enforce.LayerFilesystem:   true,
+	enforce.LayerNetwork:      true,
+	enforce.LayerExec:         true,
+	enforce.LayerExecStrict:   true,
+	enforce.LayerLimitsMemory: true,
+	enforce.LayerLimitsPIDs:   true,
+	enforce.LayerLimitsCPU:    true,
 
-	enforce.LayerLimitsMemory:   false,
-	enforce.LayerLimitsPIDs:     false,
-	enforce.LayerLimitsCPU:      false,
 	enforce.LayerAutoExecReport: false,
 }
 
@@ -116,6 +125,15 @@ func TestEveryLayerIsAnsweredForByTheInRunCorrections(t *testing.T) {
 	before = seed()
 	worsenNetwork(&net, enforce.Degraded, "the egress bridge stopped serving mid-run")
 	note(before, net)
+
+	// The scope sample, which is the limits layers' only in-run channel: systemd accepts a
+	// property whose controller it does not delegate and silently ignores it, so the cap
+	// the probe said this host could enforce is one the run then finds absent.
+	limits := seed()
+	before = seed()
+	noteScopeLimits(&limits, policy.Limits{Memory: "128M", PIDs: 32, CPU: "50%"},
+		scopeLimits{caps: map[string]bool{"memory.max": false, "pids.max": false, "cpu.max": false}})
+	note(before, limits)
 
 	for _, l := range layers {
 		want, ok := correctableInRun[l]
