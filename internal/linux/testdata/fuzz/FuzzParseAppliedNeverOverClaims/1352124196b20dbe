@@ -1,0 +1,4 @@
+go test fuzz v1
+int(-51)
+int(40)
+[]byte("exec-ran ")

@@ -180,11 +180,20 @@ func parseApplied(f *os.File) applied {
 					a.execRecorderErr = v
 				}
 			case key == launcher.AppliedExecRan && !recorderSeen:
-				// The recorder line is the first thing writeExecRecord emits, so an exec-ran
-				// ahead of one is not content the stage wrote here. Appending it would put an
-				// exec nothing observed into the record's Runs. Marked untrustworthy rather
-				// than voiding the report, the same stance as every arm below.
-				garbled = true
+				// The recorder line is the first thing writeExecRecord emits, and it is written
+				// in the same call, so a short write loses the tail and never the head: an
+				// exec-ran ahead of one is not content the stage wrote here at all. Treated as
+				// tampering, like every other line the stage does not write, rather than merely
+				// marked untrustworthy.
+				//
+				// Merely marking it was an over-claim, not a lenience. This key is read before
+				// the line's own key is, so prefixing an existing line with "exec-ran " has
+				// this arm CONSUME it - and the one line that legitimately follows the marker,
+				// target-unreached, is the one that drives all three layers to Unavailable.
+				// Nine spliced bytes therefore bought back an Enforced filesystem verdict from
+				// a report whose intact form claimed no fence at all. Voiding cannot do that:
+				// an absent report is Unavailable on every layer, which is the floor already.
+				return applied{}
 			case key == launcher.AppliedExecRan:
 				// A line that will not decode drops that one exec and nothing else. The
 				// record is a diagnostic and the layer verdicts above the marker are not

@@ -1307,13 +1307,16 @@ func TestADuplicatePreMarkerLineVoidsTheReport(t *testing.T) {
 	}
 }
 
-// writeExecRecord emits the recorder line first, so an exec-ran line with nothing ahead of
-// it is content the stage never wrote in that position. It must not reach execRuns: the
-// section that would vouch for those execs never opened, and a record whose Runs name
-// execs nothing observed is the one thing a diagnostic can still get wrong. Dropped rather
-// than raised, for the reason every other arm past the marker drops - the layer verdicts
-// above it are not the record's to touch.
-func TestAnExecRanWithNoRecorderAheadOfItIsNotRecorded(t *testing.T) {
+// writeExecRecord emits the recorder line first, in the same write, so a short write loses
+// the tail and never the head: an exec-ran line with nothing ahead of it is content the
+// stage never wrote in that position at all, and the report is treated as tampered.
+//
+// It is not enough to drop the line, which is what this arm used to do. The exec-ran key
+// is read before the spliced line's own key is, so the arm CONSUMES whatever follows it -
+// and target-unreached, the one line that legitimately arrives past the marker, is what
+// drives all three layers to Unavailable. Dropping therefore let nine spliced bytes buy
+// back an Enforced filesystem verdict from a report whose intact form claimed no fence.
+func TestAnExecRanWithNoRecorderAheadOfItVoidsTheReport(t *testing.T) {
 	report := "exec-filter none\nlandlock yes\nAPPLIED\n" +
 		`exec-ran 41 "/usr/bin/true" "/bin/true"` + "\n" +
 		"EXEC-RECORD\n"
@@ -1323,14 +1326,33 @@ func TestAnExecRanWithNoRecorderAheadOfItIsNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := parseApplied(openReport(t, path))
-	if len(a.execRuns) != 0 {
-		t.Errorf("execRuns = %+v, want none - no recorder line opened the section", a.execRuns)
+	if a.complete || len(a.execRuns) != 0 || a.landlock != "" {
+		t.Errorf("parseApplied = %+v, want the absent report: an exec-ran with no recorder ahead of it did not come from the stage", a)
 	}
-	if a.execRecordComplete {
-		t.Error("a section that never named a recorder was reported as whole")
+}
+
+// The splice the fuzzer found, as a case in its own right: prefixing the post-marker
+// target-unreached line with "exec-ran " must not reclassify it into the record section and
+// leave the layers claiming a fence the intact report does not.
+func TestSplicingExecRanOntoTargetUnreachedCannotBuyBackAVerdict(t *testing.T) {
+	report := "exec-filter strict\nlandlock yes\nAPPLIED\n" +
+		`exec-ran target-unreached "launcher: starting target: no such file or directory"` + "\n"
+
+	path := filepath.Join(t.TempDir(), "applied")
+	if err := os.WriteFile(path, []byte(report), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if !a.complete || a.landlock != launcher.AppliedYes {
-		t.Errorf("the layer verdicts above the marker did not survive: %+v", a)
+	a := parseApplied(openReport(t, path))
+
+	var r enforce.Report
+	for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
+		r.Add(l, enforce.Enforced, "the probe says this host can")
+	}
+	a.reconcile(&r, true, true, true, 125)
+	for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerExec, enforce.LayerExecStrict} {
+		if got := r.StateOf(l); got != enforce.Unavailable {
+			t.Errorf("%v = %v after the splice, want Unavailable: the intact report reached no target, and tampering may not improve on that", l, got)
+		}
 	}
 }
 
