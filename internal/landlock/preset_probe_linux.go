@@ -18,12 +18,11 @@ import (
 // package: the shipped binary carries no way to reach this, and the probe is the only
 // thing built with the tag.
 //
-// Only a preset at or below the host's ABI changes anything - BestEffort clamps down, so
-// asking for a newer set yields the host's own. The interesting boundary is V6, the first
-// preset that handles a scope at all: every preset below it applies an empty scoped set
-// and reproduces the same pre-ABI-6 column, which is why V1 is left out as redundant
-// rather than excluded for any hazard. RestrictScoped carries no rules, so nothing here
-// touches refer or the filesystem handled set.
+// The interesting boundary is V6, the first preset that handles a scope at all: every
+// preset below it applies an empty scoped set and reproduces the same pre-ABI-6 column, so
+// asking for one of those is redundant rather than hazardous. V1 is not reachable through
+// preset(), for SetTierPreset's reason, which does not apply here: RestrictScoped carries
+// no rules, so nothing on this path touches refer or the filesystem handled set.
 func SetScopedIPCPreset(name string) error {
 	c, err := preset(name)
 	if err != nil {
