@@ -329,6 +329,9 @@ func stampNote(realPath string, doc *manifest.Document) string {
 			}
 		}
 		return unrecordedStamp
+	case journalMatches:
+		// This host approved exactly what the manifest carries, which is the case every
+		// sentence above exists to distinguish from.
 	}
 	return ""
 }

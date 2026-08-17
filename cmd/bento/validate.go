@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -648,6 +649,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	fmt.Fprintf(w, "entrypoint:   %s\n", p.Entrypoint)
 	if p.Interpreter != "" {
 		fmt.Fprintf(w, "interpreter:  %s\n", p.Interpreter)
+		writeResolvedInterpreter(w, p.Interpreter)
 		// On its own line and quoted element by element: these go to the interpreter
 		// before the entrypoint, so a spelling like "-c" decides what it reads at all,
 		// and a reviewer skimming for the program name must not read them as part of it.
@@ -685,6 +687,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
+	writeUnsetEnvNotes(w, p)
 
 	if len(p.Network) == 0 {
 		fmt.Fprintf(w, "network:      denied (no egress)\n")
@@ -818,6 +821,45 @@ func writeSandboxHome(w io.Writer, p *policy.Policy) {
 		return
 	}
 	fmt.Fprintf(w, "  HOME inside the sandbox: %s (this host's)\n", strconv.Quote(home))
+}
+
+// unsetEnvNote is what validate and run both say about an allowlisted name the host does
+// not set, in one string for noStampDiff's reason: a reader who meets it before approving
+// and again on the run's stderr must not have to work out whether it is the same claim.
+// Formatted with the name twice - once as the subject, once in the flag that supplies it.
+const unsetEnvNote = "env %s is allowed by the manifest but not set on this host; " +
+	"the script will not see it. Pass it with --env %s=VALUE."
+
+// writeUnsetEnvNotes names the allowlisted variables this host does not set. run reports
+// them too, but on stderr and after the stamp exists; here the reviewer is still deciding,
+// and a bare env: list gives them no reason to doubt the script sees a value for every name
+// in it. HOME is left out: writeSandboxHome says more about it than this could, including
+// where a `~` lands when nothing is passed through.
+func writeUnsetEnvNotes(w io.Writer, p *policy.Policy) {
+	for _, name := range p.Env {
+		if name == "HOME" {
+			continue
+		}
+		if _, ok := os.LookupEnv(name); !ok {
+			fmt.Fprintf(w, "  note: "+unsetEnvNote+"\n", name, name)
+		}
+	}
+}
+
+// writeResolvedInterpreter says where the interpreter name lands on this host, for
+// writeResolvedGrants' reason: the lookup happens against the invoking process's PATH at
+// the moment of `bento run`, and PATH is not part of what the stamp attests, so the name
+// alone does not say which program the approved policy applies to.
+//
+// Silent when the name is already the path it resolves to, since repeating it teaches
+// nothing, and silent when it does not resolve - runnable: NO reports that, with the
+// lookup's own error.
+func writeResolvedInterpreter(w io.Writer, interpreter string) {
+	path, err := exec.LookPath(interpreter)
+	if err != nil || path == interpreter {
+		return
+	}
+	fmt.Fprintf(w, "  on this host: %q\n", path)
 }
 
 // writeResolvedGrants prints the resolved spelling of a grant list under the literal

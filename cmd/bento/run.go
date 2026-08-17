@@ -105,8 +105,7 @@ func newRunCmd() *cobra.Command {
 				return refuse(err)
 			}
 			for _, name := range unset {
-				fmt.Fprintf(os.Stderr, "[bento] note: env %s is allowed by the manifest but not set on this host; "+
-					"the script will not see it. Pass it with --env %s=VALUE.\n", name, name)
+				fmt.Fprintf(os.Stderr, "[bento] note: "+unsetEnvNote+"\n", name, name)
 			}
 
 			// Statted before the script runs, and carried through to the envelope, so

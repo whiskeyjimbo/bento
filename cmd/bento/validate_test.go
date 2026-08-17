@@ -1204,3 +1204,57 @@ func TestValidateRaisesApproveCallouts(t *testing.T) {
 		t.Errorf("the breadth note belongs beside its grant and nowhere else, got %d copies:\n%s", n, out)
 	}
 }
+
+// The env: list is what the reviewer stamps, and a name the host does not set carries
+// nothing into the sandbox. run says so on stderr, which is after the approval decision;
+// validate is where the decision is made.
+func TestValidateNamesEveryUnsetAllowlistedEnvVar(t *testing.T) {
+	t.Setenv("HOME", "/home/someone")
+	t.Setenv("BENTO_TEST_SET", "value")
+	os.Unsetenv("BENTO_TEST_UNSET")
+	os.Unsetenv("BENTO_TEST_ALSO_UNSET")
+
+	var buf bytes.Buffer
+	p := &policy.Policy{Entrypoint: "./x", Env: []string{"HOME", "BENTO_TEST_SET", "BENTO_TEST_UNSET", "BENTO_TEST_ALSO_UNSET"}}
+	writePolicySummary(&buf, "m.yaml", p, nil, nil, true)
+	out := buf.String()
+	for _, name := range []string{"BENTO_TEST_UNSET", "BENTO_TEST_ALSO_UNSET"} {
+		if !strings.Contains(out, "note: env "+name+" is allowed by the manifest but not set") {
+			t.Errorf("every unset allowlisted name must be reported; %s missing from:\n%s", name, out)
+		}
+	}
+	if strings.Contains(out, "note: env BENTO_TEST_SET") {
+		t.Errorf("a name the host sets must not be reported as unset; got:\n%s", out)
+	}
+	// HOME has its own line saying more than this one could, including where the sandbox
+	// lands when nothing is passed through.
+	if strings.Contains(out, "note: env HOME") {
+		t.Errorf("HOME is writeSandboxHome's to report, not this note's; got:\n%s", out)
+	}
+}
+
+// The interpreter is resolved against PATH at the moment of `bento run`, and PATH is not
+// part of what the approval stamp attests - so the name alone does not say which program
+// the policy applies to, the way a bare grant does not say what it reaches.
+func TestValidateResolvesTheInterpreter(t *testing.T) {
+	dir := t.TempDir()
+	interp := filepath.Join(dir, "myinterp")
+	if err := os.WriteFile(interp, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "myinterp"}, nil, nil, true)
+	if out := buf.String(); !strings.Contains(out, strconv.Quote(interp)) {
+		t.Errorf("summary must say where the interpreter name lands on this host; got:\n%s", out)
+	}
+
+	// Nothing to add when the name is already the path, and nothing to add when it does
+	// not resolve - runnable: NO reports that, with the lookup's own error.
+	buf.Reset()
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "nosuchinterp"}, nil, nil, true)
+	if out := buf.String(); strings.Contains(out, "on this host: ") {
+		t.Errorf("an unresolvable interpreter must not be given a landing place; got:\n%s", out)
+	}
+}
