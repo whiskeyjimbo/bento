@@ -145,6 +145,18 @@ commits that built it - none of them were ever in a release.
   before the script starts and beside validate's grants, and `validate --json`
   carries it as `unshieldable_runtime_dir` so a gate reads the same answer.
   Output only; what is shielded did not change.
+- **`profile` no longer proposes a rule for a host the run could not reach.** A
+  destination the allowlist permitted and the dial then failed on - a host that
+  is down, a name that does not resolve - was reported to the observer exactly as
+  an established tunnel was, so profiling folded it in with the hosts the script
+  actually used and offered the operator a grant for a destination nothing ever
+  egressed to. It is now a decision of its own and the proposal skips it, so a
+  re-profile against a flaky host produces a smaller manifest than before rather
+  than a wrong one. A gate admission that then failed to dial is still reported
+  as an admission: the supervisor's yes is egress beyond the declared manifest
+  whether or not a packet followed. The connection count is unchanged - it
+  counts what reached the proxy. Output only; nothing is denied or permitted
+  differently.
 - **The same for every other relocation variable pointed somewhere no shield can
   follow.** `GNUPGHOME=$HOME` leaves the private keys under it unshielded while
   `~/.gnupg` keeps its default rule, so the rule set, the count and the exit code
