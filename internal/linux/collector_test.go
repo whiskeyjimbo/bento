@@ -154,9 +154,9 @@ func TestRunDispatchesToTheDegradedTier(t *testing.T) {
 // cause's sentence is absent as well.
 func TestLostRecordsNameWhichFaultDegradedTheNetworkLayer(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
+		name              string
 		observer, handler int
-		want, absent     string
+		want, absent      string
 	}{
 		{"observer", 3, 0, "observer panicked on 3 decision(s)", "after deciding them"},
 		{"handler", 0, 2, "panicked on 2 connection(s) after deciding them", "observer panicked"},
