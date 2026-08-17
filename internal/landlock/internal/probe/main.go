@@ -168,6 +168,18 @@ import (
 var quiet *os.File
 
 func main() {
+	// Every mode that starts a child AFTER restricting and then reaches for it - a signal
+	// under LANDLOCK_SCOPE_SIGNAL, a /proc reach under the ptrace check - is asking whether
+	// the child is in the SAME domain, and below ABI 8 that is a per-thread question.
+	// go-landlock only has the tsync flag from ABI 8; below it, it restricts each thread
+	// separately with psx, and each landlock_restrict_self builds its own domain, so two
+	// threads of this process end up in sibling domains rather than one. The child inherits
+	// the domain of the thread that forked it, so a reach issued from any other thread is
+	// cross-domain and the kernel refuses it - correctly, and at the mercy of which thread
+	// the runtime happened to pick. Pinning this goroutine keeps fork and reach on one
+	// thread so the arms measure scoping rather than scheduling.
+	runtime.LockOSThread()
+
 	q, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "devnull:", err)
