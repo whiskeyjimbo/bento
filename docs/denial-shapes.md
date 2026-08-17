@@ -62,8 +62,7 @@ away from it, and a run that hit every shield can exit 0.
   written there survives the run). This is the recovery: after a run
   that produced a suspicious result, the embedder can name the shielded paths
   rather than leaving the user to guess why their agent vendored a config.
-- `ShieldedGrants` - shields a grant deliberately lifted (see
-  [agent-fleets.md](agent-fleets.md)), each by the home-expanded absolute path,
+- `ShieldedGrants` - shields a grant deliberately lifted, each by the home-expanded absolute path,
   what it `Holds` (`"credentials"`, `"history"`, ...), and an `OnHost` for the
   case where the granted name is a symlink and the exposure landed elsewhere.
 - `Exposed []ShieldApplied` - under the degraded tier, shields that would have

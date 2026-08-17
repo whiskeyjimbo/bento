@@ -410,6 +410,9 @@ Bento is architected around a platform-decoupled enforcement seam:
 - **`internal/denylist`**: Platform-independent mandatory denylist data structures and rules.
 - **`internal/linux`**: Linux implementation using bubblewrap, `internal/launcher`, `internal/observe` (ptrace profiler), seccomp, and Landlock.
 - **`internal/proxy`**: Shared host-side egress HTTP CONNECT proxy.
+- **`internal/shield`**: The one answer to "does this grant land inside a shielded path", shared by the backend, the validate gate, and the profiler's clamp.
+- **`gate`**: What this host will refuse about a policy, without building a sandbox - `bento validate`'s verdict as a library.
+- **`trust`**: Whether an approval fingerprint still matches, and who else can rewrite the manifest it is stamped on.
 - **`manifest`**: YAML manifest loader, serializer, and provenance tracker.
 - **`profile`**: The `Observation` a profiling pass records, which `backend.Profile` returns and manifest synthesis consumes.
 - **`backend`**: Backend selection logic and profiling synthesis.
@@ -520,6 +523,9 @@ make test       # unit and integration tests (sandbox tests skip if bwrap/userns
 make vet
 make lint       # golangci-lint, pinned
 make audit      # denylist parity against upstream firejail reference definitions
+make layering   # the import boundaries: kernel enforcement stays in the backend, and
+                # shield assembly stays in internal/shield
+make vuln       # govulncheck over both modules (needs network)
 make race       # the proxy's concurrency tests under the race detector (needs a C toolchain)
 make crossbuild # the tree still compiles for darwin and linux/arm64
 make examples   # each examples/*/verify.sh; the root go test does not reach them

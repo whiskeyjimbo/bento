@@ -10,6 +10,8 @@ Three commitments shape the layout that follows:
 1. **Machine-owned manifests.** Permissions are proposed via profiling, reviewed by humans, and stamped with cryptographic approval fingerprints. This is what `manifest`, `policy`, and `profile` exist to serve.
 2. **Platform-decoupled seams.** Policy logic, manifest processing, and domain models are decoupled from platform backends, which is why kernel *enforcement* is confined to `internal/linux`, reached through the `enforce.Enforcer` interface.
 
+   A second boundary rides the same check: `internal/shield` assembles the built-in half of a run's shield set, so a new package cannot start building shield rules of its own. The grant-derived half - a checkout's git hooks and editor task files - is assembled in `internal/linux`, which is where the host facts it needs are, and `make layering` names that exception with its reason rather than leaving it implicit.
+
    The confined thing is the kernel's isolation primitives - seccomp filters, Landlock rulesets, the in-sandbox launcher, the ptrace observer - which only the platform backend and each other may import. Raw syscalls in the ordinary sense are not confined and should not be: `cmd/bento` reads terminal state and signal constants, resolves grants with `stat`/`openat`, and fingerprints manifests with xattrs; `internal/proxy` and `internal/pathresolve` classify errnos. None of those decide what a run is allowed to do, which is the property the boundary exists to protect. `make layering` checks the import-level claim on every platform the tree builds for, so it fails when the boundary moves rather than when someone rereads this paragraph.
 3. **No silent degradation.** Host kernel capabilities are reported in explicit tiers rather than fallen back through, which is why tier reporting sits in `enforce` alongside the enforcer interface rather than inside the platform backend (`internal/linux`).
 
@@ -48,6 +50,10 @@ graph TD
 | `internal/proxy` | Shared host-side HTTP CONNECT proxy over isolated Unix domain sockets for network egress control. |
 | `internal/denylist` | Platform-independent list of mandatory credential and persistence shields (`~/.ssh`, `.git/hooks`, `/run`). |
 | `profile` | Turns a profiling run's observations into a proposed policy for a human to review. |
+| `gate` | Answers what this host will refuse about a policy without building a sandbox - the verdict `bento validate` reports, reachable as a library. |
+| `trust` | Whether a manifest's stamped fingerprint still matches its policy, and who besides the observing identity can rewrite the file it is stamped on. |
+| `internal/shield` | Assembles the built-in shield set and answers "does this grant land inside a shielded path" for the backend, the validate gate, and the profiler's clamp, so the three cannot diverge. Rule data stays in `internal/denylist`. |
+| `internal/credhunt` | The pre-run scan for host-made aliases (hardlinks, bind mounts) that reach a credential through a granted tree. |
 | `internal/pathresolve` | Resolves a host path the way a write through it lands, including through components that do not exist yet. Shared by `internal/linux` and `profile` so the two cannot disagree about where a grant goes. |
 
 ---
@@ -130,3 +136,9 @@ Detailed technical rationale for core design choices are documented in [`docs/ad
 - [`0004-directory-granular-write-grants.md`](adr/0004-directory-granular-write-grants.md): Directory-level write bind mounts for save-via-rename compatibility.
 - [`0005-ptrace-open-register-observation.md`](adr/0005-ptrace-open-register-observation.md): Register-level syscall tracing for zero-content profiling.
 - [`0006-no-exec-gate-on-seccomp-user-notif.md`](adr/0006-no-exec-gate-on-seccomp-user-notif.md): Why the exec block stays a blind filter rather than an interactive gate.
+- [`0007-cross-language-service-surface.md`](adr/0007-cross-language-service-surface.md): Cross-language service surface (proposed).
+- [`0008-no-exec-allowlist-on-landlock.md`](adr/0008-no-exec-allowlist-on-landlock.md): Why Landlock's execute right is not used as an exec allowlist (rejected).
+- [`0009-exec-broker-for-dynamic-toolchains.md`](adr/0009-exec-broker-for-dynamic-toolchains.md): Why there is no exec broker for dynamically linked toolchains (rejected).
+- [`0010-shields-deny-vs-surface.md`](adr/0010-shields-deny-vs-surface.md): Whether a shield records authorization, denies, or surfaces.
+- [`0011-exec-record-under-enforcement.md`](adr/0011-exec-record-under-enforcement.md): Exec-only ptrace recording what an enforced run actually ran.
+- [`0012-untagged-shield-seam.md`](adr/0012-untagged-shield-seam.md): One shield verdict behind an untagged seam.
