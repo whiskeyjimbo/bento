@@ -734,7 +734,7 @@ func TestEventStreamHoldsNothingBetweenWrites(t *testing.T) {
 func TestRefuseStreamJSONEndsTheStreamWithARefusal(t *testing.T) {
 	var buf bytes.Buffer
 	want := errors.New("refusing to run: the manifest is not approved")
-	err := refuseStreamJSON(&buf, true, want)
+	err := refuseStreamJSON(&buf, io.Discard, true, want)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("exit code = %d, want %d", got, bentoFailed)
 	}
@@ -767,7 +767,7 @@ func TestRefuseStreamJSONEndsTheStreamWithARefusal(t *testing.T) {
 func TestRefuseStreamJSONLeavesTheHumanPathAlone(t *testing.T) {
 	var buf bytes.Buffer
 	want := errors.New("--env \"X\": want NAME=VALUE")
-	if got := refuseStreamJSON(&buf, false, want); !errors.Is(got, want) {
+	if got := refuseStreamJSON(&buf, io.Discard, false, want); !errors.Is(got, want) {
 		t.Errorf("err = %v, want the error returned untouched", got)
 	}
 	if buf.Len() != 0 {
@@ -965,7 +965,7 @@ func TestWriteRunResultPostureShortfall(t *testing.T) {
 // TestRefuseStreamJSONEndsTheStreamWithARefusal.
 func TestRefuseJSONUsesTheRefusalEnvelope(t *testing.T) {
 	var buf bytes.Buffer
-	err := refuseJSON(&buf, true, errors.New("refusing to run: the manifest is not approved"))
+	err := refuseJSON(&buf, io.Discard, true, errors.New("refusing to run: the manifest is not approved"))
 
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != bentoFailed {
@@ -990,7 +990,7 @@ func TestRefuseJSONUsesTheRefusalEnvelope(t *testing.T) {
 func TestRefuseJSONPassesHumanErrorThrough(t *testing.T) {
 	want := errors.New("boom")
 	var buf bytes.Buffer
-	if got := refuseJSON(&buf, false, want); !errors.Is(got, want) {
+	if got := refuseJSON(&buf, io.Discard, false, want); !errors.Is(got, want) {
 		t.Errorf("err = %v, want the original error", got)
 	}
 	if buf.Len() != 0 {
@@ -1184,5 +1184,35 @@ func TestWriteRunResultMidFlightFailureCarriesTheExposureAudit(t *testing.T) {
 	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, runErr)
 	if !strings.Contains(stderr.String(), reachable) {
 		t.Errorf("the human path must name the exposed store too; got %q", stderr.String())
+	}
+}
+
+// The refusal envelope exists because a machine gate cannot tell an empty stdout from a
+// crash. A stdout that is closed or full leaves exactly that empty stdout, so the one path
+// where the envelope can still fail to land has to say so on stderr rather than exiting 125
+// with nothing written and nothing said.
+func TestAFailedRefusalEnvelopeIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(io.Writer, io.Writer) error
+	}{
+		{"stream", func(stdout, stderr io.Writer) error {
+			return refuseStreamJSON(stdout, stderr, true, errors.New("refused"))
+		}},
+		{"document", func(stdout, stderr io.Writer) error {
+			return refuseJSON(stdout, stderr, true, errors.New("refused"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr strings.Builder
+			err := tc.write(errWriter{}, &stderr)
+			var exit *exitError
+			if !errors.As(err, &exit) || exit.code != bentoFailed {
+				t.Errorf("err = %v; a refusal still exits %d", err, bentoFailed)
+			}
+			if !strings.Contains(stderr.String(), "broken pipe") {
+				t.Errorf("an envelope that could not be written must be reported, with the write's own error; stderr:\n%s", stderr.String())
+			}
+		})
 	}
 }

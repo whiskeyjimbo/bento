@@ -126,15 +126,15 @@ const (
 // Mistakes in the command line only. An error raised inside RunE is that command's to
 // answer - it knows whether the target ran, and calling one refused here would report a
 // run bento declined over one it started and could not finish.
-func refuseUsageJSON(stdout io.Writer, root, cmd *cobra.Command, args []string, err error) error {
+func refuseUsageJSON(stdout, stderr io.Writer, root, cmd *cobra.Command, args []string, err error) error {
 	if cmd == nil || !isUsageMistake(root, cmd, err) || !wantsJSON(cmd, args) {
 		return err
 	}
 	switch cmd.Annotations[jsonRefusalAnnotation] {
 	case jsonRefusalDocument:
-		return refuseJSON(stdout, true, err)
+		return refuseJSON(stdout, stderr, true, err)
 	case jsonRefusalStream:
-		return refuseStreamJSON(stdout, true, err)
+		return refuseStreamJSON(stdout, stderr, true, err)
 	}
 	return err
 }

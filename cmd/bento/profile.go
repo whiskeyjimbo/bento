@@ -89,7 +89,7 @@ func newProfileCmd() *cobra.Command {
 			// a crash. It is run's refuseJSON, which carries the host report when the
 			// error is one. A usage error cobra rejects before RunE is reached never gets
 			// here at all - the frontend answers that one, off the annotation below.
-			refuse := func(err error) error { return refuseJSON(os.Stdout, asJSON, err) }
+			refuse := func(err error) error { return refuseJSON(os.Stdout, os.Stderr, asJSON, err) }
 
 			// Answered here rather than by a hook above the RunE: a refusal raised before
 			// it would bypass the envelope above.

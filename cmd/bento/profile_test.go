@@ -1418,7 +1418,7 @@ func TestProfileRefusalJSONCarriesTheReport(t *testing.T) {
 	refusal := &enforce.Refusal{Report: report, Reason: "a core guarantee cannot be fully enforced on this host", Short: gatedShortfall(report)}
 
 	var stdout bytes.Buffer
-	err := refuseJSON(&stdout, true, refusal)
+	err := refuseJSON(&stdout, io.Discard, true, refusal)
 
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != bentoFailed {

@@ -56,7 +56,7 @@ func newRunCmd() *cobra.Command {
 			// cannot provide - goes through refuse, so --json always leaves a refusal
 			// object on stdout. Returning these bare wrote nothing there, and a machine
 			// gate could not tell a refusal from a crash.
-			refuse := func(err error) error { return refuseStreamJSON(os.Stdout, asJSON, err) }
+			refuse := func(err error) error { return refuseStreamJSON(os.Stdout, os.Stderr, asJSON, err) }
 
 			// Answered inside RunE rather than by a hook above it, for the same reason
 			// the mutually-exclusive flags below are: a refusal raised before RunE leaves
@@ -274,12 +274,18 @@ type streamEventJSON struct {
 // shape and no longer run's - see refuseStreamJSON. Outside --json the error is returned
 // untouched and main renders it; inside it, the message is the document's reason and the
 // exit code is bentoFailed, including that nothing is written to stderr.
-func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
+// A write that fails leaves the empty stdout the envelope exists to eliminate, so it is
+// reported on stderr rather than dropped: the exit code alone carries the refusal, and a
+// consumer reading stdout cannot tell "bento refused" from "bento crashed" without being
+// told which happened here.
+func refuseJSON(stdout, stderr io.Writer, asJSON bool, err error) error {
 	if err == nil || !asJSON {
 		return err
 	}
 	reason, report := refusalDetail(err)
-	_ = writeJSON(stdout, refusalJSON{true, reason, report})
+	if werr := writeJSON(stdout, refusalJSON{true, reason, report}); werr != nil {
+		fmt.Fprintf(stderr, "[bento] the refusal could not be written to stdout (%v), so nothing there reports it - the exit code is the only answer.\n", werr)
+	}
 	return &exitError{code: bentoFailed}
 }
 
@@ -287,13 +293,17 @@ func refuseJSON(stdout io.Writer, asJSON bool, err error) error {
 // stream rather than the single indented document profile answers with. The two cannot
 // share a shape - a consumer of the stream switches on event, and a run's stdout must be
 // one object per line whether the run produced output or was refused before it started.
-func refuseStreamJSON(stdout io.Writer, asJSON bool, err error) error {
+func refuseStreamJSON(stdout, stderr io.Writer, asJSON bool, err error) error {
 	if err == nil || !asJSON {
 		return err
 	}
 	reason, report := refusalDetail(err)
-	newEventStream(stdout).emitTerminal(streamRefusalJSON{Event: "refusal", Reason: reason, Report: report})
-	return &exitError{code: bentoFailed}
+	stream := newEventStream(stdout)
+	stream.emitTerminal(streamRefusalJSON{Event: "refusal", Reason: reason, Report: report})
+	// Through reportStreamed like every other --json path, for refuseJSON's reason: a
+	// refusal object that never landed leaves the stream empty, which is the one shape a
+	// consumer cannot tell from a crash.
+	return reportStreamed(stderr, stream, bentoFailed)
 }
 
 // refusalDetail pulls the reason and the report out of a refusal raised before the
