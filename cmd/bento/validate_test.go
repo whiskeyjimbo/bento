@@ -16,6 +16,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/gate"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -631,6 +632,13 @@ func TestValidateJSONCarriesTheDroppedRelocations(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home anchor to make unshieldable: %v", err)
+	}
+	// The field reads the whole environment, so the absence half below answers for the
+	// developer's shell as much as for this test: any relocation variable it happens to
+	// set unshieldably would fail it.
+	for _, env := range denylist.RelocationVars() {
+		t.Setenv(env, "")
+		os.Unsetenv(env)
 	}
 	t.Setenv("GNUPGHOME", home)
 	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)

@@ -1171,8 +1171,8 @@ func TestGuardRefusalIsIndistinguishableFromDialFailure(t *testing.T) {
 	if d, _ := decisions.Load("private.example.com"); d != GuardBlocked {
 		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, GuardBlocked)
 	}
-	if d, _ := decisions.Load("public.example.com"); d != Allowed {
-		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Allowed)
+	if d, _ := decisions.Load("public.example.com"); d != Unreachable {
+		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Unreachable)
 	}
 }
 
@@ -2136,5 +2136,46 @@ func TestTunnelBoundsASilentUpstreamThroughTheClientsTraffic(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel outlived the first-byte bound: an upstream that never speaks holds its handler slot for the whole idle timeout")
+	}
+}
+
+// A destination the allowlist permitted and the dial then failed on is reported apart
+// from one a tunnel was actually established to. The observer is the only place the two
+// can be told apart - the client gets the same 502 either way, deliberately - and the
+// consumer that needs it is profiling, which proposes a manifest rule for every host it
+// records and was offering a grant for a host nothing ever reached.
+//
+// A gate admission is the exception and stays itself: the supervisor's yes is egress
+// beyond the declared manifest whether or not a packet followed it.
+func TestAFailedDialIsReportedApartFromAnEstablishedTunnel(t *testing.T) {
+	dead := func(context.Context, string, string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want Decision
+	}{
+		{"allowlisted", []Option{WithDialer(dead)}, Unreachable},
+		{"gate-admitted", []Option{WithDialer(dead),
+			WithGatekeeper(func(context.Context, string, string) bool { return true })}, AdmittedByGate},
+		{"reached", []Option{WithDialer(fakeDialer("HELLO"))}, Allowed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []Decision
+			rules := []policy.NetworkRule{{Host: "example.com", Port: "443"}}
+			if tc.want == AdmittedByGate {
+				rules = nil // the gate is consulted only where the allowlist misses
+			}
+			opts := append(tc.opts, WithObserver(func(d Decision, _, _ string) { got = append(got, d) }))
+			p := New(rules, opts...)
+			dialProxy, stop := startProxy(t, p)
+			c := dialProxy()
+			connect(t, c, "example.com:443")
+			c.Close()
+			stop()
+
+			if len(got) != 1 || got[0] != tc.want {
+				t.Errorf("decisions = %v, want exactly [%v]", got, tc.want)
+			}
+		})
 	}
 }

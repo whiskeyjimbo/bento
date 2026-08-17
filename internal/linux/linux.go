@@ -1086,10 +1086,12 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.untunneled = make(map[string]enforce.HostPort)
 		}
 		c.untunneled[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
-	case proxy.Allowed, proxy.Refused:
+	case proxy.Allowed, proxy.Refused, proxy.Unreachable:
 		// Counted but not named. An egress the rules allow outright is what the manifest
 		// already says, and the report exists for the destinations a run would not predict
-		// from reading it.
+		// from reading it. One the rules allowed and the network then failed to carry is
+		// the same manifest with a dead host behind it, which the script's own error says
+		// better than this report could.
 	case proxy.RefusedAtCapacity:
 		// Counted like the two above - it is a connection that reached the proxy - and
 		// tallied apart as well, because unlike them it says the allowlist was never

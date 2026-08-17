@@ -249,6 +249,15 @@ func (r *recordedEgress) observe(d proxy.Decision, host, port string) {
 		}
 		return
 	}
+	// A destination the dial never reached is recorded nowhere: the proposal is a list of
+	// rules to grant, and a host that was allowlisted, attempted and unreachable is one
+	// nothing ever used - offering a rule for it asks the operator to widen the manifest
+	// for a destination the script's own run has no evidence of. The refusing mode is the
+	// deliberate opposite (Denied below records the intended destination it never dialed),
+	// and it is a promise only that mode makes.
+	if d == proxy.Unreachable {
+		return
+	}
 	// An untunneled destination is recorded apart from the proposable hosts, not
 	// beside them: no manifest rule makes bento carry a plain-HTTP request, so it
 	// belongs in the proposal's declined half rather than its grants.

@@ -88,6 +88,15 @@ const (
 	// A run that reports the network layer fully enforced through such a window is
 	// claiming an allowlist it did not get to apply.
 	RefusedAtCapacity Decision = "refused-at-capacity"
+	// Unreachable marks a connection the allowlist permitted by name and the dial then
+	// failed on - a host that is down, a name that does not resolve, a refused port. It
+	// is distinct from Allowed because nothing ever egressed: profiling proposes a
+	// manifest rule for every host it records, and folding this into Allowed offered the
+	// operator a grant for a destination the script never reached. Distinct from
+	// GuardBlocked too, which is bento refusing an address rather than the network
+	// failing to carry one, and where the remedy is a literal grant rather than a live
+	// host. A gate admission that then failed to dial stays AdmittedByGate; see handle.
+	Unreachable Decision = "unreachable"
 	// Faulted marks a connection the proxy itself dropped, because a handler panicked
 	// before reaching any other decision - a panic after one is not reported, the
 	// connection having already reached an outcome. It names no host or port for the same
@@ -944,6 +953,15 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			report(GuardBlocked, host, port)
 			writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 			return
+		}
+		// Unreachable only where the allowlist admitted it. A gate admission is reported
+		// as itself even when the dial then failed: the supervisor's yes is egress
+		// permitted beyond the declared manifest whether or not a packet followed, and
+		// that is what the run's report exists to be honest about. The consumer this
+		// distinction is for - profiling, which proposes a rule per recorded host - has
+		// no gate at all (startRecordingProxy's allowlist is *:*), so the two never meet.
+		if !admittedByGate {
+			decision = Unreachable
 		}
 		report(decision, host, port)
 		writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))

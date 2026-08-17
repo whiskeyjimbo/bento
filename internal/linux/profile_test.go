@@ -482,3 +482,23 @@ func TestRecordedEgressKeepsTheHostARefusalDidName(t *testing.T) {
 		t.Errorf("UnproposableHosts = %v, want %v", obs.UnproposableHosts, want)
 	}
 }
+
+// A host the run reached for and could not reach is not a rule to propose: the operator
+// would be offered a grant for a destination nothing ever used. The intended-egress
+// record of the refusing mode is the deliberate opposite and has to survive beside it -
+// there the proxy never dials at all, and recording what the script asked for is the
+// whole point of the mode.
+func TestRecordedEgressDropsADestinationTheDialNeverReached(t *testing.T) {
+	var rec recordedEgress
+	rec.observe(proxy.Unreachable, "down.example", "443")
+	rec.observe(proxy.Denied, "recorded.example", "443")
+
+	var obs profile.Observation
+	rec.into(&obs)
+	if want := []profile.HostPort{{Host: "recorded.example", Port: "443"}}; !slices.Equal(obs.Hosts, want) {
+		t.Errorf("Hosts = %v, want %v - only the destination a run has evidence of", obs.Hosts, want)
+	}
+	if obs.DroppedConnections != 0 || obs.UnproposableHosts != nil {
+		t.Errorf("DroppedConnections = %d, UnproposableHosts = %v, want none - an unreachable host is not a connection the proposal is short, it is one with nothing to propose", obs.DroppedConnections, obs.UnproposableHosts)
+	}
+}
