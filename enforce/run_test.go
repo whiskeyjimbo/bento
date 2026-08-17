@@ -1365,3 +1365,40 @@ func TestCarryingAReportOnlyLayerDoesNotChangeTheJudgedLayers(t *testing.T) {
 		}
 	}
 }
+
+// Nothing that judges a run may read a report-only layer, including the refusal raised
+// when the stage attested nothing: naming a host fact among the layers a run was refused
+// over presents something no manifest could have asked for as a guarantee that slipped.
+// Faulting on it in a tier-scanning branch is the same error from the other side, and
+// that one is reachable by mistake - Tier() defaults an un-enumerated layer to core.
+func TestNothingThatJudgesARunReadsAReportOnlyLayer(t *testing.T) {
+	probe := fullyEnforced()
+	probe.Add(LayerAutoExecReport, Unavailable, "git is not on this host's PATH")
+
+	f := &fakeEnforcer{probe: probe, result: Result{Setup: SetupSilent}, silentStage: true}
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Run = %v, want the silent-stage refusal", err)
+	}
+	if hasLayer(refusal.Short, LayerAutoExecReport) {
+		t.Errorf("the refusal names a host fact among the layers it refused over: %v", refusal.Short)
+	}
+	// The report still carries it: the refusal's shortfall list is what must not.
+	if refusal.Report.StateOf(LayerAutoExecReport) != Unavailable {
+		t.Error("the disclosure was dropped along with the judgment")
+	}
+
+	// A report-only layer with no Tier() entry - the mistake the enum's fail-safe default
+	// makes easy - reads as core, and the default and --allow-degraded branches scan by
+	// tier rather than by ReportOnly. It must still not fault a completed run.
+	future := Layer("some-future-host-fact")
+	if !future.ReportOnly() || future.Tier() != TierCore {
+		t.Fatalf("this case is about an unclassified report-only layer; %v is %v/%v", future, future.ReportOnly(), future.Tier())
+	}
+	if got := postRunShortfall(Options{}, Report{Layers: []LayerStatus{
+		{Layer: future, State: Unavailable},
+	}}); len(got) > 0 {
+		t.Errorf("postRunShortfall faulted a run on a report-only layer: %v", got)
+	}
+}

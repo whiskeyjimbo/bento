@@ -298,7 +298,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 			Reason: "the sandbox stage never reported what it applied, so nothing about this run is attested. " +
 				"Usually the stage died during setup and the target never ran; an embedder that hosts the backend " +
 				"and called backend.DispatchReexec() somewhere other than the first statement in main() looks the same",
-			Short: res.Report.Degradations(),
+			Short: judgedDegradations(res.Report),
 		}
 	}
 	// Admission judged the pre-run probe, but the overlay above can have worsened a
@@ -319,6 +319,27 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	return res, nil
 }
 
+// judgedLayers is the report without the layers that only ride along for disclosure. A
+// report-only layer is in no policy's required set, so no posture ever admitted a run ON
+// one, and nothing that judges a run may read it: naming it in a refusal's shortfall or
+// faulting a completed run for it presents a host fact the manifest could not have asked
+// for as a guarantee that slipped.
+func judgedLayers(r Report) []LayerStatus {
+	var out []LayerStatus
+	for _, l := range r.Layers {
+		if !l.Layer.ReportOnly() {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// judgedDegradations is Degradations over judgedLayers, for the refusals and shortfalls
+// that name which guarantee fell short.
+func judgedDegradations(r Report) []LayerStatus {
+	return Report{Layers: judgedLayers(r)}.Degradations()
+}
+
 // postRunShortfall returns the layers of the final report that fall below what the
 // caller's posture admitted the run on. It mirrors admit's branches: strict requires
 // every layer fully enforced, --allow-degraded waives a degraded core layer but not one
@@ -334,19 +355,15 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 // arriving late. The identical state at admission refuses, so the completed run must
 // not pass merely because the backend learned of it second.
 func postRunShortfall(opts Options, r Report) []LayerStatus {
+	// Report-only layers are filtered out of every branch, not only the strict one that
+	// scans them all: Tier() defaults an un-enumerated layer to core, so a report-only
+	// layer whose author forgets that switch would be faulted by the two tier-scanning
+	// branches below. Filtering here rather than in each keeps the two classifications
+	// from having to agree.
+	r = Report{Layers: judgedLayers(r)}
 	switch {
 	case opts.Strict:
-		// Report-only layers excluded: they are carried in the report for disclosure and
-		// are in no policy's required set, so no posture ever admitted the run ON one.
-		// Faulting a completed run for a host fact its manifest could not have asked for
-		// would refuse under --strict something admission had no bar for.
-		var short []LayerStatus
-		for _, l := range r.Degradations() {
-			if !l.Layer.ReportOnly() {
-				short = append(short, l)
-			}
-		}
-		return short
+		return r.Degradations()
 	case opts.AllowDegraded:
 		// --allow-degraded waives the requested-limits bar at admission, so it is not
 		// re-applied here either: the operator took on running unbounded.
