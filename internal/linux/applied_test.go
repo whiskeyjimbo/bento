@@ -1333,3 +1333,26 @@ func TestAnExecRanWithNoRecorderAheadOfItIsNotRecorded(t *testing.T) {
 		t.Errorf("the layer verdicts above the marker did not survive: %+v", a)
 	}
 }
+
+// Off amd64 the probe reports exec-strict Unavailable - the fork/vfork/process-clone
+// filter is not implemented for the architecture - while execBlockFlags still asks for
+// strict, so the launcher installs the execve-only filter and reports it. The
+// architecture-fallback arm must not read that as an improvement: Report.Set replaces
+// unconditionally, and a Degraded landing on an Unavailable layer is a report that reads
+// better than the host is. It is also the invariant worsenNetwork's comment rests on -
+// that every other Set in this package writes Unavailable or overlays an Enforced probe.
+func TestTheArchitectureFallbackDoesNotSoftenAnUnavailableExecStrict(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerExec, enforce.Enforced, "")
+	r.Set(enforce.LayerExecStrict, enforce.Unavailable,
+		"fork/vfork/process-clone blocking is not implemented for this architecture")
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+
+	a := applied{complete: true, execFilter: launcher.AppliedExecBasic, landlock: launcher.AppliedYes}
+	if got := a.reconcile(&r, true, true, true, 0); got != enforce.SetupAttested {
+		t.Fatalf("setup state = %v, want SetupAttested", got)
+	}
+	if st := r.StateOf(enforce.LayerExecStrict); st != enforce.Unavailable {
+		t.Errorf("exec-strict = %v, want Unavailable; the fallback upgraded a layer the probe said this host cannot enforce at all", st)
+	}
+}

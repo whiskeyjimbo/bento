@@ -426,9 +426,15 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 		reason := fmt.Sprintf("the sandbox reported installing no exec-block filter (%q) though the policy asked for one", a.execFilter)
 		r.Set(enforce.LayerExec, enforce.Unavailable, reason)
 		r.Set(enforce.LayerExecStrict, enforce.Unavailable, reason)
-	} else if strictWanted && a.execFilter == launcher.AppliedExecBasic {
+	} else if strictWanted && a.execFilter == launcher.AppliedExecBasic &&
+		r.StateOf(enforce.LayerExecStrict) < enforce.Unavailable {
 		// basic where strict was asked for is the architecture fallback: execve is
 		// blocked, but fork/vfork/process-clone are not.
+		//
+		// Skipped where the probe already said Unavailable, which is the same
+		// architecture off amd64: Set replaces unconditionally, so writing Degraded
+		// there would UPGRADE the layer and attest a partial guarantee this host has
+		// none of.
 		r.Set(enforce.LayerExecStrict, enforce.Degraded,
 			"the sandbox installed the execve-only block; fork/vfork/process-clone blocking is not available on this architecture")
 	}
