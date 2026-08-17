@@ -506,7 +506,7 @@ When building a supervised wrapper (such as an editor agent or interactive CLI t
 - **Live Network Egress (`NetworkGate`)**: Outbound traffic is routed through Bento's host-side proxy, allowing your application to supply a live callback (`opts.NetworkGate`) that prompts or evaluates egress requests synchronously at connect time.
 - **Pre-Run Filesystem Approvals**: File access is enforced directly inside the Linux kernel (Landlock and mount namespaces) and fails fast, without a userspace callback seam. Supervised wrappers implement filesystem policy by running a trial profiling pass (`backend.Profile`), prompting the user to approve/deny recorded file paths, and passing the resulting policy into the enforced run (`enforce.Run`).
 
-A denied path does not announce itself as denied: it reads as absent, empty, or read-only, which is a trap for an agent target that reacts to errors rather than reporting them. See **[`docs/denial-shapes.md`](docs/denial-shapes.md)** for the four shapes and what an embedder should surface. For running a fleet of agents on one approved manifest per agent class, see **[`docs/agent-fleets.md`](docs/agent-fleets.md)**.
+A denied path does not announce itself as denied: it reads as absent, empty, or read-only, which is a trap for an agent target that reacts to errors rather than reporting them. See **[`docs/denial-shapes.md`](docs/denial-shapes.md)** for the four shapes and what an embedder should surface.
 
 ---
 
