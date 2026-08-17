@@ -129,6 +129,12 @@ func toReportJSON(r enforce.Report) reportJSON {
 // and every row of the table is part of the answer.
 func toRunReportJSON(r enforce.Report) reportJSON {
 	out := toReportJSON(r)
+	// noReport's false is not a shortfall to re-derive: a report with no layers evaluated
+	// nothing, and rebuilding the verdict from an empty layer list would call that fully
+	// enforced - the clean posture toReportJSON exists to keep off such a run.
+	if len(r.Layers) == 0 {
+		return out
+	}
 	if !out.FullyEnforced {
 		out.FullyEnforced = true
 		for _, l := range r.Layers {

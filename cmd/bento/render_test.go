@@ -1960,3 +1960,12 @@ func TestRunReportJSONKeepsFullyEnforcedOverAReportOnlyShortfall(t *testing.T) {
 		t.Error("a degraded core layer must read as short in a run's report")
 	}
 }
+
+// A run that never reached a stage carries the zero Report, which toReportJSON answers
+// with noReport. The run-specific form re-derives fully_enforced, and re-deriving it from
+// an empty layer list would call a run that enforced nothing fully enforced.
+func TestRunReportJSONKeepsNoReportOnAnEmptyReport(t *testing.T) {
+	if got := toRunReportJSON(enforce.Report{}); got.FullyEnforced {
+		t.Error("a report with no layers evaluated nothing and must not read as fully enforced")
+	}
+}
