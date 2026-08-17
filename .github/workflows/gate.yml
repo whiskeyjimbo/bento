@@ -55,8 +55,14 @@ jobs:
 
       # A runner that still refuses userns fails ~80 sandbox tests with one line each
       # and no cause. Probing the levers first says which one is wrong.
+      #
+      # The kernel version is here because the landlock suite's coverage depends on the
+      # runner's Landlock ABI, and the pool is not uniform: the tests log the ABI they
+      # measured, but `go test` discards that on a pass, so a green run is otherwise
+      # silent about which column it actually exercised.
       - name: Probe the sandbox preconditions
         run: |
+          uname -r
           sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces || true
           bwrap --unshare-user --dev-bind / / true && echo "bwrap userns OK"
 
