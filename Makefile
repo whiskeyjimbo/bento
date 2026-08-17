@@ -159,17 +159,25 @@ race: ## Run the concurrency tests under the race detector
 # Interesting inputs go to the fuzz cache under $GOCACHE, which the nightly job persists;
 # only a crasher is written into the package's testdata/fuzz, and that one is meant to be
 # committed - it is a failing regression test that every later `go test` replays.
+#
+# A failing target is recorded and the loop continues: the night one target finds a
+# crasher is the night the rest most need their budget, and the CI job uploads every
+# package's testdata/fuzz, so several crashers come back in one artifact.
 fuzz: ## Fuzz every Fuzz* target for FUZZTIME each (default 30s; not part of check)
 	@printf "$(CYAN)$(BOLD)==> Fuzzing every target for $(FUZZTIME)...$(RESET)\n"
-	@set -e; pkgs=$$(GOWORK=off go list ./...); \
+	@set -e; pkgs=$$(GOWORK=off go list ./...); failed=""; \
 	for pkg in $$pkgs; do \
 		listed=$$(GOWORK=off go test -list='^Fuzz' $$pkg); \
 		for target in $$(printf '%s\n' "$$listed" | grep '^Fuzz' || true); do \
 			printf "$(CYAN)--> $$target ($$pkg)$(RESET)\n"; \
-			GOWORK=off go test -run='^$$' -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) $$pkg; \
+			GOWORK=off go test -run='^$$' -fuzz="^$$target$$" -fuzztime=$(FUZZTIME) $$pkg \
+				|| failed="$$failed $$target"; \
 		done; \
-	done
-	@printf "$(GREEN)$(BOLD)✓ Fuzzing found no failures.$(RESET)\n"
+	done; \
+	if [ -n "$$failed" ]; then \
+		printf "$(BOLD)Fuzzing found failures in:$$failed$(RESET)\n" >&2; exit 1; \
+	fi; \
+	printf "$(GREEN)$(BOLD)✓ Fuzzing found no failures.$(RESET)\n"
 
 # Per-package `go test -cover` credits a function only to its own package's tests, so a
 # package exercised entirely from its callers reads 0% and looks untested when it is not
