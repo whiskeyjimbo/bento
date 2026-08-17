@@ -141,3 +141,39 @@ func TestAReadUnderARunRefusedWriteSurvivesTheDedup(t *testing.T) {
 		t.Errorf("the read under the withheld write must survive - nothing else reports it; Read=%v", p.Read)
 	}
 }
+
+// The fifth family, kept apart from the table above because it needs its own $HOME: the
+// shields anchor there, and a grant whose shield mount points cannot be carved has to be
+// staged under an anchor this test controls. The clamp inherits the refusal through
+// withholdRunRefused's gate.Refusals call rather than knowing anything about it, which is
+// exactly what this asserts - the routing, not a restatement of the check.
+func TestClampProposalWithholdsAGrantWhoseShieldsCannotBeCarved(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root creates entries in any directory, so no host directory refuses the carve")
+	}
+	home := t.TempDir()
+	// A DenyWrite shield (the go env file) rather than a DenyAll one: a grant above a
+	// DenyAll shield is already withheld by the clamp's own above-shield reasoning, so a
+	// DenyWrite mount point is where the carve refusal is the only thing that withholds it.
+	grant := filepath.Join(home, ".config", "go")
+	if err := os.MkdirAll(grant, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.Chmod(grant, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(grant, 0o755) })
+
+	p := &policy.Policy{Write: []string{grant}}
+	clampProposal(p)
+	if problems := gate.Refusals(p); len(problems) > 0 {
+		t.Errorf("clampProposal proposed a grant run refuses (ShieldNotCarvable):\n  %s", strings.Join(problems, "\n  "))
+	}
+	// Stated positively as well, because the check above shares its oracle with the clamp:
+	// a refusal missing from gate.Refusals passes it while the proposal still dies at the
+	// run's first step. This one fails in that case.
+	if slices.Contains(p.Write, grant) {
+		t.Errorf("the proposal kept %q, whose shield mount points this uid cannot create; the run refuses it at its first step", grant)
+	}
+}
