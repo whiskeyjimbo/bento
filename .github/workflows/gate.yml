@@ -56,13 +56,17 @@ jobs:
       # A runner that still refuses userns fails ~80 sandbox tests with one line each
       # and no cause. Probing the levers first says which one is wrong.
       #
-      # The kernel version is here because the landlock suite's coverage depends on the
-      # runner's Landlock ABI, and the pool is not uniform: the tests log the ABI they
-      # measured, but `go test` discards that on a pass, so a green run is otherwise
-      # silent about which column it actually exercised.
+      # The Landlock ABI is here because the landlock suite's coverage depends on it and
+      # the runner pool is not uniform - the same commit has gone green on ABI 8 and red
+      # on ABI 7. The tests log the ABI they measured, but `go test` discards that on a
+      # pass, so without this line a green run is silent about which column it exercised.
+      # Read straight from landlock_create_ruleset's version query (x86_64 syscall 444)
+      # rather than inferred from the kernel version, which the release notes do not map
+      # cleanly for the Azure kernels the runners use.
       - name: Probe the sandbox preconditions
         run: |
           uname -r
+          python3 -c 'import ctypes;print("landlock ABI", ctypes.CDLL(None).syscall(444, 0, 0, 1))'
           sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces || true
           bwrap --unshare-user --dev-bind / / true && echo "bwrap userns OK"
 
