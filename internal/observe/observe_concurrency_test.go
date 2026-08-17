@@ -10,9 +10,44 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// latchedBuffer is a bytes.Buffer that records a write arriving after the caller declared
+// Trace returned, and slows each one so there is still copying to do at that moment. Both
+// flags are atomic and the buffer is mutex-held: a test whose regression is an unsynchronized
+// write must report its own assertion, not a race-detector dump that only -race produces.
+type latchedBuffer struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	delay    time.Duration
+	returned atomic.Bool
+	late     atomic.Bool
+}
+
+func (b *latchedBuffer) Write(p []byte) (int, error) {
+	if b.returned.Load() {
+		b.late.Store(true)
+	}
+	time.Sleep(b.delay)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *latchedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *latchedBuffer) len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
 
 // The loop reaps its tracee itself, so exec.Cmd's Wait never ran - and with a stream
 // that is not an *os.File, Start pipes it through a copier goroutine that only Wait
@@ -30,13 +65,28 @@ func TestTraceCapturesOutputThroughANonFileWriter(t *testing.T) {
 	const lines = 4000
 	script := "i=0; while [ $i -lt " + strconv.Itoa(lines) + " ]; do echo LINE$i; i=$((i+1)); done"
 
-	var out bytes.Buffer
-	res, err := Trace([]string{sh, "-c", script}, os.Environ(), nil, &out, &out)
+	// A short read is the symptom, but it is only probabilistic: the tracee is reaped by
+	// the loop, so the copier has usually drained by the time Trace returns and deleting
+	// the join fails a plain run about one time in thirteen (measured). The writer makes
+	// the property itself observable instead - it records a write ARRIVING after Trace
+	// returned, which is the leaked goroutine - and sleeps per write so there is always
+	// copier work left to do: the tracee blocks on a full pipe, so at exit up to a pipe
+	// buffer plus one chunk is still unwritten, and at 20ms a chunk that is tens of
+	// milliseconds of writing an unjoined Trace cannot have waited for.
+	out := &latchedBuffer{delay: 20 * time.Millisecond}
+	res, err := Trace([]string{sh, "-c", script}, os.Environ(), nil, out, out)
+	out.returned.Store(true)
 	if err != nil {
 		t.Fatalf("Trace: %v", err)
 	}
 	if res.ExitCode != 0 {
-		t.Fatalf("exit code = %d, want 0 (output: %d bytes)", res.ExitCode, out.Len())
+		t.Fatalf("exit code = %d, want 0 (output: %d bytes)", res.ExitCode, out.len())
+	}
+	// Long enough for a copier still holding the pipe to take its next write, and dead
+	// time only on a regression: the joined copier has nothing left to write.
+	time.Sleep(200 * time.Millisecond)
+	if out.late.Load() {
+		t.Error("a write arrived after Trace returned, so the copier goroutine was not joined - it is writing into a caller's buffer the caller now owns")
 	}
 	// Read the buffer immediately, as a caller would: a still-running copier makes this
 	// both short and a data race.
