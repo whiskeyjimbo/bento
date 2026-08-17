@@ -27,7 +27,7 @@ func TestEnforcerReuseIsConcurrencySafe(t *testing.T) {
 	scripts := make([]string, 8)
 	for i := range scripts {
 		scripts[i] = filepath.Join(t.TempDir(), "noop.sh")
-		if err := os.WriteFile(scripts[i], []byte(fmt.Sprintf("exit %d\n", i%3)), 0o755); err != nil {
+		if err := os.WriteFile(scripts[i], fmt.Appendf(nil, "exit %d\n", i%3), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -36,13 +36,11 @@ func TestEnforcerReuseIsConcurrencySafe(t *testing.T) {
 	codes := make([]int, len(scripts))
 	errs := make([]error, len(scripts))
 	for i, script := range scripts {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
 			res, err := e.Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
 			codes[i], errs[i] = res.ExitCode, err
-		}()
+		})
 	}
 	wg.Wait()
 

@@ -537,18 +537,19 @@ func TestCollectRefusesACorpusItCannotRead(t *testing.T) {
 			if src.url != url {
 				continue
 			}
-			body := fullBody(src.sentinel, src.minCandidates)
+			var body strings.Builder
+			body.WriteString(fullBody(src.sentinel, src.minCandidates))
 			// An unclassified variable: the directives are all still there, and every one
 			// of them is answered "out of scope" by a parser that has never seen the
 			// spelling.
 			for i := range src.minCandidates {
 				if strings.HasPrefix(src.sentinel, "blacklist") {
-					body += fmt.Sprintf("blacklist ${XDGDATA}/moved%d\n", i)
+					body.WriteString(fmt.Sprintf("blacklist ${XDGDATA}/moved%d\n", i))
 				} else {
-					body += fmt.Sprintf("  deny @{XDG_DATA}/moved%d mrwkl,\n", i)
+					body.WriteString(fmt.Sprintf("  deny @{XDG_DATA}/moved%d mrwkl,\n", i))
 				}
 			}
-			return body, nil
+			return body.String(), nil
 		}
 		return "", nil
 	}, &b)

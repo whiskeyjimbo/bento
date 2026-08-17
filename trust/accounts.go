@@ -113,7 +113,7 @@ func parseAccounts(group, passwd string) *accounts {
 		primary:   map[uint32][]uint32{},
 		uidByName: map[string]uint32{},
 	}
-	for _, line := range strings.Split(group, "\n") {
+	for line := range strings.SplitSeq(group, "\n") {
 		// name:passwd:gid:member,member
 		f := strings.Split(line, ":")
 		if len(f) < 4 {
@@ -124,7 +124,7 @@ func parseAccounts(group, passwd string) *accounts {
 			continue
 		}
 		var named []string
-		for _, member := range strings.Split(f[3], ",") {
+		for member := range strings.SplitSeq(f[3], ",") {
 			if member != "" {
 				named = append(named, member)
 			}
@@ -134,7 +134,7 @@ func parseAccounts(group, passwd string) *accounts {
 		// letting it replace them is how a group with a member would read as private.
 		db.members[uint32(gid)] = append(db.members[uint32(gid)], named...)
 	}
-	for _, line := range strings.Split(passwd, "\n") {
+	for line := range strings.SplitSeq(passwd, "\n") {
 		// name:passwd:uid:gid:...
 		f := strings.Split(line, ":")
 		if len(f) < 4 {
@@ -158,7 +158,7 @@ func parseAccounts(group, passwd string) *accounts {
 // at the start of a line - whose presence means the file is a base the rest is merged onto
 // rather than the whole database.
 func hasCompatEntry(file string) bool {
-	for _, line := range strings.Split(file, "\n") {
+	for line := range strings.SplitSeq(file, "\n") {
 		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
 			return true
 		}
@@ -179,7 +179,7 @@ func localAccountsOnly() bool {
 }
 
 func nsswitchIsLocal(conf string) bool {
-	for _, line := range strings.Split(conf, "\n") {
+	for line := range strings.SplitSeq(conf, "\n") {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = line[:i]
 		}
@@ -191,7 +191,7 @@ func nsswitchIsLocal(conf string) bool {
 		if !ok || !slices.Contains([]string{"passwd", "group", "initgroups"}, strings.TrimSpace(db)) {
 			continue
 		}
-		for _, source := range strings.Fields(sources) {
+		for source := range strings.FieldsSeq(sources) {
 			// The action after a source - [NOTFOUND=return] - qualifies the one before it
 			// rather than naming another database.
 			if strings.HasPrefix(source, "[") {

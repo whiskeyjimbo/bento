@@ -130,7 +130,7 @@ func verifyEmptyCapBound() error {
 // CapBnd line is an error rather than a zero: a missing line is a kernel that does not
 // answer the question, not one answering "none".
 func capBounding(status []byte) (uint64, error) {
-	for _, line := range strings.Split(string(status), "\n") {
+	for line := range strings.SplitSeq(string(status), "\n") {
 		mask, ok := strings.CutPrefix(line, "CapBnd:")
 		if !ok {
 			continue

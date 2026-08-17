@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -98,10 +99,5 @@ func TestEveryLayerIsClassifiedAndReachable(t *testing.T) {
 }
 
 func contains(layers []Layer, l Layer) bool {
-	for _, got := range layers {
-		if got == l {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(layers, l)
 }

@@ -101,7 +101,7 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 	if !strings.HasPrefix(out, "bento: refusing to run: "+refusal.Reason) {
 		t.Errorf("refusal must keep main's own wording; got %q", out)
 	}
-	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		if len(line) > textWidth {
 			t.Errorf("refusal line is %d columns, want at most %d: %q", len(line), textWidth, line)
 		}
@@ -1045,7 +1045,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 			t.Errorf("unreached-target notice missing %q; got:\n%s", want, unreached.String())
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSuffix(unreached.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(unreached.String(), "\n"), "\n") {
 		if len(line) > textWidth {
 			t.Errorf("notice line is %d columns, want at most %d: %q", len(line), textWidth, line)
 		}

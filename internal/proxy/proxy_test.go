@@ -271,8 +271,7 @@ func TestServeStillReportsAFatalAcceptError(t *testing.T) {
 	l := &flakyListener{Listener: base, remaining: 1, err: acceptErr(syscall.EINVAL)}
 
 	p := New(nil, WithDialer(fakeDialer("HELLO")))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if err := p.Serve(ctx, l); !errors.Is(err, syscall.EINVAL) {
 		t.Errorf("Serve = %v, want the EINVAL that stopped it", err)
 	}

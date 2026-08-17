@@ -133,7 +133,7 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 // isBareDeny reports whether a line is a deny rule carrying nothing for the parser to
 // read - the qualifiers and the keyword and no rule body.
 func isBareDeny(line string) bool {
-	for _, f := range strings.Fields(line) {
+	for f := range strings.FieldsSeq(line) {
 		if f == "deny" {
 			return true
 		}

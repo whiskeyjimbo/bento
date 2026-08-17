@@ -24,12 +24,12 @@ import (
 func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 	tb.Helper()
 	home := tb.TempDir()
-	for i := 0; i < dirs; i++ {
+	for i := range dirs {
 		d := filepath.Join(home, fmt.Sprintf("proj%02d", i%20), fmt.Sprintf("src/pkg%03d", i))
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			tb.Fatal(err)
 		}
-		for j := 0; j < filesPerDir; j++ {
+		for j := range filesPerDir {
 			if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("file%03d.go", j)), []byte("package x\n"), 0o644); err != nil {
 				tb.Fatal(err)
 			}
@@ -40,7 +40,7 @@ func buildHome(tb testing.TB, dirs, filesPerDir int) string {
 			tb.Fatal(err)
 		}
 	}
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		write(fmt.Sprintf(".tool%02dconf", i), []byte("theme = dark\nverbose = true\n"))
 	}
 	// A shell history and an editor session are the realistic large root dotfiles, and

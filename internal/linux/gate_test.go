@@ -178,11 +178,9 @@ func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 		return [...]proxy.Decision{proxy.AdmittedByGate, proxy.Denied, proxy.GuardBlocked}[i%3]
 	}
 	for i := range conns {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			c.observe(decision(i), fmt.Sprintf("h%d.example", i), "443")
-		}()
+		})
 	}
 	wg.Wait()
 

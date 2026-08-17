@@ -18,7 +18,7 @@ import (
 // callers cannot reach and bury the ones they can. The QUERY path is left untouched.
 func parseFuzzRules(spec string) []Rule {
 	var rules []Rule
-	for _, line := range strings.Split(spec, "\n") {
+	for line := range strings.SplitSeq(spec, "\n") {
 		if len(line) < 3 {
 			continue
 		}

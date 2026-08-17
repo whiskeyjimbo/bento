@@ -489,13 +489,14 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 	for _, s := range res.Shields {
 		byKind[s.Kind]++
 	}
-	msg := fmt.Sprintf("%d hidden", byKind["hidden"])
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("%d hidden", byKind["hidden"]))
 	for _, kind := range []string{"read-only", "discarded"} {
 		if byKind[kind] > 0 {
-			msg += fmt.Sprintf(", %d %s", byKind[kind], kind)
+			msg.WriteString(fmt.Sprintf(", %d %s", byKind[kind], kind))
 		}
 	}
-	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg)
+	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg.String())
 
 	// The count alone is enough for the default shields, which land where a reader
 	// expects. A relocated one does not: the variable accepts any absolute path, so the
@@ -594,7 +595,7 @@ func writeReportTable(w io.Writer, r enforce.Report) {
 func wrapText(s string, width int) []string {
 	var lines []string
 	var line string
-	for _, word := range strings.Fields(s) {
+	for word := range strings.FieldsSeq(s) {
 		switch {
 		case line == "":
 			line = word

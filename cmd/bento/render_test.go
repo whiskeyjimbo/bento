@@ -174,7 +174,7 @@ func TestWriteReportTableRelocatesAnOversizedDetail(t *testing.T) {
 
 	header, rest, _ := strings.Cut(out, "\n")
 	rows, notes, _ := strings.Cut(rest, "\n\n")
-	for _, line := range strings.Split(header+"\n"+rows, "\n") {
+	for line := range strings.SplitSeq(header+"\n"+rows, "\n") {
 		if len(line) > detailInline+len("filesystem  hardening  unavailable  ") {
 			t.Errorf("table row is %d columns wide:\n%s", len(line), line)
 		}
@@ -533,7 +533,7 @@ func TestProfileHintNamesTheExecMode(t *testing.T) {
 			if !strings.Contains(out, tc.want) {
 				t.Errorf("hint does not name %q, the field that refused a subprocess: %q", tc.want, out)
 			}
-			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 				if len(line) > textWidth {
 					t.Errorf("line runs past the wrap column (%d): %q", len(line), line)
 				}

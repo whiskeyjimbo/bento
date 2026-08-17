@@ -252,10 +252,8 @@ func FileWriteGrantProblems(write []string) []string {
 // physically - a gate that Cleans refuses a grant the run lands somewhere else entirely
 // and honors.
 func RootWriteProblems(write []string) []string {
-	for _, g := range write {
-		if isRootWrite(g) {
-			return []string{grantrefusal.WriteIsRoot().Error()}
-		}
+	if slices.ContainsFunc(write, isRootWrite) {
+		return []string{grantrefusal.WriteIsRoot().Error()}
 	}
 	return nil
 }

@@ -384,7 +384,7 @@ func TestParseAcceptsRealisticNesting(t *testing.T) {
 	var flow, block strings.Builder
 	flow.WriteString("entrypoint: ./x\nnetwork:\n")
 	block.WriteString("entrypoint: ./x\nnetwork:\n")
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		fmt.Fprintf(&flow, "  - {host: h%d.example.com, port: \"443\"}\n", i)
 		fmt.Fprintf(&block, "  - host: h%d.example.com\n    port: \"443\"\n", i)
 	}

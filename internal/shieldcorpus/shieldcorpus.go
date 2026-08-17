@@ -345,7 +345,7 @@ func FoldedPath(path string) string {
 	if !filepath.IsAbs(path) {
 		out = ""
 	}
-	for _, name := range strings.Split(filepath.Clean(path), "/") {
+	for name := range strings.SplitSeq(filepath.Clean(path), "/") {
 		if name == "" {
 			continue
 		}
