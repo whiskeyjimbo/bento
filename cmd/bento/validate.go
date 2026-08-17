@@ -503,6 +503,12 @@ type policyJSON struct {
 	// this envelope has nothing else to tell the two apart, which is the whole reason the
 	// human output says it too.
 	UnshieldableRuntimeDir string `json:"unshieldable_runtime_dir,omitempty"`
+	// UnshieldableRelocations are the other relocation variables set where no shield can
+	// follow them, as variable name -> the raw spelling this host gave, and absent when
+	// there are none. The same argument as the field above, generalised: the emitters drop
+	// such a target, so no rule carries the variable as its Source and the count reads like
+	// an ordinary host's while the store it moved is left unshielded.
+	UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
 	// Relocatable says whether every path anchors to the manifest's own directory, with
 	// PinnedPaths naming the ones that do not. A pointer because absent is the third
 	// answer, as it is for Runnable: the question is only asked under --relocatable.
@@ -542,6 +548,7 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 		o.CredentialAliasesPartial = r.CredentialAliasesPartial
 	}
 	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
+	o.UnshieldableRelocations = unshieldableRelocations()
 }
 
 // credentialAliasJSON is the envelope's spelling of one alias. Both paths, because neither

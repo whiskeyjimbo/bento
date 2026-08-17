@@ -145,6 +145,13 @@ commits that built it - none of them were ever in a release.
   before the script starts and beside validate's grants, and `validate --json`
   carries it as `unshieldable_runtime_dir` so a gate reads the same answer.
   Output only; what is shielded did not change.
+- **The same for every other relocation variable pointed somewhere no shield can
+  follow.** `GNUPGHOME=$HOME` leaves the private keys under it unshielded while
+  `~/.gnupg` keeps its default rule, so the rule set, the count and the exit code
+  all read exactly like a host that set nothing. The run summary and `doctor` now
+  name each such variable and the value it was given, and `validate --json`
+  carries them as `unshieldable_relocations` so a CI gate sees it too. Output
+  only; the refusals themselves were already right, only their silence was not.
 - **The denial legend reaches the failing run, and names `exec:` among the
   grants.** The mapping from an errno string to the manifest field that produced
   it printed only after a clean exit - so the run where the reader was holding

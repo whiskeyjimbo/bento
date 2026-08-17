@@ -621,6 +621,40 @@ func TestValidateJSONCarriesAnUnshieldableRuntimeDir(t *testing.T) {
 	}
 }
 
+// The runtime dir's sibling, and the same argument: a relocation the emitters dropped
+// leaves the store unshielded while the rule set stays byte-identical to a host that set
+// nothing, so a CI gate reading the envelope cannot see it at all. The human output says
+// it; --json is how a machine reads doctor.
+func TestValidateJSONCarriesTheDroppedRelocations(t *testing.T) {
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x"}, manifest.Provenance{})
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home anchor to make unshieldable: %v", err)
+	}
+	t.Setenv("GNUPGHOME", home)
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+	if got.UnshieldableRelocations["GNUPGHOME"] != home {
+		t.Errorf("unshieldable_relocations = %v, want GNUPGHOME -> %q", got.UnshieldableRelocations, home)
+	}
+
+	t.Setenv("GNUPGHOME", t.TempDir())
+	out, err = runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if strings.Contains(out, "unshieldable_relocations") {
+		t.Errorf("a shieldable relocation must leave the field absent; got:\n%s", out)
+	}
+}
+
 // A write grant naming nothing yet cannot be refused - run creates it, and a directory may
 // be exactly what was meant. But run creates a DIRECTORY, so a grant spelled like a file
 // silently produces `out.json/` on the host and the script's file never appears. A note,

@@ -1404,6 +1404,17 @@ func unshieldableRuntimeDir() string {
 	return denylist.UnshieldableRuntimeDir(anchors)
 }
 
+// unshieldableRelocations is the same reading for the rest of the relocation variables,
+// for the surfaces that have no anchors of their own. writeDroppedRelocations is the human
+// half of it.
+func unshieldableRelocations() map[string]string {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		return nil
+	}
+	return denylist.UnshieldableRelocations(anchors)
+}
+
 // writeRuntimeDirNote says on the way in what doctor says when asked: this host's runtime
 // directory - the container auth.json, the gpg-agent socket, the dbus and wayland sockets -
 // is outside every shield, so a broad grant hands it out.
