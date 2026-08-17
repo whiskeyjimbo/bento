@@ -105,7 +105,17 @@ const (
 	exitFetchFailed    = 3
 	exitContentRefused = 4
 	exitEnvUnclean     = 5
+	exitFetchRequired  = 6
 )
+
+// requireFetchVar makes a fetch failure red instead of skipped. Passing over an
+// unreachable corpus is right on a pull request - the network is not the deny-list - but
+// it means "GitHub was down for ten minutes" and "this corpus has been unreachable for a
+// month" print the same banner and exit the same way, and a gate that only ever runs per
+// PR cannot tell them apart. A scheduled run sets this, which puts the difference in the
+// one place that already persists across runs: the job history. One red week is the
+// flaky afternoon; a row of them is a corpus that is gone.
+const requireFetchVar = "BENTO_AUDIT_REQUIRE_FETCH"
 
 // errRefuse marks a fetch failure that is a judgement about the RESPONSE rather than a
 // transport condition, so it carries exitContentRefused and the wrapper fails on it. A
@@ -138,6 +148,10 @@ func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
 		}
 	}
 	sources, status := collect(fetch, stderr)
+	if status == exitFetchFailed && os.Getenv(requireFetchVar) != "" {
+		fmt.Fprintf(stderr, "denylist-audit: $%s is set, so an upstream that did not arrive is the finding: this corpus has now failed a run that required it, rather than one that could pass over it\n", requireFetchVar)
+		return exitFetchRequired
+	}
 	if status != 0 {
 		return status
 	}

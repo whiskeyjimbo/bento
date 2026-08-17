@@ -1,0 +1,35 @@
+name: corpus
+
+# The upstream-corpus reachability check, weekly rather than per-PR. The gate's own audit
+# passes over a fetch failure on purpose - the network is not the deny-list, and reddening
+# a pull request on GitHub having a bad ten minutes trains people to ignore it. But that
+# pass hides the other condition it looks identical to: a corpus that has moved, been
+# renamed or been withdrawn is unreachable forever, and every run after it reports a clean
+# diff over a comparison it never made.
+#
+# BENTO_AUDIT_REQUIRE_FETCH makes this run refuse to pass over it, so the distinction lands
+# in the only place that persists across runs without inventing state: this job's history.
+# One red week is an outage. A row of them is a corpus to go and find.
+on:
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: make audit
+        env:
+          BENTO_AUDIT_REQUIRE_FETCH: '1'

@@ -429,6 +429,18 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 		t.Errorf("run = %d over an unreachable upstream, want %d so the wrapper skips rather than reddens", code, exitFetchFailed)
 	}
 	b.Reset()
+	// The same unreachable upstream on a run that was required to fetch. It cannot share
+	// exitFetchFailed: that status is the one the wrapper passes over, so the scheduled
+	// check would report the outage it exists to catch as a green skip.
+	t.Setenv(requireFetchVar, "1")
+	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b); code != exitFetchRequired {
+		t.Errorf("run = %d over an unreachable upstream with $%s set, want %d so the wrapper reddens", code, requireFetchVar, exitFetchRequired)
+	}
+	if !strings.Contains(b.String(), requireFetchVar) {
+		t.Errorf("the banner must name why this run could not pass over the fetch; got %q", b.String())
+	}
+	os.Unsetenv(requireFetchVar)
+	b.Reset()
 	if code := run(func(string) (string, error) { return "<html>404</html>", nil }, &b, &b); code != exitContentRefused {
 		t.Errorf("run = %d when a body is not the profile, want %d so the wrapper fails", code, exitContentRefused)
 	}
@@ -473,6 +485,7 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 		{3, 0, "skipping the check"},
 		{4, 1, "proved nothing"},
 		{5, 1, "could not clear a relocation variable"},
+		{6, 1, "required the upstream corpora"},
 		// A panic exits 2. It must not reach the pass-over arm, which is why that arm
 		// is 3 and not 2.
 		{2, 2, "unexpected failure (exit 2)"},

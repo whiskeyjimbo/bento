@@ -23,7 +23,10 @@
 # arrived and is not the profile it should be; either is a real red, and 5
 # means the audit could not clear the relocation variables that make its own list CI's
 # rather than this host's - red too, and separate from 4 so a reader is not sent after an
-# upstream corpus that is fine.
+# upstream corpus that is fine. 6 is that same fetch failure on a run that set
+# BENTO_AUDIT_REQUIRE_FETCH and so was not allowed to pass over it - the scheduled corpus
+# check - which is what separates a ten-minute outage from a corpus that has gone for good:
+# the job history holds the count no single run can.
 #
 # Only the fetch failure passes, and it has a status of its own so that nothing else can
 # reach that arm. In particular Go's runtime exits 2 on panic: were the pass-over status
@@ -59,6 +62,11 @@ case "$status" in
 3)
 	echo "denylist-audit: could not fetch an upstream corpus (offline?); skipping the check." >&2
 	exit 0
+	;;
+6)
+	echo "denylist-audit: this run required the upstream corpora (BENTO_AUDIT_REQUIRE_FETCH) and one did not arrive." >&2
+	echo "denylist-audit: one red scheduled run is an outage; a row of them is a corpus that is gone - check the run history before chasing the network." >&2
+	exit 1
 	;;
 4)
 	echo "denylist-audit: an upstream corpus moved or is not the profile it should be (see above); the audit proved nothing." >&2
