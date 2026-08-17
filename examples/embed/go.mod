@@ -14,7 +14,7 @@ require (
 	github.com/elastic/go-seccomp-bpf v1.6.0 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/landlock-lsm/go-landlock v0.9.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.78 // indirect
 )
