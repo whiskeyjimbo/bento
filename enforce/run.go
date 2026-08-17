@@ -241,6 +241,19 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 			required.SetStatus(l)
 		}
 	}
+	// Report-only layers ride along, filtered out of everything that judges. A layer no
+	// policy can ask for is in no run's required set, so forLayers drops it and a run on a
+	// host missing that host fact says nothing about it at all - the operator sees only
+	// whatever per-item notice the shortfall produces, which is also what one bad item
+	// looks like. Carrying it here keeps one source for the fact (the probe) rather than
+	// having the run path consult a second one, and it cannot affect admission by
+	// construction: admit already ran, against `required`, which this does not touch.
+	// postRunShortfall's strict branch excludes them for the same reason - see there.
+	for _, l := range probed.Layers {
+		if l.Layer.ReportOnly() {
+			required.SetStatus(l)
+		}
+	}
 	res.Report = required
 	if err != nil {
 		// The posture bar below applies to this arm too: the overlay has already run, so the
@@ -323,7 +336,17 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 func postRunShortfall(opts Options, r Report) []LayerStatus {
 	switch {
 	case opts.Strict:
-		return r.Degradations()
+		// Report-only layers excluded: they are carried in the report for disclosure and
+		// are in no policy's required set, so no posture ever admitted the run ON one.
+		// Faulting a completed run for a host fact its manifest could not have asked for
+		// would refuse under --strict something admission had no bar for.
+		var short []LayerStatus
+		for _, l := range r.Degradations() {
+			if !l.Layer.ReportOnly() {
+				short = append(short, l)
+			}
+		}
+		return short
 	case opts.AllowDegraded:
 		// --allow-degraded waives the requested-limits bar at admission, so it is not
 		// re-applied here either: the operator took on running unbounded.

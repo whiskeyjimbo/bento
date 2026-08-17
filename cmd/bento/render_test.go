@@ -1883,3 +1883,37 @@ func TestWriteShieldSummaryWarnsOnADroppedRelocation(t *testing.T) {
 		t.Errorf("the run must name a store its shields do not cover; got %q", out)
 	}
 }
+
+// A report-only layer is a fact about the host that no manifest can name, so a run
+// carrying one must not present it under "everything your policy asked for" - that reads
+// as a confinement gap to anyone scanning the header, which is the misreading carrying it
+// into the run's report exists to correct. doctor's table separates the same class.
+func TestWriteDegradationsSeparatesAHostFactFromAPolicyShortfall(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerAutoExecReport, enforce.Unavailable, "git is not on this host's PATH")
+	var b bytes.Buffer
+	writeDegradations(&b, r)
+
+	out := b.String()
+	if !strings.Contains(out, "auto-exec-report") {
+		t.Fatalf("the run said nothing about the host fact:\n%s", out)
+	}
+	if strings.Contains(out, "your policy asked for") {
+		t.Errorf("a layer no manifest can ask for was reported as a policy shortfall:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing is less confined") {
+		t.Errorf("the disclosure does not say the run is no less confined for it:\n%s", out)
+	}
+
+	// A real shortfall alongside it still gets its own header and its own line.
+	r.Add(enforce.LayerFilesystem, enforce.Degraded, "no user namespaces")
+	b.Reset()
+	writeDegradations(&b, r)
+	out = b.String()
+	if !strings.Contains(out, "your policy asked for") || !strings.Contains(out, "filesystem") {
+		t.Errorf("the policy shortfall was lost beside the host fact:\n%s", out)
+	}
+	if !strings.Contains(out, "auto-exec-report") {
+		t.Errorf("the host fact was lost beside the policy shortfall:\n%s", out)
+	}
+}

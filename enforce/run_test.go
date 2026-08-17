@@ -1301,3 +1301,67 @@ func TestPIDsOnlyLimitNotRefusedForUndelegatedMemory(t *testing.T) {
 		t.Error("a refused memory limit must not reach the enforcer")
 	}
 }
+
+// A report-only layer is in no policy's required set, so forLayers drops it and the run's
+// report said nothing about the host fact at all - the complaint bv2-5qura answered for
+// doctor and not for run. It is carried for disclosure, and only for disclosure: it must
+// not admit, refuse, or fault a run under any posture, since no posture ever admitted the
+// run on a layer no manifest can name.
+func TestAReportOnlyLayerReachesTheRunsReportWithoutJudgingIt(t *testing.T) {
+	probe := fullyEnforced()
+	probe.Add(LayerAutoExecReport, Unavailable, "git is not on this host's PATH")
+	if !LayerAutoExecReport.ReportOnly() {
+		t.Fatal("this test is about a report-only layer; LayerAutoExecReport is no longer one")
+	}
+
+	for _, opts := range []Options{{}, {Strict: true}, {AllowDegraded: true}} {
+		f := &fakeEnforcer{probe: probe}
+		res, err := Run(context.Background(), f, validPolicy(), Process{}, opts)
+		if err != nil {
+			t.Fatalf("opts %+v: Run = %v, want nil: a layer no manifest can ask for cannot refuse or fault a run", opts, err)
+		}
+		if !f.ran {
+			t.Fatalf("opts %+v: the run was not dispatched", opts)
+		}
+		// Presence, not StateOf: a layer the report never mentions also answers
+		// Unavailable, so StateOf alone cannot tell "carried" from "dropped by
+		// forLayers", which is the whole defect.
+		var carried *LayerStatus
+		for _, l := range res.Report.Layers {
+			if l.Layer == LayerAutoExecReport {
+				carried = &l
+			}
+		}
+		if carried == nil {
+			t.Errorf("opts %+v: the run's report has no auto-exec-report row, so a RUN on a git-less host still says nothing about it", opts)
+			continue
+		}
+		if carried.State != Unavailable || carried.Reason == "" {
+			t.Errorf("opts %+v: carried row = %+v, want the probe's Unavailable and its reason", opts, *carried)
+		}
+	}
+}
+
+// The carry must not reach back into admission. A report-only layer is written onto the
+// report after admit has already judged `required`, so a probe reporting one Unavailable
+// leaves every judged layer exactly as it was.
+func TestCarryingAReportOnlyLayerDoesNotChangeTheJudgedLayers(t *testing.T) {
+	probe := fullyEnforced()
+	f := &fakeEnforcer{probe: probe}
+	clean, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("Run on a fully enforced host = %v", err)
+	}
+
+	probe.Add(LayerAutoExecReport, Unavailable, "git is not on this host's PATH")
+	f = &fakeEnforcer{probe: probe}
+	withFact, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("Run with a report-only shortfall = %v, want nil under --strict", err)
+	}
+	for _, l := range clean.Report.Layers {
+		if got := withFact.Report.StateOf(l.Layer); got != l.State {
+			t.Errorf("%v = %v with the host fact carried, was %v without it", l.Layer, got, l.State)
+		}
+	}
+}

@@ -1979,8 +1979,31 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 	if len(short) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] this host does not enforce everything your policy asked for:")
+	// A report-only layer is a fact about the host that no manifest can name, so it is
+	// not something "your policy asked for" and is written apart from the ones that are.
+	// Folding it into the list below reads as a confinement gap to anyone scanning the
+	// header, which is the misreading it is carried here to correct, not to cause. See
+	// writeDegradedSummary, which separates the same class in doctor's table.
+	var policyShort, hostOnly []enforce.LayerStatus
 	for _, l := range short {
+		if l.Layer.ReportOnly() {
+			hostOnly = append(hostOnly, l)
+		} else {
+			policyShort = append(policyShort, l)
+		}
+	}
+	for _, l := range hostOnly {
+		head := fmt.Sprintf("%s: %s - %s", l.Layer, l.State, l.Disclosure())
+		fmt.Fprintln(w, "[bento] this host cannot answer everything this run reports on; nothing is less confined for it:")
+		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
+			fmt.Fprintf(w, "[bento]   %s\n", line)
+		}
+	}
+	if len(policyShort) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] this host does not enforce everything your policy asked for:")
+	for _, l := range policyShort {
 		// Wrapped, not one line: the degraded filesystem tier's reason is a
 		// thousand-character paragraph, and a disclosure the reader scrolls past
 		// sideways discloses nothing.
