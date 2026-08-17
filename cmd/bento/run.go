@@ -88,8 +88,8 @@ func newRunCmd() *cobra.Command {
 			// After the at-risk warning and before the refusal: both are about how much the
 			// stamp is worth, and this one is inapplicable to the manifest the refusal below
 			// turns away.
-			if stampUnrecorded(mt.RealPath, doc) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "[bento] %s\n", unrecordedStamp)
+			if note := stampNote(mt.RealPath, doc); note != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[bento] %s\n", note)
 			}
 			if err := requireApproval(doc, allowUnapproved); err != nil {
 				return refuse(err)

@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -287,28 +289,48 @@ func requirePrivateJournal(path string) error {
 	return nil
 }
 
-// stampUnrecorded reports a current stamp this host has no record of approving. The stamp
-// is unkeyed and travels with the file, so a current one proves the permissions have not
-// drifted since SOMEBODY approved them, never that it was you - and the journal is the only
-// thing that can tell the two apart.
+// stampNote is what the journal has to say about a current stamp, or "" when it has
+// nothing. The stamp is unkeyed and travels with the file, so a current one proves the
+// permissions have not drifted since SOMEBODY approved them, never that it was you - and
+// the journal is the only thing that can tell the two apart.
 //
-// journalForeign counts as well as journalAbsent, and is the stronger case of the two: an
-// entry recording a DIFFERENT approval is positive evidence that what this host approved is
-// not what the manifest now carries, where an absent one is only the lack of any evidence.
-// A rename lost to a power loss reads as foreign too, so the sentence says what bento holds
-// no record of rather than accusing the stamp of coming from elsewhere.
+// journalForeign counts as unrecorded alongside journalAbsent, and is the stronger case of
+// the two: an entry recording a DIFFERENT approval is positive evidence that what this host
+// approved is not what the manifest now carries, where an absent one is only the lack of
+// any evidence. A rename lost to a power loss reads as foreign too, so the sentence says
+// what bento holds no record of rather than accusing the stamp of coming from elsewhere.
 //
-// journalUntrusted is not included: a journal somebody else can write is no evidence in
-// either direction, and it has its own report naming the directory to repair.
+// A journal that is not this user's alone gets the other sentence rather than silence. It
+// is no evidence in either direction, and saying nothing leaves a shared state home - an
+// NFS export under a permissive umask, a state volume baked into a container image - reading
+// exactly like a clean record. writeJournalDiff has a fuller version of the same report, but
+// it fires only inside approve and only when the policy changed, so it never reaches here.
+//
+// The directory is checked separately on the way to the unrecorded sentence, because
+// readApprovalRecord judges privacy only once it has found an entry: a shared directory
+// holding nothing for this manifest lands on journalAbsent, and "this host holds no record"
+// would credit a journal that cannot be evidence either way.
 //
 // Only for a current stamp. An unstamped or stale one already gets its own line, which says
 // more than this would.
-func stampUnrecorded(realPath string, doc *manifest.Document) bool {
+func stampNote(realPath string, doc *manifest.Document) string {
 	if trust.CheckApproval(doc) != trust.ApprovalCurrent {
-		return false
+		return ""
 	}
-	_, verdict := readApprovalRecord(realPath, doc)
-	return verdict == journalAbsent || verdict == journalForeign
+	switch _, verdict := readApprovalRecord(realPath, doc); verdict {
+	case journalUntrusted:
+		return sharedJournal
+	case journalAbsent, journalForeign:
+		if dir, err := journalDir(); err == nil {
+			// A directory that is not there yet is the fresh state home, which is the
+			// commonest way to hold no record and says nothing about anyone's access.
+			if err := requirePrivateJournal(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return sharedJournal
+			}
+		}
+		return unrecordedStamp
+	}
+	return ""
 }
 
 // unrecordedStamp is what both callers say about one, in one string for noStampDiff's
@@ -321,6 +343,12 @@ func stampUnrecorded(realPath string, doc *manifest.Document) bool {
 // a fact the operator may already know. --strict does not fail on it either - it gates
 // drift, and nothing here has drifted.
 const unrecordedStamp = "this host holds no record of approving these permissions, so the stamp is somebody's review rather than yours - `bento approve` after reading them makes it yours"
+
+// sharedJournal is the other answer stampNote gives, and it names the directory because
+// that is the whole of what the reader can do about it: the note is not a claim about the
+// stamp, it is a claim that bento has nothing to say about the stamp until the journal is
+// repaired. A note and never a refusal, for unrecordedStamp's reasons.
+const sharedJournal = "bento's approval journal under $XDG_STATE_HOME/bento/approvals/ is not yours alone - somebody else can write it, or it belongs to another user - so nothing there is evidence of what you approved, and bento cannot tell you whether this stamp is yours. Repair that directory's owner and mode, then `bento approve` after reading the permissions"
 
 // writeJournalDiff names the permissions that changed since the stamp, or says why it
 // cannot. It replaces the half-answer writeReapprovalNotice gave on its own - "something

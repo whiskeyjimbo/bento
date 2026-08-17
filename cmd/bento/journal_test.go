@@ -627,3 +627,64 @@ func TestACurrentStampThisHostNeverWroteIsReported(t *testing.T) {
 		t.Errorf("a stamp for permissions this host never approved must be reported; got:\n%s", foreign.String())
 	}
 }
+
+// A journal somebody else can write is no evidence in either direction, and silence about
+// it reads exactly like a clean record: validate and run reach the journal through this
+// one note, so a shared state home would otherwise leave a shipped stamp looking like this
+// host's own approval. The two shapes are one message because the reader's repair is the
+// same - the directory holding no entry for this manifest is as unusable as an entry
+// anyone can rewrite.
+func TestASharedJournalIsReportedOnACurrentStamp(t *testing.T) {
+	base := stateHome(t)
+	dir := filepath.Join(base, "bento", "approvals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/data"}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	doc := &manifest.Document{Policy: p, Provenance: manifest.Provenance{Approves: p.Fingerprint()}}
+	writeApprovalRecord(path, p, true, io.Discard)
+
+	entry, err := journalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Chmod after the write: see TestASharedJournalEntryIsReplacedByTheNextApproval.
+	if err := os.Chmod(entry, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalUntrusted {
+		t.Fatalf("an entry anyone can write must not be trusted; verdict = %v", verdict)
+	}
+	var shared strings.Builder
+	if err := reportApproval(&shared, path, doc, true); err != nil {
+		t.Fatalf("an untrusted journal must not fail --strict: %v", err)
+	}
+	if !strings.Contains(shared.String(), "approvals/") {
+		t.Errorf("an untrusted journal must be reported, naming the directory to repair; got:\n%s", shared.String())
+	}
+
+	// The directory itself, holding no entry for this manifest: readApprovalRecord judges
+	// privacy only once it has found an entry, so this lands on journalAbsent and would
+	// otherwise be reported as "no record" - crediting a journal that cannot be evidence.
+	if err := os.Remove(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, verdict := readApprovalRecord(path, doc); verdict != journalAbsent {
+		t.Fatalf("an empty shared directory reaches the absent verdict; verdict = %v", verdict)
+	}
+	var empty strings.Builder
+	if err := reportApproval(&empty, path, doc, true); err != nil {
+		t.Fatalf("an untrusted journal must not fail --strict: %v", err)
+	}
+	if !strings.Contains(empty.String(), "approvals/") {
+		t.Errorf("a shared journal directory must be reported rather than read as no record; got:\n%s", empty.String())
+	}
+	if strings.Contains(empty.String(), "holds no record") {
+		t.Errorf("a shared journal is no evidence, so it must not be reported as this host holding no record; got:\n%s", empty.String())
+	}
+}

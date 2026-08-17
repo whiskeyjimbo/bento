@@ -194,8 +194,8 @@ func reportApproval(w io.Writer, realPath string, doc *manifest.Document, strict
 	switch trust.CheckApproval(doc) {
 	case trust.ApprovalCurrent:
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
-		if stampUnrecorded(realPath, doc) {
-			for _, line := range wrapText(unrecordedStamp, textWidth-len("              ")) {
+		if note := stampNote(realPath, doc); note != "" {
+			for _, line := range wrapText(note, textWidth-len("              ")) {
 				fmt.Fprintf(w, "              %s\n", line)
 			}
 		}
