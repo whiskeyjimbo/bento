@@ -45,9 +45,15 @@ import (
 // bookkeeping took longer than that millisecond.
 //
 // caps holds a controller file only where the question was answerable. An empty map is the
-// reading that attests nothing - no scope found - which a target finishing before the
-// sample lands produces as readily as a broken host. That worsens no layer: faulting a
+// reading that attests nothing - no scope found - and it worsens no layer: faulting a
 // completed run for being fast is worse than the gap it leaves.
+//
+// How often a fast target actually produces it: 0 of 100 runs of `/bin/true` under a full
+// set of limits on a healthy user manager (measured). The sample is taken from the
+// WRAPPER's pid, and systemd-run lives in the scope until the target exits, so it is not
+// racing the target the way the pid alone suggests - it is the manager that has to be slow.
+// The residue is a host whose manager never creates the scope at all, which reads the same
+// as a run too fast to sample and reports whatever the pre-run probe concluded.
 type scopeLimits struct {
 	caps map[string]bool
 }
