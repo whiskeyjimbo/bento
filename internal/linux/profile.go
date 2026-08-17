@@ -309,7 +309,7 @@ func startRecordingProxy(ctx context.Context, p *policy.Policy, socket string, a
 	// dies mid-profile shows up as the hosts it never recorded, not as an error here.
 	// The fault count is not discarded with it: a proposed manifest that is silently
 	// short is the failure DroppedConnections exists to prevent.
-	return func() int { lost, _ := stop(); return lost }, nil
+	return func() int { return stop().lostRecords }, nil
 }
 
 // parseObservations reads the launcher's observation report: "R <path>" and

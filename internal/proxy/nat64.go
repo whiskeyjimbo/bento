@@ -205,9 +205,21 @@ func mayWrapUnroutableV4(ip net.IP) bool {
 // over IPv6 is refused for the rest of the run, since a hostname rule grants no
 // literal. A dual-stack host survives on the dialer's fallback to its A records.
 func (p *Proxy) classify(ip net.IP) ipClass {
+	c, _ := p.classifyNAT64(ip)
+	return c
+}
+
+// classifyNAT64 is classify plus why it landed there: blackout is true only when the
+// address is public to classifyIP, carries no transition prefix this can decode, and
+// reaches ipPrivate for no other reason than that discovery was inconclusive. That is
+// the refusal nothing else in the run record can account for - an allowlisted host
+// reachable only over IPv6, refused because one lookup failed at proxy start - and
+// guardUpstream counts it where the refusal is actually taken, so a host with no
+// working DNS that never dialed such an address reports nothing.
+func (p *Proxy) classifyNAT64(ip net.IP) (class ipClass, blackout bool) {
 	c := classifyIP(ip)
 	if c != ipPublic || ip.To4() != nil {
-		return c
+		return c, false
 	}
 	// A site may publish more than one Pref64, and embeddedV4 matches on prefix bits
 	// alone, so a short prefix matches every address under it and decodes a different
@@ -225,7 +237,7 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 		matched = true
 		switch classifyIP(v4) {
 		case ipHostReserved:
-			return ipHostReserved
+			return ipHostReserved, false
 		case ipPrivate:
 			strictest = ipPrivate
 		case ipPublic:
@@ -234,7 +246,7 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 		}
 	}
 	if matched {
-		return strictest
+		return strictest, false
 	}
 	// Discovery learns the prefixes the resolver synthesized ipv4only.arpa under, which on
 	// a site publishing more than one Pref64 need not be all of them: an address wrapped
@@ -248,10 +260,10 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 	// refusal is not a verdict to reach on a guess. Only the dangerous decodes count, so
 	// native IPv6 egress on a DNS64 site keeps working - see mayWrapUnroutableV4.
 	if len(p.nat64) > 0 && mayWrapUnroutableV4(ip) {
-		return ipPrivate
+		return ipPrivate, false
 	}
 	if p.nat64Inconclusive && embeddedIPv4(ip) == nil {
-		return ipPrivate
+		return ipPrivate, true
 	}
-	return c
+	return c, false
 }

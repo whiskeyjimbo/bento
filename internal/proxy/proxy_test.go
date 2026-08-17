@@ -176,6 +176,64 @@ func TestServeSurvivesATransientAcceptError(t *testing.T) {
 	}
 }
 
+// The retry keeps the fence alive, but the window it rides out is one where every CONNECT
+// from the sandbox met a socket nothing was accepting on. A run that spent it must not be
+// indistinguishable from one that never hit the condition, so the retries and the time
+// spent backed off are counted for the run's report to disclose.
+func TestServeCountsTheAcceptRetriesItRodeOut(t *testing.T) {
+	dir := t.TempDir()
+	sock := dir + "/proxy.sock"
+	base, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &flakyListener{Listener: base, remaining: 3, err: acceptErr(syscall.ENFILE)}
+
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx, l) }()
+
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dialing the proxy after a transient Accept error: %v", err)
+	}
+	connect(t, c, "example.com:443")
+	c.Close()
+	cancel()
+	<-done
+
+	retries, backoff := p.AcceptRetries()
+	if retries != 3 {
+		t.Errorf("AcceptRetries() = %d, want 3 - a recovered fault that leaves no trace is a window the run cannot account for", retries)
+	}
+	// 5ms, 10ms, 20ms by the doubling backoff. Asserted as a floor rather than a value:
+	// the wait is at least the timer, and a loaded machine makes it more.
+	if want := acceptRetryStart * 7; backoff < want {
+		t.Errorf("backoff = %v, want at least %v - the disclosure has to say how long the socket went unserved", backoff, want)
+	}
+}
+
+// A listener that never faltered reports nothing, so an ordinary run carries no
+// disclosure: the count is what a report degrades on.
+func TestServeCountsNoRetriesOnAHealthyListener(t *testing.T) {
+	dir := t.TempDir()
+	base, err := net.Listen("unix", dir+"/proxy.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New([]policy.NetworkRule{{Host: "example.com", Port: "443"}}, WithDialer(fakeDialer("HELLO")))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx, base) }()
+	cancel()
+	<-done
+
+	if retries, backoff := p.AcceptRetries(); retries != 0 || backoff != 0 {
+		t.Errorf("AcceptRetries() = %d, %v on a healthy listener, want 0", retries, backoff)
+	}
+}
+
 // The retry must not swallow the failure that ends the run: the closer goroutine ends
 // Serve by closing the listener, so treating net.ErrClosed as recoverable would spin
 // through teardown instead of returning.

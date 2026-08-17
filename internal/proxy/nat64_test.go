@@ -386,3 +386,75 @@ func TestNAT64ShortLengthsNeedTheZeroUOctet(t *testing.T) {
 		t.Errorf("%s wraps 10.0.0.5 at the /64 positions with a zero u-octet and was not caught", net.IP(b))
 	}
 }
+
+// A blackout is a refusal, not a host condition: an unreachable resolver leaves discovery
+// inconclusive on every run, but only a run that actually dialed an IPv6 destination no
+// transition prefix decodes lost egress to it. The count is what a report can be degraded
+// on, so it must not fire for a host that merely has no DNS - and it must not fire for
+// the refusals the guard would have made anyway.
+func TestNAT64BlackoutsCountOnlyRefusalsInconclusiveDiscoveryCaused(t *testing.T) {
+	dead := func(context.Context) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
+	}
+	cases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		// The blackout itself: public to classifyIP, no transition prefix decodes it, so
+		// it is refused for nothing but the failed lookup.
+		{"undecodable public IPv6", "2606:4700::1111", 1},
+		// Refused on its own bytes; inconclusive discovery took nothing from this run.
+		{"literal RFC1918", "10.0.0.5", 0},
+		{"well-known Pref64 wrapping RFC1918", "64:ff9b::c0a8:101", 0},
+		// Never demoted at all, so never refused.
+		{"public IPv4", "8.8.8.8", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := New(egressRules, WithNAT64Discovery(dead))
+			p.discoverNAT64(t.Context())
+			if !p.nat64Inconclusive {
+				t.Fatal("a refused lookup was treated as conclusive")
+			}
+			_ = p.guardUpstream(t.Context(), "tcp", net.JoinHostPort(c.target, "443"), nil)
+			if got := p.NAT64Blackouts(); got != c.want {
+				t.Errorf("NAT64Blackouts() = %d after dialing %s, want %d", got, c.target, c.want)
+			}
+		})
+	}
+}
+
+// A run whose resolver never answered but which dialed nothing undecodable lost no egress,
+// so it must report no blackout at all: this is the count a report degrades on, and every
+// run on a DNS-less host would otherwise carry the verdict.
+func TestNAT64InconclusiveDiscoveryAloneIsNoBlackout(t *testing.T) {
+	p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+		return nil, context.DeadlineExceeded
+	}))
+	p.discoverNAT64(t.Context())
+	if !p.nat64Inconclusive {
+		t.Fatal("an expired discovery deadline was treated as conclusive")
+	}
+	if got := p.NAT64Blackouts(); got != 0 {
+		t.Errorf("NAT64Blackouts() = %d on a run that dialed nothing, want 0", got)
+	}
+}
+
+// A literal grant still reaches the address, so the demotion cost the run nothing and
+// there is no blackout to report. Counting the demotion rather than the refusal would
+// degrade a run whose declared egress all went through.
+func TestNAT64BlackoutIsNotCountedWhenALiteralGrantReachesIt(t *testing.T) {
+	p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
+	}))
+	p.discoverNAT64(t.Context())
+	ip := net.ParseIP("2606:4700::1111")
+	ctx := withLiteralGrant(t.Context(), ip)
+	if err := p.guardUpstream(ctx, "tcp", net.JoinHostPort(ip.String(), "443"), nil); err != nil {
+		t.Fatalf("a rule naming this literal did not reach it: %v", err)
+	}
+	if got := p.NAT64Blackouts(); got != 0 {
+		t.Errorf("NAT64Blackouts() = %d for an address the run reached, want 0", got)
+	}
+}

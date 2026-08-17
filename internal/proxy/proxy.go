@@ -134,6 +134,11 @@ type Proxy struct {
 	// discipline as nat64.
 	nat64Inconclusive bool
 
+	// nat64Blackouts counts the connections guardUpstream refused for no reason but
+	// that discovery was inconclusive - see classifyNAT64. Written from handler
+	// goroutines, so atomic.
+	nat64Blackouts atomic.Int64
+
 	// served marks that Serve has been entered, so a Proxy is used at most once.
 	served atomic.Bool
 
@@ -144,6 +149,14 @@ type Proxy struct {
 	// without this nothing downstream can tell a short record from a complete one.
 	// Written from handler goroutines and from Serve's accept goroutine.
 	internalFaults atomic.Int64
+
+	// acceptRetries counts the transient Accept failures Serve backed off and retried,
+	// and acceptBackoff is the time it spent waiting them out: the window during which
+	// the socket bind-mounted into the sandbox had nothing accepting on it. Written and
+	// read only by Serve's accept goroutine, which closes over the caller's handoff
+	// (see startProxyWith), so they need no atomic - the same discipline nat64 keeps.
+	acceptRetries int
+	acceptBackoff time.Duration
 }
 
 // InternalFaults reports how many times the proxy recovered a fault of its own that
@@ -151,6 +164,19 @@ type Proxy struct {
 // count means the run's egress record is short by that many events, so a caller that
 // turns observed destinations into a proposed manifest must not present it as complete.
 func (p *Proxy) InternalFaults() int { return int(p.internalFaults.Load()) }
+
+// NAT64Blackouts reports how many connections were refused for no reason but that NAT64
+// discovery could not rule out a site prefix, so an IPv6 destination no transition prefix
+// decodes had to fail closed. Read it after Serve returns. A non-zero count means the run
+// was denied declared egress by a failed lookup rather than by its manifest, which nothing
+// else in the record - and nothing on the client side, by design - can say.
+func (p *Proxy) NAT64Blackouts() int { return int(p.nat64Blackouts.Load()) }
+
+// AcceptRetries reports how many transient Accept failures Serve rode out and how long it
+// spent backed off across them. Read it after Serve returns. A non-zero count means the
+// egress socket had nothing accepting on it for that long, so a CONNECT the sandbox made
+// in the window met a dead socket rather than an allowlist decision.
+func (p *Proxy) AcceptRetries() (int, time.Duration) { return p.acceptRetries, p.acceptBackoff }
 
 // Option configures a Proxy.
 type Option func(*Proxy)
@@ -324,7 +350,8 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// refuse it rather than dial an address the guard could not vet.
 		return blocked(ctx, address)
 	}
-	switch p.classify(ip) {
+	class, nat64Blackout := p.classifyNAT64(ip)
+	switch class {
 	case ipHostReserved:
 		// Loopback, link-local (incl. cloud metadata), and unspecified name the host
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
@@ -337,6 +364,13 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// there is the SSRF case and stays blocked. A context with no grant (any
 		// caller but handle) is treated as no grant, so the guard fails closed.
 		if grant := literalGrantOf(ctx); grant == nil || !grant.Equal(ip) {
+			// Counted here rather than in classifyNAT64 because a literal grant still
+			// reaches the address: what the run record is missing is the refusal, not
+			// the demotion. The refusal itself stays indistinguishable from an ordinary
+			// dial failure on the client side, so this is the only side that can say it.
+			if nat64Blackout {
+				p.nat64Blackouts.Add(1)
+			}
 			return blocked(ctx, ip.String())
 		}
 	case ipPublic:
@@ -655,12 +689,20 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 				// and a run that ends mid-delay must stop accepting now rather than serve out
 				// the delay first. The next Accept then meets the closed listener and takes
 				// the terminal path below.
+				// Counted so a run that spent seconds with nothing accepting on the
+				// socket is not indistinguishable from one that never hit the condition.
+				// The elapsed time is measured rather than summing retryDelay: a backoff
+				// straddling teardown ends early, and reporting the delay it would have
+				// waited would overstate the window.
+				p.acceptRetries++
+				waited := time.Now()
 				t := time.NewTimer(retryDelay)
 				select {
 				case <-ctx.Done():
 					t.Stop()
 				case <-t.C:
 				}
+				p.acceptBackoff += time.Since(waited)
 				continue
 			}
 			// Whether the run had already ended is read HERE, not after the drain: an

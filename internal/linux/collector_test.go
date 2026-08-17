@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/proxy"
@@ -194,5 +195,72 @@ func TestGateFaultDegradesAnEnforcedNetworkLayer(t *testing.T) {
 	degradations := r.Degradations()
 	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "panicked on 3 connection(s)") {
 		t.Errorf("degradations = %+v, want the gate-fault count: noteGateFault is the count's only channel", degradations)
+	}
+}
+
+// noteNAT64Blackout is the blackout count's only channel: the guard's refusal is worded
+// exactly like a dial failure so the sandbox cannot classify names against the host's DNS,
+// which leaves the run's report the only place it can be said at all.
+func TestANAT64BlackoutDegradesAnEnforcedNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteNAT64Blackout(&r, 2)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("LayerNetwork = %v, want Degraded after egress refused by a failed discovery", got)
+	}
+	degradations := r.Degradations()
+	if len(degradations) != 1 || !strings.Contains(degradations[0].Reason, "2 IPv6 destination(s)") {
+		t.Errorf("degradations = %+v, want the refusal count and what it cost", degradations)
+	}
+}
+
+// A run on a host whose resolver never answers leaves discovery inconclusive on every
+// run; the report must stay clean unless that actually cost the run a destination, or
+// every air-gapped host degrades every run it serves.
+func TestInconclusiveDiscoveryWithNoRefusalLeavesTheNetworkLayerAlone(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteNAT64Blackout(&r, 0)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Enforced {
+		t.Errorf("LayerNetwork = %v, want Enforced: nothing was refused", got)
+	}
+}
+
+// noteAcceptRetries is the recovered-listener count's only channel. A run that spent a
+// window with nothing accepting on the sandbox's socket is otherwise indistinguishable
+// from one that never hit the condition - noteDeadListener covers only the terminal case.
+func TestRecoveredAcceptRetriesDegradeAnEnforcedNetworkLayer(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteAcceptRetries(&r, 4, 1500*time.Millisecond)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Fatalf("LayerNetwork = %v, want Degraded after a recovered accept backoff", got)
+	}
+	degradations := r.Degradations()
+	if len(degradations) != 1 {
+		t.Fatalf("degradations = %+v, want one", degradations)
+	}
+	// The duration is what tells milliseconds of fd pressure apart from seconds of it,
+	// so it travels beside the count rather than being summarized away.
+	if !strings.Contains(degradations[0].Reason, "4 transient") || !strings.Contains(degradations[0].Reason, "1.5s") {
+		t.Errorf("reason = %q, want the retry count and the time spent backed off", degradations[0].Reason)
+	}
+}
+
+// A listener that never faltered says nothing, so an ordinary run's report is untouched.
+func TestNoAcceptRetriesLeavesTheNetworkLayerAlone(t *testing.T) {
+	var r enforce.Report
+	r.Set(enforce.LayerNetwork, enforce.Enforced, "")
+
+	noteAcceptRetries(&r, 0, 0)
+
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Enforced {
+		t.Errorf("LayerNetwork = %v, want Enforced: the listener never faltered", got)
 	}
 }
