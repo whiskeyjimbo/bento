@@ -490,10 +490,10 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 		byKind[s.Kind]++
 	}
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("%d hidden", byKind["hidden"]))
+	fmt.Fprintf(&msg, "%d hidden", byKind["hidden"])
 	for _, kind := range []string{"read-only", "discarded"} {
 		if byKind[kind] > 0 {
-			msg.WriteString(fmt.Sprintf(", %d %s", byKind[kind], kind))
+			fmt.Fprintf(&msg, ", %d %s", byKind[kind], kind)
 		}
 	}
 	fmt.Fprintf(w, "[bento] sandbox engaged: %d credential/host-service path(s) shielded (%s); --json lists them\n", len(res.Shields), msg.String())

@@ -544,9 +544,9 @@ func TestCollectRefusesACorpusItCannotRead(t *testing.T) {
 			// spelling.
 			for i := range src.minCandidates {
 				if strings.HasPrefix(src.sentinel, "blacklist") {
-					body.WriteString(fmt.Sprintf("blacklist ${XDGDATA}/moved%d\n", i))
+					fmt.Fprintf(&body, "blacklist ${XDGDATA}/moved%d\n", i)
 				} else {
-					body.WriteString(fmt.Sprintf("  deny @{XDG_DATA}/moved%d mrwkl,\n", i))
+					fmt.Fprintf(&body, "  deny @{XDG_DATA}/moved%d mrwkl,\n", i)
 				}
 			}
 			return body.String(), nil
