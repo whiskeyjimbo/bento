@@ -1093,7 +1093,7 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 		// the same manifest with a dead host behind it, which the script's own error says
 		// better than this report could.
 	case proxy.RefusedAtCapacity:
-		// Counted like the two above - it is a connection that reached the proxy - and
+		// Counted like the arm above - it is a connection that reached the proxy - and
 		// tallied apart as well, because unlike them it says the allowlist was never
 		// consulted. noteRefusedAtCapacity is what turns the tally into a verdict; without
 		// it a declared destination refused by load reads as one the rules allowed.
