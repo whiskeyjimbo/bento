@@ -544,16 +544,40 @@ func buildCondition(line string) string {
 func expand(raw, home, runUser string) (string, bool) {
 	switch {
 	case strings.HasPrefix(raw, "${HOME}/"):
-		return filepath.Join(home, strings.TrimPrefix(raw, "${HOME}/")), true
+		return contained(filepath.Join(home, strings.TrimPrefix(raw, "${HOME}/")), home, runUser)
 	case raw == "${HOME}":
 		return home, true
 	case strings.HasPrefix(raw, "${RUNUSER}/"):
-		return filepath.Join(runUser, strings.TrimPrefix(raw, "${RUNUSER}/")), true
+		return contained(filepath.Join(runUser, strings.TrimPrefix(raw, "${RUNUSER}/")), runUser, home)
 	case raw == "${RUNUSER}":
 		return runUser, true
 	default:
 		return "", false
 	}
+}
+
+// contained answers expand's in-scope question for a path that has been cleaned. A ".."
+// tail walks out of the root its variable named ("${HOME}/../../etc/shadow" cleans to
+// /etc/shadow), and the result is a system path carrying an in-scope section header - a
+// candidate the diff then reports as a gap bento must shield, outside the home/runtime
+// model both parsers exist to compare within.
+func contained(path, root, other string) (string, bool) {
+	if !underScopeRoot(path, root, other) {
+		return "", false
+	}
+	return path, true
+}
+
+// underScopeRoot reports whether a cleaned path still lies under one of the two roots
+// bento's shield scope covers. Shared with the AppArmor parser so a directive that
+// escapes gets the same answer in both corpora.
+func underScopeRoot(path, home, runUser string) bool {
+	for _, root := range []string{home, runUser} {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // Diff returns the candidates bento does not fully cover. A candidate is covered when

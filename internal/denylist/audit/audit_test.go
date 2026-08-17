@@ -996,3 +996,108 @@ deny @{HOME}/.netrc,
 		t.Errorf("kept %d dropped %d, want 1 and 0: a rule half-dropped by design still reaches the diff", len(kept), dropped)
 	}
 }
+
+// The two parsers read the same corpus class - a list of sensitive home paths - through
+// two grammars, and the diff treats their output as one set. So every path shape has to
+// have a forced verdict in BOTH, and the cells where they answer differently have to be
+// deliberate rather than discovered later as a spelling one parser silently dropped.
+// The grid is the instrument a fuzz target cannot be here: variable substitution, brace
+// expansion and ".." all break the containment oracle a generator would need.
+//
+// fmt is "path" with ",dir" and ",glob" appended when set; "" means no candidate.
+func TestProfileParserGrid(t *testing.T) {
+	const home, runUser = "/HOME", "/run/user/1000"
+	for _, tc := range []struct {
+		shape             string
+		fjPath, aaPath    string
+		fjWant, aaWant    []string
+		fjDropped, aaDrop int
+	}{
+		{shape: "plain", fjPath: "${HOME}/.ssh/id_rsa", aaPath: "@{HOME}/.ssh/id_rsa",
+			fjWant: []string{"/HOME/.ssh/id_rsa"}, aaWant: []string{"/HOME/.ssh/id_rsa"}},
+		{shape: "runtime dir", fjPath: "${RUNUSER}/keyring", aaPath: "@{run}/user/[0-9]*/keyring",
+			fjWant: []string{"/run/user/1000/keyring"}, aaWant: []string{"/run/user/1000/keyring"}},
+		{shape: "spaces in path", fjPath: "${HOME}/My Docs/creds", aaPath: "@{HOME}/My Docs/creds",
+			fjWant: []string{"/HOME/My Docs/creds"}, aaWant: []string{"/HOME/My Docs/creds"}},
+		{shape: "trailing slash", fjPath: "${HOME}/.gnupg/", aaPath: "@{HOME}/.gnupg/",
+			fjWant: []string{"/HOME/.gnupg,dir"}, aaWant: []string{"/HOME/.gnupg,dir"}},
+		{shape: "glob", fjPath: "${HOME}/.*history", aaPath: "@{HOME}/.*history",
+			fjWant: []string{"/HOME/.*history,glob"}, aaWant: []string{"/HOME/.*history,glob"}},
+		// A redundant "." must not produce a second candidate for a file the other
+		// spelling already named: the dedup keys on the path, so an uncleaned one splits
+		// the Dir and Deny merging across two entries.
+		{shape: "redundant dot", fjPath: "${HOME}/./.ssh/id_rsa", aaPath: "@{HOME}/./.ssh/id_rsa",
+			fjWant: []string{"/HOME/.ssh/id_rsa"}, aaWant: []string{"/HOME/.ssh/id_rsa"}},
+		// ".." walks out of the root the variable named. The path is then a system one
+		// wearing an in-scope section, which the diff would report as a gap bento must
+		// shield - so both parsers answer it the way they answer /etc/shadow.
+		// The counts differ by construction and in the loud direction: firejail rejects
+		// the escape in expand, where an in-scope variable is never counted, while the
+		// AppArmor parser resolved @{HOME} and reaches the per-rule "yielded nothing"
+		// tally. A shape neither corpus writes reads as one unparsed rule, not as silence.
+		{shape: "escaping dotdot", fjPath: "${HOME}/../../etc/shadow", aaPath: "@{HOME}/../../etc/shadow", aaDrop: 1},
+		{shape: "system path", fjPath: "/etc/shadow", aaPath: "/etc/shadow"},
+		// The deliberate divergences. firejail's grammar has no brace alternation and
+		// writes no "/**" tails, so the shapes only carry meaning on the AppArmor side;
+		// reading them in firejail's would invent paths its profiles never wrote.
+		{shape: "brace alternation", fjPath: "${HOME}/.{,z}login", aaPath: "@{HOME}/.{,z}login",
+			fjWant: []string{"/HOME/.{,z}login"},
+			aaWant: []string{"/HOME/.login", "/HOME/.zlogin"}},
+		{shape: "subtree tail", fjPath: "${HOME}/.ssh/**", aaPath: "@{HOME}/.ssh/**",
+			fjWant: []string{"/HOME/.ssh/**,glob"}, aaWant: []string{"/HOME/.ssh,dir"}},
+		// An unrecognised variable is counted, not silently out of scope: upstream moving
+		// entries behind a new spelling must read as a corpus that stopped parsing.
+		{shape: "unknown variable", fjPath: "${MYVAR}/x", aaPath: "@{MYVAR}/x", fjDropped: 1, aaDrop: 1},
+	} {
+		t.Run(tc.shape, func(t *testing.T) {
+			for _, kw := range []string{"blacklist", "read-only"} {
+				got, dropped := ParseFirejail("# ssh\n"+kw+" "+tc.fjPath+"\n", home, runUser)
+				if diff := gridDiff(got, tc.fjWant); diff != "" {
+					t.Errorf("ParseFirejail %s: %s", kw, diff)
+				}
+				if dropped != tc.fjDropped {
+					t.Errorf("ParseFirejail %s dropped = %d, want %d", kw, dropped, tc.fjDropped)
+				}
+				if want := denylist.DenyAll; kw == "blacklist" && len(got) > 0 && got[0].Deny != want {
+					t.Errorf("ParseFirejail blacklist Deny = %v, want %v", got[0].Deny, want)
+				}
+			}
+			for _, modes := range []string{"mrwkl", "wl"} {
+				// A write-only rule on a bare directory is a create-guard, which the
+				// AppArmor parser drops by design; that cell has no firejail twin.
+				if strings.HasSuffix(tc.aaPath, "/") && modes == "wl" {
+					continue
+				}
+				got, dropped := ParseAppArmor("  deny "+tc.aaPath+" "+modes+",\n", home, runUser)
+				if diff := gridDiff(got, tc.aaWant); diff != "" {
+					t.Errorf("ParseAppArmor %s: %s", modes, diff)
+				}
+				if dropped != tc.aaDrop {
+					t.Errorf("ParseAppArmor %s dropped = %d, want %d", modes, dropped, tc.aaDrop)
+				}
+				if want := denylist.DenyWrite; modes == "wl" && len(got) > 0 && got[0].Deny != want {
+					t.Errorf("ParseAppArmor wl Deny = %v, want %v", got[0].Deny, want)
+				}
+			}
+		})
+	}
+}
+
+func gridDiff(got []Candidate, want []string) string {
+	have := make([]string, 0, len(got))
+	for _, c := range got {
+		s := c.Path
+		if c.Dir {
+			s += ",dir"
+		}
+		if c.Glob {
+			s += ",glob"
+		}
+		have = append(have, s)
+	}
+	slices.Sort(have)
+	if slices.Equal(have, slices.Sorted(slices.Values(want))) {
+		return ""
+	}
+	return fmt.Sprintf("candidates = %v, want %v", have, want)
+}

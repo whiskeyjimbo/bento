@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -306,7 +307,12 @@ func trimSubtreeSuffix(path, home, runUser string) (trimmed string, dir, ok bool
 			break
 		}
 	}
-	if path == "" || path == home || path == runUser {
+	// substituteVars concatenates, so the path arrives uncleaned where the firejail
+	// parser's expand cleaned it through filepath.Join. Two spellings of one file
+	// ("~/.ssh/id_rsa" and "~/./.ssh/id_rsa") otherwise dedup as two candidates, and the
+	// Dir and Deny merging below - the whole reason seen exists - never runs on them.
+	path = filepath.Clean(path)
+	if path == home || path == runUser || !underScopeRoot(path, home, runUser) {
 		return "", false, false
 	}
 	return path, dir, true
