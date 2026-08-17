@@ -651,6 +651,133 @@ func TestRestrictDegradedScopesIPC(t *testing.T) {
 	}
 }
 
+// The pre-ABI-3 truncate column, asserted positively on a host that is past it. truncate
+// enters the handled set at ABI 3 and no read rule grants it, so from there a read-granted
+// file cannot be zeroed - and below it, it can. That difference is the whole content of
+// the residual truncateResidual discloses in a degraded run's report, and on this host it
+// is otherwise dark: BestEffort clamps DOWN, so the handled set never falls below the
+// kernel unless a preset puts it there.
+//
+// Asserting the residual rather than skipping it is the point, as it is for the scoped
+// set: a handled set that quietly started restricting truncate below ABI 3 would make the
+// disclosure a lie, and a read rule that quietly started granting truncate at ABI 3 would
+// open the gap the disclosure says is closed. Neither would fail anywhere else.
+func TestRestrictDegradedTruncatesAReadGrantOnlyBelowABI3(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	if effectiveABI() < 3 {
+		t.Skip("host ABI is already below the truncate right; the low arm runs natively here")
+	}
+	bin := buildProbe(t, "bentoprobe")
+	for preset, want := range map[string]string{"V2": "OK", "V3": "DENIED"} {
+		t.Run(preset, func(t *testing.T) {
+			got := runFSResidualProbe(t, bin, preset)
+			t.Logf("preset %s on ABI %d: %s", preset, effectiveABI(), got)
+			if !strings.Contains(got, "trunc_readonly="+want) {
+				t.Errorf("got %q, want trunc_readonly=%s at preset %s", got, want, preset)
+			}
+			// The control that separates "truncate is restricted" from "the write grant
+			// stopped working": the RW helpers grant truncate, so this is OK at every ABI.
+			if !strings.Contains(got, "trunc_write=OK") {
+				t.Errorf("got %q, want trunc_write=OK: a write grant must permit zeroing its own files", got)
+			}
+		})
+	}
+}
+
+// ioctl_dev has no low column to assert, unlike truncate, and the measurement is the
+// evidence for that rather than an omission: withIoctlDev grants the right back on the
+// READ rules as well as the write ones, so a granted device node is ioctl-able at every
+// preset from V2 up. What ioctlDevResidual discloses is the device nodes OUTSIDE the
+// grants, and the path rules make those unopenable, so there is no reachable state where
+// the two ABIs differ.
+//
+// What is left is worth pinning: withIoctlDev covering the read rules is the thing that
+// keeps a read-granted /dev/tty usable, and nothing else here would notice it stopping.
+func TestRestrictDegradedKeepsAReadGrantedDeviceIoctlableAtEveryPreset(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	bin := buildProbe(t, "bentoprobe")
+	for _, preset := range []string{"V2", "V4", "V5", "V8"} {
+		got := runFSResidualProbe(t, bin, preset)
+		if !strings.Contains(got, "ioctl_readonly=OK") {
+			t.Errorf("preset %s: got %q, want ioctl_readonly=OK: a read grant that does not carry ioctl_dev leaves every device node it grants openable and un-ioctl-able", preset, got)
+		}
+	}
+}
+
+// runFSResidualProbe builds the layout the fsresiduals probe expects - a read grant
+// holding "f" and a write grant holding "w" - and returns its verdict line. The device is
+// /dev/null: the arm needs a node whose ioctl the caller cannot be denied for any reason
+// but Landlock, and it is the one device present on every host this runs on.
+func runFSResidualProbe(t *testing.T, bin string, extra ...string) string {
+	t.Helper()
+	read, write := t.TempDir(), t.TempDir()
+	for path, dir := range map[string]string{"f": read, "w": write} {
+		if err := os.WriteFile(filepath.Join(dir, path), []byte("content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := append([]string{"fsresiduals", read, write, os.DevNull}, extra...)
+	out, err := exec.Command(bin, args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// The pre-ABI-4 column of TestRestrictDegradedFencesTCPConnect, asserted positively on a
+// host that is past it. Landlock has no network access set before ABI 4, so BestEffort
+// downgrades the tier's net domain to a config that restricts nothing and BOTH connects
+// succeed - which is why netFenceClause calls the seccomp egress filter the whole fence on
+// those kernels, and why the residual it structurally cannot close stays open there.
+//
+// The pre-existing socket is the arm that matters in both columns: a net domain keyed on
+// socket creation rather than on the calling task would leave it OK here for the wrong
+// reason, and this column is the one that would still pass if it were.
+func TestRestrictDegradedDoesNotFenceTCPConnectBelowABI4(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	if effectiveABI() < 4 {
+		t.Skip("host ABI is already below the network set; the low arm runs natively here")
+	}
+	bin := buildProbe(t, "bentoprobe")
+
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+
+	out, err := exec.Command(bin, "degradednet", t.TempDir(), port, "V3").CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	t.Logf("preset V3 on ABI %d: %s", effectiveABI(), got)
+	if !strings.Contains(got, "net_baseline=OK") {
+		t.Fatalf("the port did not answer before the ruleset was applied, so the verdicts below prove nothing: %q", got)
+	}
+	for _, arm := range []string{"net_predomain", "net_fresh"} {
+		if !strings.Contains(got, arm+"=OK") {
+			t.Errorf("%s: got %q, want %s=OK: below ABI 4 the net domain restricts nothing, and the report discloses that", arm, got, arm)
+		}
+	}
+}
+
 // runScopedIPCProbe stands up what the scopedipc probe needs and returns its verdict
 // line. The sockets are bound HERE, not in the probe: scoping judges where the peer's
 // domain sits relative to the probe's, so one the probe bound itself would make "outside"

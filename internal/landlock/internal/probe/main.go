@@ -44,7 +44,7 @@
 // ruleset instead of intersecting the right away would return no error while confining
 // nothing.
 //
-// Usage: probe degradednet <read-dir> <port>
+// Usage: probe degradednet <read-dir> <port> [preset]
 // Opens a TCP socket BEFORE applying the degraded ruleset, connects a second one to prove
 // the port answers, then applies the ruleset and connects the pre-existing socket. Prints
 // "net_baseline=OK|DENIED net_predomain=OK|DENIED net_fresh=OK|DENIED". The pre-existing
@@ -53,6 +53,11 @@
 // what makes this fence the SCM_RIGHTS-passed AF_INET descriptor the seccomp egress
 // filter structurally cannot revoke. Were it keyed on creation instead, that arm would
 // print OK and the fence would buy nothing.
+//
+// A trailing preset argument ("V3") swaps every set the tiers request before applying
+// them, which needs -tags bentoprobe: below ABI 4 Landlock has no network access set at
+// all, so both connects must succeed. That is the pre-ABI-4 column, asserted positively
+// rather than left dark on a host that is past it.
 //
 // Usage: probe scopedipc <read-dir> <write-dir> <outside-path> <abstract-name> <pathname-socket> <port>
 // Applies the DEGRADED ruleset, then reports every residual the tier's IPC posture rests
@@ -76,6 +81,30 @@
 // before applying it, which needs -tags bentoprobe and reproduces what a kernel below
 // that ABI enforces; without the tag the run fails rather than silently measuring the
 // host's own ABI.
+//
+// Usage: probe fsresiduals <read-dir> <write-dir> <device> [preset]
+// Applies the DEGRADED ruleset with read-dir readable and write-dir writable, then
+// reports the two filesystem rights whose absence from an older kernel's handled set the
+// degraded run report discloses as residuals. read-dir must contain a file named "f" and
+// write-dir a file named "w"; device is a device node under read-dir. Prints
+// "trunc_readonly=OK|DENIED trunc_write=OK|DENIED ioctl_readonly=OK|DENIED".
+//
+// trunc_readonly is the arm under test: truncate enters the handled set at ABI 3, and no
+// read rule grants it, so from ABI 3 zeroing a read-granted file is denied and below it
+// the file can still be zeroed - the integrity gap truncateResidual discloses. trunc_write
+// is the control that separates "truncate is restricted" from "the write grant is broken":
+// the RW helpers grant truncate, so it must stay OK at every ABI.
+//
+// ioctl_readonly is a control rather than an arm. ioctl_dev enters the handled set at ABI
+// 5 and withIoctlDev grants it back on the read rules as well as the write ones, so a
+// GRANTED device node is ioctl-able at every ABI - which is what the residual's own
+// disclosure says. The residual is about device nodes OUTSIDE the grants, and those are
+// unopenable under the path rules, so there is no arm to assert; this pins the half that
+// is observable, so a withIoctlDev that stopped covering read rules fails here.
+//
+// A trailing preset argument ("V2") swaps every set the tiers request before applying
+// them, which needs -tags bentoprobe. See landlock.SetTierPreset for why the result is a
+// hybrid rather than a faithful old kernel.
 //
 // Usage: probe procmem <read-dir>
 // Starts a child, reaches into its /proc/<pid>/mem and /proc/<pid>/fd once unrestricted,
@@ -173,6 +202,20 @@ func main() {
 	}
 	if len(os.Args) == 4 && os.Args[1] == "degradednet" {
 		degradedNet(os.Args[2], os.Args[3])
+		return
+	}
+	if len(os.Args) == 5 && os.Args[1] == "degradednet" {
+		applyTierPreset(os.Args[4])
+		degradedNet(os.Args[2], os.Args[3])
+		return
+	}
+	if len(os.Args) == 5 && os.Args[1] == "fsresiduals" {
+		fsResiduals(os.Args[2], os.Args[3], os.Args[4])
+		return
+	}
+	if len(os.Args) == 6 && os.Args[1] == "fsresiduals" {
+		applyTierPreset(os.Args[5])
+		fsResiduals(os.Args[2], os.Args[3], os.Args[4])
 		return
 	}
 	if len(os.Args) == 8 && os.Args[1] == "scopedipc" {
@@ -396,6 +439,58 @@ func scopedIPC(read, write, outside, abstract, pathSock, port string) {
 		baseline, dial(abstract),
 		verdict(outsideChild.Signal(syscall.SIGTERM)), verdict(sameDomain.Signal(syscall.SIGTERM)),
 		dial(pathSock), readable(outside), connectLoopback(fresh, p))
+}
+
+// applyTierPreset swaps the tiers' requested sets, exiting rather than continuing on
+// failure: a probe that silently measured the host's own ABI would pass as the low-ABI
+// coverage it never got.
+func applyTierPreset(name string) {
+	if err := setTierPreset(name); err != nil {
+		fmt.Fprintln(os.Stderr, "preset:", err)
+		os.Exit(2)
+	}
+}
+
+// fsResiduals applies the degraded ruleset and reports the truncate and ioctl_dev arms.
+// See the usage note above for which of them is the arm and which are the controls.
+func fsResiduals(read, write, device string) {
+	if err := landlock.RestrictDegraded([]string{read, filepath.Dir(device)}, []string{write}, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "restrict:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("trunc_readonly=%s trunc_write=%s ioctl_readonly=%s\n",
+		truncatable(filepath.Join(read, "f")), truncatable(filepath.Join(write, "w")), ioctlable(device))
+}
+
+// truncatable reports whether path can be zeroed. os.Truncate is the truncate(2) path
+// rather than ftruncate on an open descriptor: Landlock's truncate right is checked at
+// open for the descriptor route, so a file opened before the ruleset would answer for a
+// moment that has passed rather than for the handled set.
+func truncatable(path string) string {
+	return verdict(os.Truncate(path, 0))
+}
+
+// ioctlable reports whether a device node can be opened and ioctl'd. The open is part of
+// the answer, not a precondition: a read rule that stopped covering the node would deny
+// there, and reporting that as an ioctl denial would credit the handled set with a path
+// refusal.
+//
+// Only EACCES counts as a denial here, unlike every other arm's plain error check.
+// Landlock refuses a handled-but-ungranted ioctl with EACCES, while the device's own
+// handler declines a request it does not implement with ENOTTY - and on a node like
+// /dev/null the second is the normal answer at every ABI. Treating any error as DENIED
+// would report ENOTTY as a Landlock denial and the arm would pass whatever the handled
+// set did.
+func ioctlable(device string) string {
+	f, err := os.Open(device)
+	if err != nil {
+		return "DENIED"
+	}
+	defer f.Close()
+	if _, err := unix.IoctlGetInt(int(f.Fd()), unix.TIOCINQ); errors.Is(err, unix.EACCES) {
+		return "DENIED"
+	}
+	return "OK"
 }
 
 func tcpSocket() (int, error) {

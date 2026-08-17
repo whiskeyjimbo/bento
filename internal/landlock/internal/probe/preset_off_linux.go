@@ -10,3 +10,7 @@ import "errors"
 func setScopedIPCPreset(string) error {
 	return errors.New("probe: preset swapping needs -tags bentoprobe")
 }
+
+func setTierPreset(string) error {
+	return errors.New("probe: preset swapping needs -tags bentoprobe")
+}
