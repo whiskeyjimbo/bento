@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -387,39 +388,70 @@ func TestNAT64ShortLengthsNeedTheZeroUOctet(t *testing.T) {
 	}
 }
 
-// A blackout is a refusal, not a host condition: an unreachable resolver leaves discovery
-// inconclusive on every run, but only a run that actually dialed an IPv6 destination no
-// transition prefix decodes lost egress to it. The count is what a report can be degraded
-// on, so it must not fire for a host that merely has no DNS - and it must not fire for
-// the refusals the guard would have made anyway.
-func TestNAT64BlackoutsCountOnlyRefusalsInconclusiveDiscoveryCaused(t *testing.T) {
-	dead := func(context.Context) ([]net.IP, error) {
-		return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
-	}
+// A blackout is what a run LOST, not a host condition and not a refused address: an
+// unreachable resolver leaves discovery inconclusive on every run, and the guard runs once
+// per resolved address, so a dual-stack name whose AAAA is refused still connects over its
+// A record and cost the run nothing. The count is what degrades a report and costs a run
+// its exit code, so it is taken per connection, on the arm where the whole dial failed.
+func TestNAT64BlackoutsCountTheConnectionsTheRunActuallyLost(t *testing.T) {
 	cases := []struct {
-		name   string
-		target string
-		want   int
+		name       string
+		addrs      []string
+		wantTunnel bool
+		want       int
 	}{
-		// The blackout itself: public to classifyIP, no transition prefix decodes it, so
-		// it is refused for nothing but the failed lookup.
-		{"undecodable public IPv6", "2606:4700::1111", 1},
+		// Reachable only over IPv6, and no transition prefix decodes it: the run lost the
+		// destination for nothing but the failed lookup.
+		{"IPv6-only host", []string{"2606:4700::1111"}, false, 1},
+		// The case nat64.go's own comment calls survivable. Nothing was lost, so nothing
+		// is disclosed - degrading here would cost the exit code of a run whose declared
+		// egress all went through.
+		{"dual-stack host falls back to its A record", []string{"2606:4700::1111", "93.184.216.34"}, true, 0},
+		// One destination lost, not one per address.
+		{"several undecodable AAAAs", []string{"2606:4700::1111", "2001:db8::2", "2001:db8::3"}, false, 1},
 		// Refused on its own bytes; inconclusive discovery took nothing from this run.
-		{"literal RFC1918", "10.0.0.5", 0},
-		{"well-known Pref64 wrapping RFC1918", "64:ff9b::c0a8:101", 0},
-		// Never demoted at all, so never refused.
-		{"public IPv4", "8.8.8.8", 0},
+		{"host resolving to RFC1918", []string{"10.0.0.5"}, false, 0},
+		{"well-known Pref64 wrapping RFC1918", []string{"64:ff9b::c0a8:101"}, false, 0},
+		// Never demoted at all.
+		{"ordinary public IPv4", []string{"93.184.216.34"}, true, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := New(egressRules, WithNAT64Discovery(dead))
-			p.discoverNAT64(t.Context())
-			if !p.nat64Inconclusive {
-				t.Fatal("a refused lookup was treated as conclusive")
+			p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+				return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
+			}))
+			// Stands in for net.Dialer: it walks the name's resolved addresses in order and
+			// runs the production guardUpstream on each, so a refusal on one candidate and a
+			// connect on the next is the same sequence a dual-stack dial really takes.
+			p.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				_, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				var lastErr error = fmt.Errorf("no addresses")
+				for _, ip := range c.addrs {
+					if err := p.guardUpstream(ctx, network, net.JoinHostPort(ip, port), nil); err != nil {
+						lastErr = err
+						continue
+					}
+					client, server := net.Pipe()
+					go func() { fmt.Fprint(server, "HELLO"); server.Close() }()
+					return client, nil
+				}
+				return nil, lastErr
 			}
-			_ = p.guardUpstream(t.Context(), "tcp", net.JoinHostPort(c.target, "443"), nil)
+			dialProxy, stop := startProxy(t, p)
+			defer stop()
+
+			conn := dialProxy()
+			status, _ := connect(t, conn, "host.example:443")
+			conn.Close()
+			if tunneled := strings.Contains(status, "200"); tunneled != c.wantTunnel {
+				t.Fatalf("status = %q, want a tunnel = %v", status, c.wantTunnel)
+			}
+			stop()
 			if got := p.NAT64Blackouts(); got != c.want {
-				t.Errorf("NAT64Blackouts() = %d after dialing %s, want %d", got, c.target, c.want)
+				t.Errorf("NAT64Blackouts() = %d, want %d", got, c.want)
 			}
 		})
 	}
@@ -442,19 +474,20 @@ func TestNAT64InconclusiveDiscoveryAloneIsNoBlackout(t *testing.T) {
 }
 
 // A literal grant still reaches the address, so the demotion cost the run nothing and
-// there is no blackout to report. Counting the demotion rather than the refusal would
+// there is no blackout to note. Counting the demotion rather than the refusal would
 // degrade a run whose declared egress all went through.
-func TestNAT64BlackoutIsNotCountedWhenALiteralGrantReachesIt(t *testing.T) {
+func TestNAT64BlackoutIsNotNotedWhenALiteralGrantReachesIt(t *testing.T) {
 	p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
 		return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
 	}))
 	p.discoverNAT64(t.Context())
 	ip := net.ParseIP("2606:4700::1111")
-	ctx := withLiteralGrant(t.Context(), ip)
+	var refusals dialRefusals
+	ctx := withLiteralGrant(withDialRefusals(t.Context(), &refusals), ip)
 	if err := p.guardUpstream(ctx, "tcp", net.JoinHostPort(ip.String(), "443"), nil); err != nil {
 		t.Fatalf("a rule naming this literal did not reach it: %v", err)
 	}
-	if got := p.NAT64Blackouts(); got != 0 {
-		t.Errorf("NAT64Blackouts() = %d for an address the run reached, want 0", got)
+	if refusals.nat64Blackout.Load() {
+		t.Error("a blackout was noted for an address the run reached")
 	}
 }

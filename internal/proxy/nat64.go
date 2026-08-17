@@ -213,9 +213,13 @@ func (p *Proxy) classify(ip net.IP) ipClass {
 // address is public to classifyIP, carries no transition prefix this can decode, and
 // reaches ipPrivate for no other reason than that discovery was inconclusive. That is
 // the refusal nothing else in the run record can account for - an allowlisted host
-// reachable only over IPv6, refused because one lookup failed at proxy start - and
-// guardUpstream counts it where the refusal is actually taken, so a host with no
-// working DNS that never dialed such an address reports nothing.
+// reachable only over IPv6, refused because one lookup failed at proxy start.
+//
+// Only the refusal counts, and only per connection: guardUpstream notes it on the dial,
+// and handle turns the note into a count on the arm where the whole dial failed. So a
+// host with no working DNS that never dialed such an address reports nothing, and neither
+// does a dual-stack name that fell back to its A record - which is the case this file's
+// classify comment calls survivable.
 func (p *Proxy) classifyNAT64(ip net.IP) (class ipClass, blackout bool) {
 	c := classifyIP(ip)
 	if c != ipPublic || ip.To4() != nil {

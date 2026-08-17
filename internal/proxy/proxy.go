@@ -295,26 +295,47 @@ func (e *blockedUpstreamError) Error() string {
 	return fmt.Sprintf("refusing egress to non-public address %s", e.addr)
 }
 
-// guardBlockedKey names the per-connection record of whether the guard refused any of
-// this dial's resolved addresses.
-type guardBlockedKey struct{}
+// dialRefusalsKey names the per-connection record of what the guard refused across this
+// dial's resolved addresses.
+type dialRefusalsKey struct{}
 
-// withGuardBlocked gives a dial somewhere to record a guard refusal, because the error
-// alone does not survive: net.Dialer tries each resolved address and returns the FIRST
-// one's error, so for a name resolving to [dead-timeout, 10.0.0.1] the refusal on the
-// second address is discarded and handle would report the connection's own decision for
-// a connection that reached nothing. The refusal itself is unaffected - nothing was
-// dialed either way - but the operator signal that the guard is what stopped it is the
-// only place the distinction survives.
-func withGuardBlocked(ctx context.Context, seen *atomic.Bool) context.Context {
-	return context.WithValue(ctx, guardBlockedKey{}, seen)
+// dialRefusals is where a dial records the guard's refusals, because the error alone does
+// not survive: net.Dialer tries each resolved address and returns the FIRST one's error,
+// so for a name resolving to [dead-timeout, 10.0.0.1] the refusal on the second address is
+// discarded and handle would report the connection's own decision for a connection that
+// reached nothing. The refusal itself is unaffected - nothing was dialed either way - but
+// the operator signal that the guard is what stopped it is the only place the distinction
+// survives.
+//
+// Atomic because the dialer runs an address per goroutine on a dual-stack name, so two can
+// refuse at once. Read only after dial returns, so a late store from an attempt still
+// winding down can be missed, never torn.
+type dialRefusals struct {
+	// any is whether the guard refused any address of this dial.
+	any atomic.Bool
+	// nat64Blackout is whether one of those refusals was a NAT64 blackout - an address
+	// refused for no reason but that discovery was inconclusive. Kept apart from any
+	// because a name that also has an A record still connects, and a run that reached
+	// its declared destination lost nothing to the blackout; handle reads this only on
+	// the arm where the whole dial failed.
+	nat64Blackout atomic.Bool
 }
 
-// blocked notes the refusal on the dial context and returns it. Atomic because the
-// dialer runs an address per goroutine on a dual-stack name, so two can refuse at once.
+// withDialRefusals gives a dial somewhere to record what the guard refused.
+func withDialRefusals(ctx context.Context, seen *dialRefusals) context.Context {
+	return context.WithValue(ctx, dialRefusalsKey{}, seen)
+}
+
+// refusalsOf returns this dial's refusal record, or nil for a caller that installed none.
+func refusalsOf(ctx context.Context) *dialRefusals {
+	seen, _ := ctx.Value(dialRefusalsKey{}).(*dialRefusals)
+	return seen
+}
+
+// blocked notes the refusal on the dial context and returns it.
 func blocked(ctx context.Context, addr string) *blockedUpstreamError {
-	if seen, ok := ctx.Value(guardBlockedKey{}).(*atomic.Bool); ok {
-		seen.Store(true)
+	if seen := refusalsOf(ctx); seen != nil {
+		seen.any.Store(true)
 	}
 	return &blockedUpstreamError{addr: addr}
 }
@@ -364,12 +385,14 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// there is the SSRF case and stays blocked. A context with no grant (any
 		// caller but handle) is treated as no grant, so the guard fails closed.
 		if grant := literalGrantOf(ctx); grant == nil || !grant.Equal(ip) {
-			// Counted here rather than in classifyNAT64 because a literal grant still
-			// reaches the address: what the run record is missing is the refusal, not
-			// the demotion. The refusal itself stays indistinguishable from an ordinary
-			// dial failure on the client side, so this is the only side that can say it.
+			// Noted rather than counted: this runs once per RESOLVED ADDRESS, and a
+			// dual-stack name whose AAAA is refused here still connects over its A
+			// record - a run that reached its declared destination lost nothing. handle
+			// turns the note into a count on the arm where the whole dial failed.
 			if nat64Blackout {
-				p.nat64Blackouts.Add(1)
+				if seen := refusalsOf(ctx); seen != nil {
+					seen.nat64Blackout.Store(true)
+				}
 			}
 			return blocked(ctx, ip.String())
 		}
@@ -889,8 +912,8 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	// The literal grant is decided here, where the CONNECT target and the rules are
 	// both in scope, and never re-derived downstream: guardUpstream sees only which
 	// private address (if any) this connection may reach.
-	var guardBlocked atomic.Bool
-	dialCtx := withGuardBlocked(ctx, &guardBlocked)
+	var refusals dialRefusals
+	dialCtx := withDialRefusals(ctx, &refusals)
 	if !admittedByGate {
 		if grant := p.literalGrantFor(host, port); grant != nil {
 			dialCtx = withLiteralGrant(dialCtx, grant)
@@ -903,7 +926,12 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		// alone. Read after dial returns, so a late store from an attempt still winding
 		// down can only be missed, never torn.
 		var blocked *blockedUpstreamError
-		if errors.As(err, &blocked) || guardBlocked.Load() {
+		if errors.As(err, &blocked) || refusals.any.Load() {
+			// Counted per connection, not per refused address: a CONNECT whose name has
+			// several undecodable AAAAs lost one destination, not one per address.
+			if refusals.nat64Blackout.Load() {
+				p.nat64Blackouts.Add(1)
+			}
 			// Reported GuardBlocked, but answered exactly as an ordinary dial failure is. A
 			// distinct refusal here told the client that the name resolved into
 			// non-public space, which under a permissive allowlist (`bento profile
