@@ -12,447 +12,341 @@ commits that built it - none of them were ever in a release.
 ## Unreleased
 
 The largest cycle so far. The boundary moved inward in a lot of small places -
-around a hundred new shielded paths, a network fence on the degraded tier, a
-handful of grants that used to slip past a shield - and a run now says much more
-about what it did and what this host could not do for it.
+around a hundred new shielded paths, a network fence on the degraded tier, a few
+grants that used to slip past a shield - and a run says much more about what it
+did and what this host could not do for it.
 
 ### Boundary Hardening
 
-- **The egress guard no longer takes the weaker verdict when a site publishes
-  more than one NAT64 prefix.** A synthesized IPv6 is re-checked against the IPv4
-  each discovered Pref64 decodes out of it, and the per-prefix verdicts were
-  folded with `max()` over the class enum, on the premise that the classes run
-  least to most restrictive. They do not: a host-reserved address is refused
-  outright, where a private one is still dialable under a matching literal grant.
-  So an address that a `/96` decoded to `169.254.169.254` and a `/64` decoded
-  into RFC1918 came out private, and a manifest naming that IPv6 literal reached
-  the cloud metadata endpoint. The fold now answers host-reserved as soon as any
-  matching prefix decodes there, which is the precedence `classifyRFC8215` in the
-  same file already used. Alongside it, ISATAP and IPv4-translated addresses are
-  decoded, and a partial-Pref64 decode no longer falls through to a guess. The
-  boundary moved inward, on a host that publishes more than one Pref64.
-- **A manifest can no longer lift a deny path its caller supplied.** An embedder
-  passing `DenyPaths` is told a policy cannot lift one, but that only held while
-  the caller's path was unrelated to a built-in shield. Both consumers of the
-  read opt-in matched a bare resolved path with no record of which rule set it
-  came from, so a caller denying `~/.aws` had its shield skipped entirely by a
-  manifest granting `read: ~/.aws`: no shield mounted, the real store bound
-  read-only, and nothing said. A built-in shield whose store a caller deny also
-  covers is no longer opt-in-able, and the refusal no longer offers a read opt-in
-  that does not apply to it. Inward, for runs that supply deny paths.
-- **A shield that resolves onto the home is dropped rather than mounted over
-  it.** The guard against a relocation target swallowing the whole grant surface
-  compared unresolved paths, so on a host whose `/home` is a symlink,
-  `GNUPGHOME=/home/u` arrived as a tmpfs over the entire home. The test now runs
-  on resolved paths, and a caller `DenyPaths` entry resolving onto a home is
-  refused up front rather than accepted and then dropped.
+- **The egress guard takes the strictest NAT64 verdict, not the weakest.** A
+  synthesized IPv6 is re-checked against the IPv4 each discovered Pref64 decodes
+  out of it, and the per-prefix verdicts were folded with `max()` over the class
+  enum - which is not ordered by strictness. An address a `/96` decoded to
+  `169.254.169.254` and a `/64` decoded into RFC1918 came out private, so a
+  manifest naming that IPv6 literal reached the cloud metadata endpoint. Inward,
+  on a host publishing more than one Pref64. ISATAP and IPv4-translated addresses
+  are decoded too, and a partial-Pref64 decode no longer falls through to a guess.
+- **A manifest can no longer lift a deny path its caller supplied.** Both
+  consumers of the read opt-in matched a bare resolved path with no record of
+  which rule set it came from, so a caller denying `~/.aws` had its shield
+  skipped entirely by a manifest granting `read: ~/.aws` - nothing mounted, the
+  real store bound read-only, nothing said. Inward, for runs that pass
+  `DenyPaths`.
+- **A shield that resolves onto the home is dropped, not mounted over it.** The
+  guard compared unresolved paths, so on a host whose `/home` is a symlink,
+  `GNUPGHOME=/home/u` arrived as a tmpfs over the entire home.
 - **Around eighty more shielded paths, and a dozen more relocation variables
-  followed.** The `$PATH`-resident shim directories a distro or installer puts on
-  the path (`~/go/bin`, `~/.pyenv/shims`, `~/.asdf/shims`, `~/.bun/bin`,
-  `~/.local/share/pnpm` and a dozen more) are write-denied, since a planted file
-  there runs under a bare command name the user already types. So are the shell
-  plugin roots past `~/.oh-my-zsh` (`~/.zprezto`, `~/.zinit`, `~/.tmux/plugins`,
-  `~/.fzf`), the files an rc sources by name (`~/.p10k.zsh`, `~/.fzf.zsh`), and
-  `~/.config/zsh` - the conventional `ZDOTDIR`, which cannot be followed through
-  the variable because a shell never exports it. The VS Code forks and the
-  JetBrains trees join `~/.config/Code`; dbus service files and GNOME Shell
-  extensions join `~/.local/share/applications`. Hidden outright: credential
-  files a tool reads by default that no upstream corpus lists - `~/.authinfo`,
-  `~/.hgrc`, `~/.curlrc`, `~/.dbt/profiles.yml`, `~/.config/borg/keys` and their
-  siblings. `GOOGLE_APPLICATION_CREDENTIALS`, `REGISTRY_AUTH_FILE`,
-  `AWS_WEB_IDENTITY_TOKEN_FILE`, `TF_CLI_CONFIG_FILE`, `ANSIBLE_CONFIG`,
-  `PGPASSFILE` and `WGETRC` now move the shield with the file they point at, and
-  a relocated store anchors the alias scan looking for a second readable name for
-  it. The cost: a write grant naming one of the new write-denied trees is refused
-  rather than honored, so `go install`, `pyenv install` and the like do not run
-  in-sandbox.
+  followed.** Write-denied: the `$PATH`-resident shim directories (`~/go/bin`,
+  `~/.pyenv/shims`, `~/.asdf/shims`, `~/.bun/bin`, `~/.local/share/pnpm` and
+  more), where a plant runs under a bare command name the user already types; the
+  shell plugin roots past `~/.oh-my-zsh`; the files an rc sources by name
+  (`~/.p10k.zsh`, `~/.fzf.zsh`); `~/.config/zsh`, the conventional `ZDOTDIR`,
+  which no shell exports; the VS Code forks and JetBrains trees; dbus service
+  files and GNOME Shell extensions. Hidden outright: credential files no upstream
+  corpus lists - `~/.authinfo`, `~/.hgrc`, `~/.curlrc`, `~/.dbt/profiles.yml`,
+  `~/.config/borg/keys` and siblings. `GOOGLE_APPLICATION_CREDENTIALS`,
+  `REGISTRY_AUTH_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `TF_CLI_CONFIG_FILE`,
+  `ANSIBLE_CONFIG`, `PGPASSFILE` and `WGETRC` move the shield with the file they
+  point at. The cost: `go install`, `pyenv install` and the like no longer run
+  in-sandbox, since a write grant naming one of those trees is refused.
 - **Three more paths the host runs code from are shielded**: `~/.bash_completion`
-  (sourced by the distro `bash.bashrc` for every interactive shell),
+  (sourced by every interactive shell),
   `~/.local/share/bash-completion/completions` (sourced on the first tab-complete
-  of that command name), and `~/.selected_editor` (`sensible-editor` runs
-  `$SELECTED_EDITOR` at the next `git commit` or `crontab -e` on a host with no
-  `$EDITOR`). Write-denied, not hidden: reads stay allowed, a plant does not.
+  of that command), and `~/.selected_editor`
+  (`sensible-editor` runs it at the next `git commit` on a host with no
+  `$EDITOR`). Write-denied, not hidden - reads stay allowed, a plant does not.
 - **mise's trust record, the settings that bypass it, and pre-commit's hook cache
   are write-denied.** mise gates an in-tree `mise.toml` behind a per-host trust
-  record - the direnv shape - so denying the record covers every workspace config
-  at once, including ones this run never saw. Only the shims directory was
-  shielded before, so a run under a home write grant could author its own trust
-  and have the config execute at the developer's next `mise` call. The settings
-  that skip the record (`trusted_config_paths`, `yes`) and the three variables
-  naming a config mise reads with no trust check at all
-  (`MISE_GLOBAL_CONFIG_FILE`, `MISE_SYSTEM_CONFIG_FILE`, `MISE_ENV_FILE`) are
-  denied with it. Beside them, `~/.cache/pre-commit` holds the hook
-  repositories the host executes at the next
-  commit: the `.git/hooks` entry point was shielded, the code it runs was not.
-  Two costs: `pre-commit install-hooks` cannot populate its cache in-sandbox, and
-  an untrusted workspace `mise.toml` cannot be trusted from inside one - export
-  `MISE_TRUSTED_CONFIG_PATHS` for the run instead, which grants nothing on the
-  host.
-- **A tool-specific variable relocating a write-shielded directory takes the
-  shield with it.** `DIRENV_CONFIG`, `PRE_COMMIT_HOME` and the `MISE_*`
-  directories each move a shielded tree off its default, and the relocation
-  machinery could only follow a hidden directory or a single file - so on a host
-  setting one, the shield sat where the tool no longer reads. `DIRENV_CONFIG` was
-  the sharpest: `direnv.toml`'s `[whitelist]` skips the allow check entirely, so
-  relocating it disarmed the allow-record shield beside it.
+  record, so denying the record covers every workspace config at once. Only the
+  shims directory was shielded, so a run under a home write grant could author
+  its own trust and have the config execute at the developer's next `mise` call.
+  The bypasses go with it: `trusted_config_paths`, `yes`, and the three configs
+  mise reads with no trust check (`MISE_GLOBAL_CONFIG_FILE`,
+  `MISE_SYSTEM_CONFIG_FILE`, `MISE_ENV_FILE`). `~/.cache/pre-commit` holds the
+  hook repositories the host executes at the next commit - the `.git/hooks` entry
+  point was shielded, the code it runs was not. Two costs: `pre-commit
+  install-hooks` cannot populate its cache in-sandbox, and an untrusted
+  `mise.toml` has to be trusted by exporting `MISE_TRUSTED_CONFIG_PATHS` for the
+  run, which grants nothing on the host.
+- **`DIRENV_CONFIG`, `PRE_COMMIT_HOME` and the `MISE_*` directories move their
+  shields with them.** Relocation could only follow a hidden directory or a
+  single file, so on a host setting one the shield sat where the tool no longer
+  reads. `DIRENV_CONFIG` was the sharpest: `direnv.toml`'s `[whitelist]` skips
+  the allow check, so relocating it disarmed the allow-record shield beside it.
 - **A credential a dotfile farm keeps outside its store is shielded where it
-  really lives, and the alias scan reaches further.** stow, chezmoi and yadm
-  leave `~/.ssh` a real directory whose entries are symlinks into `~/dotfiles`.
-  The shield binds over `~/.ssh`, so inside the sandbox the link dangles - but
-  the file it named was covered by no rule at all and read in full under a grant
-  of `~`. Those links are now expanded into rules of their own, opt-in-able like
-  the store they came from, and emitted on the link rather than the target, so a
-  planted link to `/` or a home anchor cannot shield the whole grant. The scan
-  that looks for a second readable name for a shielded credential now also
-  covers caller deny paths, link-target directories, the exec paths, and
-  runs on the degraded tier too. Content sniffing reads the head of a large file
-  rather than only small ones, and recognizes BOM-marked UTF-16.
+  really lives.** stow, chezmoi and yadm leave `~/.ssh` a real directory of
+  symlinks into `~/dotfiles`: the shield binds over `~/.ssh`, and the file the
+  link named was covered by no rule and read in full under a grant of `~`. Rules
+  are emitted on the link, not the target, so a planted link to `/` cannot shield
+  the whole grant. The alias scan also reaches caller deny paths, link-target
+  directories and the exec paths now, runs on the degraded tier, and sniffs the
+  head of a large file rather than only small ones (BOM-marked UTF-16 included).
 - **A grant is refused where a case-folding filesystem would let it around a
-  shield.** On a case-insensitive mount, `read: ~/.SSH` is a different string and
-  the same directory. Grants and opt-ins are now settled against the host's own
-  answer per path component, on the write side as well as the read side.
+  shield** - `read: ~/.SSH` is a different string and the same directory. Settled
+  per path component against the host's own answer, on both the read and write
+  sides.
 - **An entrypoint inside a shielded path is refused.** bwrap is last-wins and the
   entrypoint re-bind is emitted after the deny list, so `entrypoint:
   ~/.ssh/id_ed25519, interpreter: cat` bound the key back over its own shield and
-  read it out. Refused now for a built-in shield as well as a caller's deny.
-- **The degraded tier fences TCP.** The Landlock-only tier had no network
-  namespace and leaned entirely on the seccomp egress filter, which governs
-  socket creation and so cannot revoke a socket the target already holds -
-  SCM_RIGHTS fd-passing over an allowed AF_UNIX socket was a documented residual.
-  Landlock's ABI 4 network hooks are on `bind` and `connect` and judge the
-  calling task, so a passed unconnected AF_INET fd now buys nothing. Partial by
-  construction, like every backstop here: an already-connected passed fd, UDP,
-  raw, AF_PACKET and MPTCP still rest on the filter killing them at `socket`.
-  Beside it, the tier now refuses a manifest carrying `network:` rules rather
-  than running it under a blanket block while reporting the destinations as
-  allowed, and a run on a host that has neither a network namespace nor that
-  seccomp block is refused rather than run with no egress fence at all.
+  read it out.
+- **The degraded tier fences TCP.** The Landlock-only tier leaned entirely on the
+  seccomp egress filter, which governs socket creation and so cannot revoke a
+  socket the target already holds - SCM_RIGHTS fd-passing was a documented
+  residual. Landlock's ABI 4 hooks are on `bind` and `connect` and judge the
+  calling task, so a passed unconnected AF_INET fd now buys nothing. Still
+  partial: an already-connected fd, UDP, raw, AF_PACKET and MPTCP rest on the
+  filter killing them at `socket`. The tier also refuses a manifest with
+  `network:` rules rather than running it under a blanket block while reporting
+  the destinations as allowed, and a host with neither fence is refused outright.
+- **The launcher screens what it inherits on stdio.** An nsfs handle, an
+  anon-inode, a netlink socket and a writable kernel pseudo-file are refused - a
+  writable `/sys/kernel/uevent_helper` alone runs a program of the writer's
+  choosing as root. A procfs descriptor passes only if world-readable and
+  read-only. A terminal is recognized by whether it answers `TCGETS` rather than
+  by a table of device majors, which was wrong in both directions: it passed idle
+  host serial ports and refused `bento run` on real consoles.
 - **A manifest is bounded at 32 levels of nesting.** The YAML decoder is
   superlinear in depth - 16k nested flow sequences take 209ms, 100k exhaust
-  memory - and the existing 1MB source cap does not bound that. No manifest
-  anyone writes goes past four levels.
-- **The launcher screens what it inherits on stdio.** A standard descriptor
-  arriving as an nsfs handle, an anon-inode, a netlink socket, or a writable
-  kernel pseudo-file is refused - a writable entry under `/sys` alone
-  (`uevent_helper`) runs a program of the writer's choosing as root, and nothing
-  legitimate redirects stdio into one. A procfs descriptor passes only if it is
-  world-readable and open read-only, which refuses `/proc/<pid>/mem`,
-  `/proc/kcore`, `/proc/<pid>/environ` and every writable entry. And a terminal
-  is recognized by whether it answers `TCGETS` rather than by a table of device
-  majors, which got it wrong in both directions: it passed idle host serial ports
-  and virtual consoles nobody was sitting at, and refused `bento run` on the
-  consoles that were somebody's terminal.
+  memory - and the 1MB source cap does not bound that. No real manifest passes
+  four levels.
 - **`enforce.Run` refuses an environment carrying a name the manifest does not
-  declare.** An embedder assembling its own env could hand the sandbox a variable
-  no reviewer saw in `env:`. Build it with `enforce.ResolveEnv`, or add the name
-  to the manifest.
+  declare.** Build it with `enforce.ResolveEnv`, or add the name to `env:`.
 - **The credential-alias scan no longer walks the system package trees.** `/usr`,
-  `/bin`, `/sbin`, `/lib`, `/lib64`, the `/etc` entries bento binds itself and
-  the Nix store were walked on every launch whose credentials carry an extra
-  link. A hardlink there needs write on a root-owned directory, and a root actor
-  reads the credential without an alias. It was not free: on a single-filesystem
-  host the device prune cannot skip `/usr`, and on a cold CI image the scan blew
-  its 30s bound and refused the run over a dead mount it never had. A runtime
-  prefix under the home (pyenv, mise) is still walked, and the mount scan still
-  catches a bind of a credential store onto any of these paths. The boundary
-  moved outward by the width of a root-planted hardlink; a same-tree scan went
-  from 0.70s to 0.05s warm, and from a timeout to instant cold.
+  `/bin`, `/sbin`, `/lib`, `/lib64`, bento's own `/etc` binds and the Nix store
+  were walked on every launch whose credentials carry an extra link - but a
+  hardlink there needs write on a root-owned directory, and root reads the
+  credential without an alias. It was not free: on a cold CI image the scan blew
+  its 30s bound and refused the run. Outward by the width of a root-planted
+  hardlink; a same-tree scan went from 0.70s to 0.05s warm, and from a timeout to
+  instant cold. Runtime prefixes under the home are still walked, and the mount
+  scan still catches a bind of a store onto any of these paths.
 
 ### What a Run Tells You
 
-- **`run --record-exec` prints every command the run executed.** The tree comes
-  back in the order it ran, led by the target itself, and lands in the JSON
-  envelope as `exec_record`. It takes ptrace away from everything inside the
-  sandbox - `strace`, `gdb`, `rr` and a test harness attaching to its own child
-  stop working under it - which is why it is off unless asked for. A run that
+- **`run --record-exec` prints every command the run executed**, in order, led by
+  the target, and as `exec_record` in the JSON envelope. It takes ptrace away
+  from everything in the sandbox - `strace`, `gdb`, `rr` and a harness attaching
+  to its own child stop working - so it is off unless asked for. A run that
   cannot have a recorder (the degraded tier, `exec: none`, a host whose yama
-  `ptrace_scope` refuses the attach) is not refused: it says nothing was
-  watching, and why. A record that ends early is marked truncated and a capped
-  argv is marked on its own line, because a partial record read as whole is worse
-  than none.
-- **The resource limits a run asked for are attested against the cgroup the
-  kernel actually enforced.** systemd-run accepts a `MemoryMax` for an
-  undelegated controller and silently ignores it, and the limits layers were the
-  only gatable layers whose final state was never reconciled against the run -
-  the report read a pre-run probe's verdict, memoized for the process lifetime.
-  The scope's `memory.max`, `pids.max` and `cpu.max` are now sampled from the
-  parent while the target is alive (the values disappear about a millisecond
-  after the wrapper exits, so post-run reading would accuse every healthy run),
-  each layer is gated on its own controller, and a requested limit that went
-  unenforced faults the run afterwards. Three manifests are refused before the
-  run rather than at the dial: `limits.memory: 0`, which systemd applies
-  faithfully and the kernel then OOM-kills the target under; an explicit `pids:
-  0`, now distinguishable from the key being absent; and the spellings systemd's
-  own parser rejects or silently ignores - a lowercase size suffix, a CPU quota
-  past its `21474836.47%` ceiling.
-- **A run names the PATH directories the box does not carry.** A manifest that
-  passes `PATH` through has the sandbox search the caller's directories, but only
-  the ones something brought into the box are there. A toolchain on PATH that
-  nothing carries is skipped, and a bare command name resolves to whatever the
-  box does have: a different build of the same tool, no denial, no missing file,
-  exit code zero. That once read as bento corrupting repositories, when the
-  lane's `git` and the host's `git` were different versions and nothing said so.
-  The run now names the colliding command on stderr - `docker resolves to
-  /usr/bin/docker in the box, not /snap/bin/docker` - and carries the directories
-  as `shadowed_path_dirs` in the JSON verdict and the `failed` event. It stays
-  quiet about `/usr`, `/bin` and their kin, about a directory the host does not
-  have, and about one whose commands have no counterpart in the box - that last
-  one is what keeps the line off every run on a stock Ubuntu host, where
-  `/snap/bin` is on everyone's PATH and chosen by nobody.
+  `ptrace_scope` refuses the attach) says nothing was watching, and why. A record
+  that ended early is marked truncated rather than passed off as whole.
+- **The limits a run asked for are attested against the cgroup the kernel
+  enforced.** systemd-run accepts a `MemoryMax` for an undelegated controller and
+  silently ignores it, and the report read a pre-run probe's verdict memoized for
+  the process lifetime. The scope's `memory.max`, `pids.max` and `cpu.max` are
+  now sampled from the parent while the target is alive - `--collect` removes the
+  cgroup about a millisecond after the wrapper exits - each layer is gated on its
+  own controller, and a requested limit that went unenforced faults the run.
+  Refused before the run rather than at the dial: `limits.memory: 0` (systemd
+  applies it and the kernel OOM-kills the target), an explicit `pids: 0`, and the
+  spellings systemd's parser rejects or ignores - a lowercase size suffix, a CPU
+  quota past `21474836.47%`.
+- **A run names the PATH directories the box does not carry.** With `PATH` passed
+  through, only the directories something brought into the box are there, so a
+  bare command name resolves to whatever the box does have: a different build of
+  the same tool, no denial, exit code zero. That once read as bento corrupting
+  repositories, when the lane's `git` and the host's were different versions. The
+  run now says `docker resolves to /usr/bin/docker in the box, not
+  /snap/bin/docker`, and carries `shadowed_path_dirs` in the JSON verdict and the
+  `failed` event. Quiet about `/usr` and its kin, about directories the host does
+  not have, and about ones whose commands have no counterpart in the box - which
+  is what keeps the line off every run on a stock Ubuntu host.
 - **A run reports the auto-executing files it changed.** A `package.json`'s
   install scripts, a `conftest.py`, a `build.rs`, an `eslint.config.js`, a
   `.pre-commit-config.yaml`, a `.github/workflows` entry: each runs on the host
   later without anyone reading it, and each is a file an agent doing ordinary
-  work must be able to edit, so none can be denied. Nothing reported them before,
-  which left the guarantee - that nothing a run wrote executes before someone
-  could look at it - resting on a reviewer knowing to look. They are now named on
-  stderr and as `changed_auto_exec` in the JSON verdict, on the failure path as
-  well as the clean one, along with a `core.hooksPath` the run redirected. Two
-  limits: the names are a fixed list checked at the root of each write grant, so
-  a nested `package.json` in a monorepo is not covered, and the comparison is
-  size and mtime rather than content.
-- **`run` and `validate` say when this host's runtime directory is outside every
-  shield.** `XDG_RUNTIME_DIR` holds the container `auth.json`, the gpg-agent
-  socket and the session bus. The shield follows it wherever it points, but not
-  when it is relative or at or above a home anchor - there only `/run` and
-  `/var/run` remain, and the rule count reads exactly like a healthy host's. Only
-  `doctor` said so. Both now draw a note before the script starts and beside
-  validate's grants, and `validate --json` carries `unshieldable_runtime_dir`.
-- **The same for every other relocation variable pointed somewhere no shield can
-  follow.** `GNUPGHOME=$HOME` leaves the keys under it unshielded while `~/.gnupg`
-  keeps its default rule, so the rule set, the count and the exit code all read
-  like a host that set nothing. The run summary and `doctor` now name each such
-  variable and its value, and `validate --json` carries them as
-  `unshieldable_relocations`. The refusals were already right; only their silence
-  was not.
-- **The denial legend reaches the failing run, and names `exec:` and `network:`
-  among the grants.** The mapping from an errno to the manifest field that
-  produced it printed only after a clean exit, so the run holding `Read-only file
-  system` in its own traceback got the generic note that the sandbox denies
-  silently - which is that mapping withheld. It now follows that note. The
-  summary above it names the exec mode alongside the read and write path counts,
-  since `EPERM` on a subprocess is bento's verdict as much as `EROFS` is. And a
-  manifest with no egress rules has no proxy to observe the refusal, so `network:`
-  was the one field absent from both legend and summary: a reader holding
-  `[Errno -3] Temporary failure in name resolution` had to guess it was a
-  manifest field at all. The summary now says `no network: rules`, and the legend
-  maps `Network is unreachable` and an unresolvable name to it. A failure some
-  narrower hint already explained - a signal death, a 126 under a blocked exec, a
-  bypassed proxy, a refused destination, a `PATH` miss - is still left to that
-  hint.
-- **The legend names the two shapes that raise no error.** Mapping
-  `EROFS`/`ENOENT`/`EPERM` back to manifest fields reads as the complete list of
-  what a denial looks like, but a hidden shield has no errno: a shielded
-  directory stats as an empty tmpfs and a shielded file reads as zero bytes. A
-  run that engaged one now says so on its own line.
-- **A shielded file says what it holds, the way a shielded directory already
-  did.** Every single-file shield was stamped `credentials`, so the sentence a
-  reviewer reads before approving a grant called `~/.bash_history`, `~/.viminfo`,
-  `~/.xinitrc` and `~/postponed` credential stores - and the same path answered
-  differently depending on how it was reached, since `LESSHISTFILE` and its
-  siblings already reported `history`. The file lists are bucketed like the
-  directory lists now, so `holds` reports `history`, `private-data`,
-  `persistence` or `services` where that is what is behind the shield. Consumers
-  switching on `holds` see new codes on fifty-six paths, among them `~/.rhosts`
-  and `~/.shosts`, which name the hosts allowed in without a password rather than
-  holding a secret. Nothing about what is shielded changed.
-- **Breaking: `shielded_grants` now says what each lifted shield held, and
-  absorbed `shielded_grant_targets`.** A grant naming a shield exactly lifts it,
-  and every surface reporting that called what came out a credential store - but
-  the shields also cover history stores, session layout and the host's service
-  sockets, so an operator reading the post-run warning went looking for a key
-  behind a shell history. Each entry is now an object: `path` as the manifest
-  spelled it, `holds` (`credentials`, `private-data`, `history`, `persistence`,
-  `services`), and `on_host` where the grant bound somewhere other than its own
-  name - which is what `shielded_grant_targets` carried, so that field is gone
-  rather than duplicated. `bento validate --json` reports the same shape minus
-  `on_host`, which `resolved_read` already answers. In Go,
-  `enforce.Result.ShieldedGrants` is `[]enforce.ShieldedGrant` and
-  `ShieldedGrantTargets` is gone; `CredentialAlias` stays as it was, for
-  `AcceptedAliases`, where the word is still accurate.
-- **`bento profile --json` withholds a shielded read as `read-shielded`, not
+  work must be able to edit, so none can be denied. Named on stderr and as
+  `changed_auto_exec` now, on the failure path too, along with a redirected
+  `core.hooksPath`. Two limits: a fixed list checked at the root of each write
+  grant, so a nested `package.json` in a monorepo is missed, and the comparison
+  is size and mtime rather than content.
+- **`run` and `validate` say when `XDG_RUNTIME_DIR` is outside every shield.** It
+  holds the container `auth.json`, the gpg-agent socket and the session bus. The
+  shield follows it, but not when it is relative or at or above a home anchor -
+  and the rule count there reads exactly like a healthy host's. Only `doctor`
+  said so. `validate --json` carries `unshieldable_runtime_dir`.
+- **Same for every other relocation variable pointed where no shield can
+  follow.** `GNUPGHOME=$HOME` leaves the keys unshielded while `~/.gnupg` keeps
+  its default rule, so the rule set, count and exit code read like a host that
+  set nothing. Named in the run summary and `doctor`, and carried as
+  `unshieldable_relocations`. The refusals were right; only their silence was not.
+- **The denial legend reaches the failing run, and names `exec:` and `network:`.**
+  The mapping from `EROFS`/`ENOENT`/`EPERM` back to the field that produced them
+  printed only after a clean exit, so the run holding `Read-only file system` in
+  its own traceback got the generic note that the sandbox denies silently - which
+  is that mapping withheld. A manifest with
+  no egress rules has no proxy to observe a refusal, so `network:` was absent
+  from both legend and summary: the summary says `no network: rules` now, and the
+  legend maps `Network is unreachable` and an unresolvable name to it. The legend
+  also names the two shapes that raise no errno at all - a shielded directory
+  stats as an empty tmpfs, a shielded file reads as zero bytes.
+- **A shielded file says what it holds, the way a directory already did.** Every
+  single-file shield was stamped `credentials`, so the sentence before approving
+  a grant called `~/.bash_history`, `~/.viminfo` and `~/postponed` credential
+  stores, and the same path answered differently depending on how it was reached.
+  `holds` now reports `history`, `private-data`, `persistence` or `services`
+  where that is what is behind the shield - new codes on fifty-six paths, among
+  them `~/.rhosts` and `~/.shosts`, which name hosts allowed in without a
+  password rather than holding a secret. Nothing shielded changed.
+- **Breaking: `shielded_grants` says what each lifted shield held, and absorbed
+  `shielded_grant_targets`.** Every surface called what came out of a lifted
+  shield a credential store, but the shields also cover history, session layout
+  and service sockets. Each entry is an object now: `path` as the manifest
+  spelled it, `holds`, and `on_host` where the grant bound elsewhere - which is
+  what `shielded_grant_targets` carried, so that field is gone. `validate --json`
+  reports the same shape minus `on_host`, which `resolved_read` answers. In Go,
+  `enforce.Result.ShieldedGrants` is `[]enforce.ShieldedGrant`,
+  `ShieldedGrantTargets` is gone, and `CredentialAlias` stays as it was for
+  `AcceptedAliases`.
+- **`profile --json` withholds a shielded read as `read-shielded`, not
   `shielded-credential`**, matching its `write-shielded` sibling, with the bucket
-  beside it in a new `holds` field. A consumer switching on `reason` keeps one
-  code to match and can now tell a withheld history store from a withheld key.
+  in a new `holds` field. One code to match, and a withheld history store is
+  distinguishable from a withheld key.
 - **`profile` no longer proposes a rule for a host the run could not reach.** A
-  destination the allowlist permitted and the dial then failed on - a host that
-  is down, a name that does not resolve - was reported to the observer exactly as
-  an established tunnel was, so profiling folded it in with the hosts the script
-  used and offered a grant for a destination nothing egressed to. It is a
-  decision of its own now and the proposal skips it, so a re-profile against a
-  flaky host produces a smaller manifest rather than a wrong one. A gate
-  admission that then failed to dial is still an admission: the supervisor's yes
-  is egress beyond the declared manifest whether or not a packet followed. The
-  connection count is unchanged - it counts what reached the proxy. Egress the
-  profiler cannot name is now counted and warned about instead of failing the
-  run, and a PATH search miss no longer lands in the proposal.
-- **The proxy reports every connection exactly once, and distinguishes what went
-  wrong.** A failed dial, a gate denial, an allowlist refusal, a request it could
-  not tunnel, a gate that is crash-looping rather than saying no, and a refusal
-  at the connection limit each read as themselves now; a fault inside a handler
-  or an observer is reported as a fault rather than eaten. A tunnel whose
-  upstream never speaks is bounded, `Accept` retries the recoverable errnos
-  instead of ending `Serve`, and a NAT64 blackout is counted per lost connection.
-- **A cancelled run says so, with its own exit status.** Ctrl-C now cancels the
-  run so cleanup happens rather than leaving the sandbox behind, the wrapper's
-  real status is stamped into the report, and the report carries the run's egress
-  and shield fields out of the cancel path instead of dropping them. Ctrl-C also
-  interrupts the `approve` and `profile` prompts, and a cancelled prompt is
-  reported as cancelled rather than as a no.
+  destination the allowlist permitted and the dial then failed on was reported
+  like an established tunnel, so a re-profile against a flaky host produced a
+  wrong manifest rather than a smaller one. A gate admission that then failed to
+  dial is still an admission - the supervisor's yes is egress past the declared
+  manifest whether or not a packet followed. Egress the profiler cannot name is
+  counted and warned about instead of failing the run, and a PATH search miss no
+  longer lands in the proposal.
+- **The proxy reports every connection exactly once**, and a failed dial, a gate
+  denial, an allowlist refusal, an untunnelable request, a crash-looping gate and
+  a refusal at the connection limit each read as themselves. Faults in a handler
+  or observer are reported rather than eaten, a tunnel whose upstream never
+  speaks is bounded, `Accept` retries the recoverable errnos instead of ending
+  `Serve`, and a NAT64 blackout is counted per lost connection.
+- **A cancelled run says so, with its own exit status.** Ctrl-C cancels the run
+  so cleanup happens instead of leaving the sandbox behind, and the report keeps
+  the run's egress and shield fields on the cancel path. Ctrl-C also interrupts
+  the `approve` and `profile` prompts, and a cancelled prompt is reported as
+  cancelled rather than as a no.
 - **A refusal raised before anything was probed no longer reports a clean
-  posture.** `run --json` renders a refusal's report, and a refusal before any
-  layer is evaluated carries an empty one - which "no layer degraded" answered as
-  `fully_enforced: true`. An empty report now reports `fully_enforced: false`,
-  matching what the `failed` event already said. Host facts that belong to the
-  host rather than the run no longer weigh on a run's enforcement verdict at all;
-  they are disclosed separately.
-- **`doctor` names all three Docker restrictions at once.** A userns refusal
-  inside a container named the seccomp and AppArmor flags; lifting exactly those
-  granted the namespace and produced a second refusal naming a third, for the
-  `/proc` mask docker applies by default. The remedy lists all three now, and
-  says the third is exposed by lifting the first two rather than blocking
-  anything yet - so an image is fixed in one cycle instead of two.
+  posture.** An empty report answered `fully_enforced: true`; it answers `false`
+  now, matching what the `failed` event already said. Host facts that belong to
+  the host rather than the run are disclosed separately instead of weighing on a
+  run's enforcement verdict.
+- **`doctor` names all three Docker restrictions at once.** Lifting the seccomp
+  and AppArmor flags it named produced a second refusal over the `/proc` mask
+  docker applies by default. One cycle instead of two.
 - **An undispatched stage exits 125 with one line, not a panic.** An embedder
-  that skips `backend.DispatchReexec()` gets a re-exec stage that would go on to
-  run its own program - a fork bomb the guard has always cut short, by panicking:
-  which buried the one sentence the reader needed under a goroutine dump, exited
-  2 (what a target that crashed on its own looks like), and could be resumed past
-  by a `recover()` in the embedder's `main()`. It says the same thing on stderr
-  and exits 125 now, like every other stage that cannot do its job.
+  skipping `backend.DispatchReexec()` gets a re-exec stage that would run its own
+  program - a fork bomb the guard has always cut short, by panicking: which
+  buried the one useful sentence under a goroutine dump, exited 2, and could be
+  resumed past by a `recover()` in the embedder's `main()`.
 - **`bento version` names the platform and what it can enforce there.** A
   `GOOS=darwin` cross-build compiles clean and then refuses `run`, `profile` and
-  `doctor` at startup - and doctor, the command that would have explained why, is
-  one of the three. `version` answers on every build: the GOOS/GOARCH pair
-  always, plus a line for a build with no backend (validate and approve still
-  work), for a Linux architecture bento has not verified, or for a libc NSS
-  build.
+  `doctor` at startup - including doctor, the command that would have explained
+  why. `version` answers on every build: the GOOS/GOARCH pair, plus a line for a
+  build with no backend, an unverified Linux architecture, or a libc NSS build.
 
 ### Running Under a Supervisor
 
 - **`run --run-id <id>` makes a run reapable as a tree.** Under `exec: all` the
-  target has children, so a supervisor that recorded bento's own pid could report
-  a job dead while a test runner it spawned still held the checkout. The id names
-  the run's transient systemd scope `bento-run-<id>.scope`, which `systemctl
-  --user kill` ends and `systemctl --user show -p ControlGroup` resolves to a
-  cgroup path. The supervisor chooses the id before the run starts, so there is
-  no window where the target is running and the handle is not yet known. A run id
-  needs a scope to name, so a manifest that sets no resource limits - or a host
-  that cannot create a scope - is refused rather than run without a handle, and
-  that refusal stands under `--allow-degraded`. Ids are screened at the CLI and
-  again at the backend entry point.
+  target has children, so a supervisor holding bento's own pid could report a job
+  dead while a test runner it spawned still held the checkout. The id names the
+  transient scope `bento-run-<id>.scope`, which `systemctl --user kill` ends and
+  `systemctl --user show -p ControlGroup` resolves. The caller picks the id
+  before the run starts, so there is no window where the target runs and the
+  handle is unknown. A run id needs a scope to name, so a manifest with no
+  resource limits - or a host that cannot create a scope - is refused rather than
+  run without a handle, and that refusal stands under `--allow-degraded`.
 
 ### Reviewing a Manifest
 
 - **The credential-alias scan is bounded, and says when it stopped short.** On a
   host carrying any hardlinked shielded credential - a `cp -al` snapshot, a Nix
   store, an `rsync --link-dest` backup - `gate.Check` walked every granted tree
-  whole, and `Check` is on `bento validate`'s default path: one hardlinked key in
-  `~/.ssh` took validate from 40ms to 1.14s over a 287k-entry module cache. The
-  walk now stops after 50,000 directory entries - 1.14s to 0.23s on that manifest
-  - and reports the answer as partial, in the summary and as
-  `credential_aliases_partial` in `--json`, so an empty list on a bounded scan
-  cannot read as a tree checked to the end. Bounding it can only miss a finding,
-  never invent one.
+  whole, and it is on `validate`'s default path: one hardlinked key in `~/.ssh`
+  took validate from 40ms to 1.14s over a 287k-entry module cache. It stops after
+  50,000 directory entries now (1.14s to 0.23s) and reports the answer as
+  partial, in the summary and as `credential_aliases_partial`, so an empty list
+  cannot read as a tree checked to the end.
 - **`approve` names the permissions that changed since the last approval.** The
   stamp is a sha256 over the policy, so a drifted manifest could say only that
-  something changed, and finding the added grant meant comparing git revisions by
-  hand. `approve` now records the shape it stamped under
-  `$XDG_STATE_HOME/bento/approvals/` and prints the added and removed lines
-  against it in the manifest's own spelling, along with when the last stamp went
-  on and whether anybody answered the prompt for it. The record is deliberately
-  not in the manifest: anything stored there is unauthenticated, and a forged
-  prior shape yields a diff naming one innocuous addition and invites a skim of a
-  policy nobody approved. So where the journal cannot answer, `approve` says
-  which reason applies rather than guessing - no record at all (usually a stamp
-  written on another host), a record describing a different approval than the
-  stamp the manifest carries, or a journal somebody else can write, which is not
-  evidence of anything and so is declined rather than diffed, on read as well as
-  on write. All three send the reader over the whole policy. The boundary moved
-  once, inward: `~/.local/state/bento` is write-denied to every run, wherever
-  `XDG_STATE_HOME` points, since a sandboxed script that could write a record
-  could make the next reviewer's diff lie. It stays readable. `approve` also
-  fails when the approval cannot be recorded, calls out a grant over a linked
-  entrypoint, and refuses every grant `run` refuses rather than only the shielded
-  ones.
+  something changed, and finding the added grant meant diffing git revisions by
+  hand. `approve` records the shape it stamped under
+  `$XDG_STATE_HOME/bento/approvals/` and prints added and removed lines in the
+  manifest's own spelling, with when the last stamp went on and whether anyone
+  answered the prompt. The record is deliberately not in the manifest: anything
+  stored there is unauthenticated, and a forged prior shape yields a diff naming
+  one innocuous addition and invites a skim of a policy nobody approved. So where
+  the journal cannot answer - no record, a record describing a different
+  approval, or a journal somebody else can write - it says which case applies and
+  sends the reader over the whole policy. The boundary moved once, inward:
+  `~/.local/state/bento` is write-denied to every run, wherever `XDG_STATE_HOME`
+  points, since a script that could write a record could make the next reviewer's
+  diff lie. It stays readable. `approve` also fails when the approval cannot be
+  recorded, calls out a grant over a linked entrypoint, and refuses every grant
+  `run` refuses rather than only the shielded ones.
 - **`validate --strict` fails on a host that cannot anchor its shields.** Such a
-  host builds no credential shields at all, so `newSandbox` refuses every run on
-  both tiers - and `--strict` exited 0 there, because it keyed on the refusal set,
-  which is exactly what that host cannot answer. A CI gate reading the exit code
-  green-lit a manifest the host runs none of. `--json` already carried
-  `shields_unknown` and `doctor` already exited non-zero on the same fact, so the
-  two gates agree now.
-- **A host that cannot anchor its shields no longer answers `unknown` to the
-  questions it did answer.** `validate` there - a container with `HOME=/` and no
-  passwd entry is the case that reaches it - reported nothing but "this host
-  could not answer", dropping a missing entrypoint, an interpreter off PATH, a
-  read grant naming nothing and a write grant spelled like a file, none of which
-  depend on the shields. Only the grant half is marked unknown now: `grants:
-  unknown` in the summary, `shields_unknown` in `--json`, where the refusal
-  fields stay absent because they could not be answered rather than because there
-  was nothing to say.
+  host builds no credential shields, so `newSandbox` refuses every run on both
+  tiers - and `--strict` exited 0, because it keyed on the refusal set, which is
+  exactly what that host cannot answer. A CI gate reading the exit code green-lit
+  a manifest the host runs none of. `--json` already carried `shields_unknown`
+  and `doctor` already exited non-zero, so the two gates agree now.
+- **That host no longer answers `unknown` to the questions it did answer.** A
+  missing entrypoint, an interpreter off PATH, a read grant naming nothing and a
+  write grant spelled like a file do not depend on the shields, and were all
+  dropped for "this host could not answer". Only the grant half is unknown now:
+  `grants: unknown` in the summary, `shields_unknown` in `--json`, refusal fields
+  absent because they could not be answered rather than because there was nothing
+  to say.
 - **`validate --relocatable` refuses a manifest whose paths pin it to one
-  location.** The approval stamp attests the manifest as written and `run` checks
-  it before resolving paths, so a manifest whose grants are all relative keeps
-  one approval across every checkout it is copied into - which is what lets a
-  fleet approve one manifest per agent class and reuse it in every worktree.
-  Nothing checked it, and a single absolute or `~` path ended it silently. The
-  flag reports the entrypoint and the grants that do not anchor to the manifest's
-  own directory and exits non-zero; `--json` carries `relocatable` and
-  `pinned_paths`. Opt-in, because a manifest meant for one machine is not wrong.
-  An absolute interpreter is not reported - `/usr/bin/python3` means the same
-  thing in every checkout - but a `~` one is.
-- **A grant this host refuses is reported as a refused grant, not as an
-  unrunnable manifest.** `runnable:` answers whether this host can start what the
-  manifest names, and a write into a shielded path, a symlink loop or a write
-  grant that is already a file was folded into it - so a manifest whose
-  entrypoint and interpreter both resolve was told "this host cannot start what
-  the manifest names" and sent after a problem that was not there. The refusal
-  also printed verbatim twice on one screen. It prints once now, beside the grant
-  it refuses, under its own `grants:` verdict; `--json` carries `refused_grants`,
-  and `runnable` stays true where nothing is unstartable, so a gate reading
-  fields rather than the exit code must check both. Every refusal kind is marked
-  beside its grant now, not only the shielded ones.
-- **`validate` answers more of what a run would ask.** It names the env vars the
-  manifest allowlists that this host has not set, says what an unset allowlisted
-  `HOME` becomes, resolves the interpreter the way `run` does, notes a grant that
-  names a whole tree, reports the relocations `Shieldable` dropped (as
-  `dropped_relocations` in `--json`), mirrors the grant checks the gate skipped,
-  and refuses an approval state `--strict` cannot name.
+  location.** The stamp attests the manifest as written and `run` checks it
+  before resolving paths, so an all-relative manifest keeps one approval across
+  every checkout it is copied into - which is what lets a fleet approve one
+  manifest per agent class and reuse it in every worktree. A single absolute or
+  `~` path ended that silently. The flag reports the entrypoint and grants that
+  do not anchor to the manifest's own directory and exits non-zero; `--json`
+  carries `relocatable` and `pinned_paths`. Opt-in, because a manifest meant for
+  one machine is not wrong. An absolute interpreter is fine - `/usr/bin/python3`
+  means the same everywhere - but a `~` one is reported.
+- **A grant this host refuses is reported as a refused grant, not an unrunnable
+  manifest.** `runnable:` answers whether this host can start what the manifest
+  names, and a write into a shielded path, a symlink loop or a write grant that
+  is already a file was folded into it - so a manifest whose entrypoint and
+  interpreter both resolve was sent after a problem that was not there, twice on
+  one screen. It prints once now, beside the grant, under its own `grants:`
+  verdict; `--json` carries `refused_grants`, and `runnable` stays true where
+  nothing is unstartable, so a gate reading fields must check both. Every refusal
+  kind is marked beside its grant, not only the shielded ones.
+- **`validate` answers more of what a run would ask**: the allowlisted env vars
+  this host has not set, what an unset allowlisted `HOME` becomes, the
+  interpreter resolved the way `run` resolves it, a grant naming a whole tree,
+  the relocations `Shieldable` dropped (`dropped_relocations` in `--json`), the
+  grant checks the gate skipped, and an approval state `--strict` cannot name.
 - **A write grant inside a credential shield is refused in its own words.** Both
-  kinds shared one sentence, which offers the read opt-in as the way in - and
-  that opt-in is read-only by construction, so an author following it added a
-  `read:` line and met the same refusal again. The write refusal now says there
-  is no opt-in for a write, and why: it would grant exactly the plant the shield
-  is held for. Unchanged in `bento run`, `bento validate` and `bento approve`
-  alike.
+  kinds shared one sentence offering the read opt-in, which is read-only by
+  construction - so an author following it added a `read:` line and met the same
+  refusal again. The write refusal now says there is no opt-in for a write, and
+  why: it would grant exactly the plant the shield is held for.
 
 ### Building and Installing
 
 - **`make install` installs to `/usr/local/bin`, not `GOPATH/bin`.** It honours
-  `PREFIX`, `BINDIR` and `DESTDIR`, so a packager can stage into a package root,
-  and it installs the binary `make build` produced rather than building a second
-  time. The default destination usually needs root; pass `PREFIX=$HOME/.local`
-  for the old rootless behaviour.
-- **`LDFLAGS` is a pass-through rather than the stamp itself.** Anything passed
-  is appended to the version stamp, so `make build LDFLAGS=...` can no longer
+  `PREFIX`, `BINDIR` and `DESTDIR`, and installs the binary `make build`
+  produced rather than building a second time. The default usually needs root;
+  pass `PREFIX=$HOME/.local` for the old rootless behaviour.
+- **`LDFLAGS` is a pass-through, not the stamp itself.** Anything passed is
+  appended to the version stamp, so `make build LDFLAGS=...` can no longer
   silently produce a binary that misreports its own version. `CGO_ENABLED` stays
-  fixed at 0 on purpose - the credential shields anchor on the uid's passwd
-  entry, and libc NSS would put that lookup back under caller control.
-- **`make check` runs `make vuln` and needs network.** A dependency with a known
-  advisory stops the merge that introduces it rather than being reported on a
-  later scan. `make fuzz` keeps going after a target fails and names the package
-  with each failure.
+  0 on purpose: the shields anchor on the uid's passwd entry, and libc NSS would
+  put that lookup back under caller control.
+- **`make check` runs `make vuln` and needs network**, so a dependency with a
+  known advisory stops the merge that introduces it. `make fuzz` keeps going
+  after a target fails and names the package with each failure.
 
 ### Verifying a Release
 
 - **The signature file is now `checksums.txt.sigstore.json`**, not
-  `checksums.txt.bundle`. Same keyless cosign signature over the same file; the
-  name now matches the Sigstore bundle convention that consumers and release
-  scanners look for. A script fetching the old name will 404 - update it.
+  `checksums.txt.bundle` - same keyless cosign signature over the same file, but
+  the name matches the Sigstore bundle convention consumers look for. A script
+  fetching the old name will 404.
 - **Releases carry SLSA build provenance** as `bento.intoto.jsonl`, covering
   every published archive. The signature says a tagged run of this repo produced
-  the artifacts; the provenance says how it built them, and `slsa-verifier` can
-  check an archive against it directly. See [SECURITY.md](SECURITY.md).
+  the artifacts; the provenance says how, and `slsa-verifier` can check an
+  archive against it. See [SECURITY.md](SECURITY.md).
 
 ## 0.2.1 (2026-08-03)
 
