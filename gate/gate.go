@@ -177,7 +177,8 @@ func refusals(set shield.Set, resolved *policy.Policy) []string {
 	problems = append(problems, LoopedGrantProblems(resolved.Read, resolved.Write)...)
 	problems = append(problems, FileWriteGrantProblems(resolved.Write)...)
 	problems = append(problems, RootWriteProblems(resolved.Write)...)
-	return append(problems, MountGrantProblems(resolved.Read, resolved.Write)...)
+	problems = append(problems, MountGrantProblems(resolved.Read, resolved.Write)...)
+	return append(problems, ShieldCarveProblems(set, resolved.Read, resolved.Write)...)
 }
 
 // LoopedGrantProblems reports the grants whose symlinks loop, read and write alike, since
@@ -373,10 +374,11 @@ func ShieldSet() (shield.Set, error) {
 // (checkWorkspaceShieldNotRedirected), which is about a symlink on this host rather than
 // anything the manifest says; and the UnderWriteShield a SECOND grant earns by naming one
 // of them, which the manifest does say - `write: /proj` alongside `write: /proj/.git/hooks`
-// is refused by the run and reported Honored here. The third is ShieldNotCarvable: a write
-// grant on a directory this uid cannot create the run's own shield mount points in (a
-// system tree such as /etc), which needs the same derivation plus the set of mount points
-// a run would carve.
+// is refused by the run and reported Honored here. The third is the workspace half of
+// ShieldNotCarvable: the refusal itself is answered over the built-in shields by
+// ShieldCarveProblems, which catches the case it exists for - a write grant on a system
+// tree such as /etc - and misses only a grant whose sole uncarvable mount point is one of
+// those derived shields.
 //
 // The fifth is AboveWriteShield, which the degraded tier alone refuses: the gate does not
 // know which tier will run, and raising it would refuse write: ~/.pyenv for every full-tier
@@ -435,6 +437,82 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 		}
 	}
 	return problems
+}
+
+// ShieldCarveProblems reports the write grants whose tree the run cannot carve its own
+// shield mount points into, in the words the backend's checkShieldsCarvable refuses them
+// with. A grant on a directory this uid cannot create entries in (a system tree such as
+// /etc or /opt, drwxr-xr-x root root) makes bwrap die during setup, and the launcher then
+// reports nothing but an unattested silent stage - so the manifest's own `write:` line has
+// to be named here, before the launch, where the author can act on it.
+//
+// Built-in shields only, which is the narrowing: the workspace shields a run derives per
+// write grant from the checkout under it are assembled from host facts internal/linux
+// reads and this package cannot, so a grant whose only uncarvable mount point is a git
+// hook directory passes here and is refused by the run. That is the direction the package
+// doc permits - missing a refusal, never inventing one - and it leaves the case the
+// refusal exists for, a write grant on a system tree, answered.
+//
+// Only the mount points are asked, not the intermediate directories bwrap would create to
+// hold one: both walks end at the same deepest EXISTING ancestor, which is the directory
+// that has to accept the mkdir, so asking the parents again would only repeat this answer.
+func ShieldCarveProblems(set shield.Set, reads, writes []string) []string {
+	resolved := make([]string, 0, len(writes))
+	for _, w := range writes {
+		resolved = append(resolved, pathresolve.Existing(w))
+	}
+	optIns := shield.Targets(set.OptIns(reads))
+
+	var problems []string
+	for _, a := range set.Mount(set.Rules()) {
+		mount := a.Resolved
+		// The mount points bwrap CREATES: a shield the host already has needs no mkdir.
+		// A nonexistent one is shielded only where a write grant could otherwise create
+		// it, which is also what makes its parent a read-write bind - so reachability
+		// from the writes is the whole of shieldNeeded that survives here, the
+		// grant-reachability half being implied by it.
+		if _, err := os.Stat(mount); err == nil || !reachableFrom(mount, resolved) {
+			continue
+		}
+		// An exact opt-in read grant wins over a DenyAll shield, so no mount point is
+		// carved for it - the same skip the backend's shieldNeeded takes first.
+		if a.Rule.Deny == denylist.DenyAll && slices.Contains(optIns, mount) {
+			continue
+		}
+		// bwrap makes the whole missing chain, so the directory that has to accept the
+		// mkdir is the deepest ancestor already there. The walk terminates at "/".
+		parent := filepath.Dir(mount)
+		for !exists(parent) {
+			parent = filepath.Dir(parent)
+		}
+		if writableDir(parent) {
+			continue
+		}
+		for i, w := range resolved {
+			if policy.CoversResolved(w, mount) {
+				problems = append(problems, grantrefusal.ShieldNotCarvable(writes[i], mount, parent).Error())
+				break
+			}
+		}
+	}
+	return problems
+}
+
+// reachableFrom mirrors the backend's reachable: a shield is touched by a grant when
+// either contains the other, since a grant inside a shield exposes part of it and a grant
+// above one exposes the whole.
+func reachableFrom(path string, grants []string) bool {
+	for _, g := range grants {
+		if path == g || policy.CoversResolved(g, path) || policy.CoversResolved(path, g) {
+			return true
+		}
+	}
+	return false
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // MissingReads returns the already-resolved read grants naming nothing on this
