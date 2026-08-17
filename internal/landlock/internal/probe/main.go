@@ -72,6 +72,11 @@
 // after and is the control that separates scoping from a host that forbids the signal
 // anyway. The baseline arm is the same control for the abstract socket.
 //
+// A trailing preset argument ("V5") swaps the scoped set the degraded tier requests
+// before applying it, which needs -tags bentoprobe and reproduces what a kernel below
+// that ABI enforces; without the tag the run fails rather than silently measuring the
+// host's own ABI.
+//
 // Usage: probe procmem <read-dir>
 // Starts a child, reaches into its /proc/<pid>/mem and /proc/<pid>/fd once unrestricted,
 // then applies the DEGRADED ruleset with read-dir as the sole read grant and reaches
@@ -171,6 +176,14 @@ func main() {
 		return
 	}
 	if len(os.Args) == 8 && os.Args[1] == "scopedipc" {
+		scopedIPC(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6], os.Args[7])
+		return
+	}
+	if len(os.Args) == 9 && os.Args[1] == "scopedipc" {
+		if err := setScopedIPCPreset(os.Args[8]); err != nil {
+			fmt.Fprintln(os.Stderr, "preset:", err)
+			os.Exit(2)
+		}
 		scopedIPC(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6], os.Args[7])
 		return
 	}

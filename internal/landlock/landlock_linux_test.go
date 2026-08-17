@@ -29,13 +29,17 @@ import (
 // no userspace mechanism left for it to be the shipped version OF - which is why
 // TestRestrictReachesAPreexistingThread reports which side of that line the host fell
 // on rather than letting a green run stand in for fan-out coverage.
-func buildProbe(t *testing.T) string {
+func buildProbe(t *testing.T, tags ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available to build the probe")
 	}
 	bin := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", bin, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")
+	args := []string{"build", "-o", bin}
+	if len(tags) > 0 {
+		args = append(args, "-tags", strings.Join(tags, ","))
+	}
+	build := exec.Command("go", append(args, "github.com/whiskeyjimbo/bento/internal/landlock/internal/probe")...)
 	build.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building probe: %v\n%s", err, out)
@@ -617,11 +621,44 @@ func TestRestrictDegradedScopesIPC(t *testing.T) {
 		t.Skip("Landlock not present on this kernel")
 	}
 	bin := buildProbe(t)
-	dir := t.TempDir()
+	got := runScopedIPCProbe(t, bin)
+	// The verdicts are the record of what this kernel does, and which column they came
+	// from is not recoverable from a pass; a host that moves ABI wants both lines.
+	t.Logf("ABI %d: %s", effectiveABI(), got)
+	if !strings.Contains(got, "scoped_abstract_baseline=OK") {
+		t.Fatalf("the abstract socket did not answer before the ruleset was applied, so the verdict below proves nothing: %q", got)
+	}
 
-	// Bound here, not in the probe: scoping judges where the peer's domain sits relative
-	// to the probe's, so a socket the probe bound itself would make "outside" ambiguous.
-	abstract := "@bento-scopedipc-" + strconv.Itoa(os.Getpid())
+	scoped := "OK"
+	if effectiveABI() >= 6 {
+		scoped = "DENIED"
+	}
+	tcpWant := "OK"
+	if effectiveABI() >= 4 {
+		tcpWant = "DENIED"
+	}
+	for arm, want := range map[string]string{
+		"scoped_abstract":          scoped,
+		"scoped_signal_outside":    scoped,
+		"scoped_signal_samedomain": "OK",
+		"scoped_pathname":          "OK",
+		"scoped_outsideread":       "DENIED",
+		"scoped_tcp":               tcpWant,
+	} {
+		if !strings.Contains(got, arm+"="+want) {
+			t.Errorf("%s: got %q, want %s=%s (ABI %d)", arm, got, arm, want, effectiveABI())
+		}
+	}
+}
+
+// runScopedIPCProbe stands up what the scopedipc probe needs and returns its verdict
+// line. The sockets are bound HERE, not in the probe: scoping judges where the peer's
+// domain sits relative to the probe's, so one the probe bound itself would make "outside"
+// ambiguous. An extra argument is passed through to the probe's preset swap.
+func runScopedIPCProbe(t *testing.T, bin string, extra ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	abstract := "@bento-scopedipc-" + strconv.Itoa(os.Getpid()) + "-" + strings.Join(extra, "-")
 	for _, addr := range []string{abstract, filepath.Join(dir, "sock")} {
 		l, err := net.Listen("unix", addr)
 		if err != nil {
@@ -648,37 +685,51 @@ func TestRestrictDegradedScopesIPC(t *testing.T) {
 
 	// The probe's own directory is the read grant: its same-domain control child is this
 	// binary re-exec'd from inside the domain, which an unreadable one could not be.
-	out, err := exec.Command(bin, "scopedipc", filepath.Dir(bin), dir, "/etc/hostname",
-		abstract, filepath.Join(dir, "sock"), port).CombinedOutput()
+	args := append([]string{"scopedipc", filepath.Dir(bin), dir, "/etc/hostname",
+		abstract, filepath.Join(dir, "sock"), port}, extra...)
+	out, err := exec.Command(bin, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("probe: %v\n%s", err, out)
 	}
-	got := strings.TrimSpace(string(out))
-	// The verdicts are the record of what this kernel does, and which column they came
-	// from is not recoverable from a pass; a host that moves ABI wants both lines.
-	t.Logf("ABI %d: %s", effectiveABI(), got)
+	return strings.TrimSpace(string(out))
+}
+
+// The ABI-4 column of TestRestrictDegradedScopesIPC, asserted positively on a host that
+// is past it. BestEffort clamps the requested scoped set DOWN to the kernel, so on this
+// host (ABI 8) the low arms of every ABI-gated expectation table are dark and stay dark;
+// swapping scopedIPC to a preset genuinely below the kernel applies the ruleset
+// BestEffort would have built there, and the kernel then enforces it for real.
+//
+// V5 is the last preset that handles no scope at all, which makes it the ABI-4 column: the
+// two residuals the degraded report discloses against ScopedIPCRestricted - an abstract
+// socket and a signal outside the domain - must be OPEN, while everything the scoped
+// domain must not touch stays exactly as it is at V6. Asserting the residuals rather than
+// skipping them is the point: a scoped set that quietly started restricting below ABI 6
+// would make the run report's disclosure a lie, and nothing else here would notice.
+func TestRestrictDegradedScopesIPCAtLowPreset(t *testing.T) {
+	if !Available() {
+		t.Skip("Landlock not present on this kernel")
+	}
+	if effectiveABI() < 6 {
+		t.Skip("host ABI is already below the scoped set; the low arms run natively here")
+	}
+	got := runScopedIPCProbe(t, buildProbe(t, "bentoprobe"), "V5")
+	t.Logf("preset V5 on ABI %d: %s", effectiveABI(), got)
 	if !strings.Contains(got, "scoped_abstract_baseline=OK") {
 		t.Fatalf("the abstract socket did not answer before the ruleset was applied, so the verdict below proves nothing: %q", got)
 	}
-
-	scoped := "OK"
-	if effectiveABI() >= 6 {
-		scoped = "DENIED"
-	}
-	tcpWant := "OK"
-	if effectiveABI() >= 4 {
-		tcpWant = "DENIED"
-	}
 	for arm, want := range map[string]string{
-		"scoped_abstract":          scoped,
-		"scoped_signal_outside":    scoped,
+		"scoped_abstract":          "OK",
+		"scoped_signal_outside":    "OK",
 		"scoped_signal_samedomain": "OK",
 		"scoped_pathname":          "OK",
-		"scoped_outsideread":       "DENIED",
-		"scoped_tcp":               tcpWant,
+		// The other two domains are untouched by the swap, so they still enforce: a
+		// preset swap that reached past the scoped set would show up here.
+		"scoped_outsideread": "DENIED",
+		"scoped_tcp":         "DENIED",
 	} {
 		if !strings.Contains(got, arm+"="+want) {
-			t.Errorf("%s: got %q, want %s=%s (ABI %d)", arm, got, arm, want, effectiveABI())
+			t.Errorf("%s: got %q, want %s=%s", arm, got, arm, want)
 		}
 	}
 }
