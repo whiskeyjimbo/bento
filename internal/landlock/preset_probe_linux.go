@@ -19,10 +19,11 @@ import (
 // thing built with the tag.
 //
 // Only a preset at or below the host's ABI changes anything - BestEffort clamps down, so
-// asking for a newer set yields the host's own. V1 is deliberately absent: it does not
-// handle refer, referSupported() reads the real ABI and cannot be faked down with it, so
-// the request errors as an incompatible rule - a failure of the harness rather than
-// low-ABI coverage.
+// asking for a newer set yields the host's own. The interesting boundary is V6, the first
+// preset that handles a scope at all: every preset below it applies an empty scoped set
+// and reproduces the same pre-ABI-6 column, which is why V1 is left out as redundant
+// rather than excluded for any hazard. RestrictScoped carries no rules, so nothing here
+// touches refer or the filesystem handled set.
 func SetScopedIPCPreset(name string) error {
 	presets := map[string]ll.Config{"V2": ll.V2, "V3": ll.V3, "V4": ll.V4, "V5": ll.V5, "V6": ll.V6}
 	c, ok := presets[name]
