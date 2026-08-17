@@ -81,8 +81,8 @@ about what it did and what this host could not do for it.
   that skip the record (`trusted_config_paths`, `yes`) and the three variables
   naming a config mise reads with no trust check at all
   (`MISE_GLOBAL_CONFIG_FILE`, `MISE_SYSTEM_CONFIG_FILE`, `MISE_ENV_FILE`) are
-  denied with it. Beside them,
-  `~/.cache/pre-commit` holds the hook repositories the host executes at the next
+  denied with it. Beside them, `~/.cache/pre-commit` holds the hook
+  repositories the host executes at the next
   commit: the `.git/hooks` entry point was shielded, the code it runs was not.
   Two costs: `pre-commit install-hooks` cannot populate its cache in-sandbox, and
   an untrusted workspace `mise.toml` cannot be trusted from inside one - export
@@ -95,19 +95,26 @@ about what it did and what this host could not do for it.
   setting one, the shield sat where the tool no longer reads. `DIRENV_CONFIG` was
   the sharpest: `direnv.toml`'s `[whitelist]` skips the allow check entirely, so
   relocating it disarmed the allow-record shield beside it.
-- **A credential symlinked out of a shielded store is shielded where it lands,
-  and the alias scan reaches further.** A key that lives outside `~/.ssh` with a
-  symlink pointing at it was readable under any grant covering its real location;
-  the shield now follows the link, and is opt-in-able like the store it came
-  from. The scan that looks for a second readable name for a shielded credential
-  now also covers caller deny paths, link-target directories, the exec paths, and
+- **A credential a dotfile farm keeps outside its store is shielded where it
+  really lives, and the alias scan reaches further.** stow, chezmoi and yadm
+  leave `~/.ssh` a real directory whose entries are symlinks into `~/dotfiles`.
+  The shield binds over `~/.ssh`, so inside the sandbox the link dangles - but
+  the file it named was covered by no rule at all and read in full under a grant
+  of `~`. Those links are now expanded into rules of their own, opt-in-able like
+  the store they came from, and emitted on the link rather than the target, so a
+  planted link to `/` or a home anchor cannot shield the whole grant. The scan
+  that looks for a second readable name for a shielded credential now also
+  covers caller deny paths, link-target directories, the exec paths, and
   runs on the degraded tier too. Content sniffing reads the head of a large file
   rather than only small ones, and recognizes BOM-marked UTF-16.
 - **A grant is refused where a case-folding filesystem would let it around a
   shield.** On a case-insensitive mount, `read: ~/.SSH` is a different string and
   the same directory. Grants and opt-ins are now settled against the host's own
-  answer per path component, on the write side as well as the read side, and an
-  entrypoint inside a hidden shield is refused rather than run.
+  answer per path component, on the write side as well as the read side.
+- **An entrypoint inside a shielded path is refused.** bwrap is last-wins and the
+  entrypoint re-bind is emitted after the deny list, so `entrypoint:
+  ~/.ssh/id_ed25519, interpreter: cat` bound the key back over its own shield and
+  read it out. Refused now for a built-in shield as well as a caller's deny.
 - **The degraded tier fences TCP.** The Landlock-only tier had no network
   namespace and leaned entirely on the seccomp egress filter, which governs
   socket creation and so cannot revoke a socket the target already holds -
@@ -118,7 +125,8 @@ about what it did and what this host could not do for it.
   raw, AF_PACKET and MPTCP still rest on the filter killing them at `socket`.
   Beside it, the tier now refuses a manifest carrying `network:` rules rather
   than running it under a blanket block while reporting the destinations as
-  allowed, and a run reaching neither fence is refused outright.
+  allowed, and a run on a host that has neither a network namespace nor that
+  seccomp block is refused rather than run with no egress fence at all.
 - **A manifest is bounded at 32 levels of nesting.** The YAML decoder is
   superlinear in depth - 16k nested flow sequences take 209ms, 100k exhaust
   memory - and the existing 1MB source cap does not bound that. No manifest
@@ -127,8 +135,13 @@ about what it did and what this host could not do for it.
   arriving as an nsfs handle, an anon-inode, a netlink socket, or a writable
   kernel pseudo-file is refused - a writable entry under `/sys` alone
   (`uevent_helper`) runs a program of the writer's choosing as root, and nothing
-  legitimate redirects stdio into one. Terminals are permitted by their mode
-  bits rather than a table of device majors, which was refusing legitimate ptys.
+  legitimate redirects stdio into one. A procfs descriptor passes only if it is
+  world-readable and open read-only, which refuses `/proc/<pid>/mem`,
+  `/proc/kcore`, `/proc/<pid>/environ` and every writable entry. And a terminal
+  is recognized by whether it answers `TCGETS` rather than by a table of device
+  majors, which got it wrong in both directions: it passed idle host serial ports
+  and virtual consoles nobody was sitting at, and refused `bento run` on the
+  consoles that were somebody's terminal.
 - **`enforce.Run` refuses an environment carrying a name the manifest does not
   declare.** An embedder assembling its own env could hand the sandbox a variable
   no reviewer saw in `env:`. Build it with `enforce.ResolveEnv`, or add the name
@@ -166,9 +179,12 @@ about what it did and what this host could not do for it.
   parent while the target is alive (the values disappear about a millisecond
   after the wrapper exits, so post-run reading would accuse every healthy run),
   each layer is gated on its own controller, and a requested limit that went
-  unenforced faults the run afterwards. A manifest with a zero memory cap or an
-  explicit `pids: 0`, and limit spellings systemd rejects, are refused before the
-  run.
+  unenforced faults the run afterwards. Three manifests are refused before the
+  run rather than at the dial: `limits.memory: 0`, which systemd applies
+  faithfully and the kernel then OOM-kills the target under; an explicit `pids:
+  0`, now distinguishable from the key being absent; and the spellings systemd's
+  own parser rejects or silently ignores - a lowercase size suffix, a CPU quota
+  past its `21474836.47%` ceiling.
 - **A run names the PATH directories the box does not carry.** A manifest that
   passes `PATH` through has the sandbox search the caller's directories, but only
   the ones something brought into the box are there. A toolchain on PATH that
@@ -252,10 +268,12 @@ about what it did and what this host could not do for it.
   rather than duplicated. `bento validate --json` reports the same shape minus
   `on_host`, which `resolved_read` already answers. In Go,
   `enforce.Result.ShieldedGrants` is `[]enforce.ShieldedGrant` and
-  `ShieldedGrantTargets` is gone; `CredentialAlias` stays as it was.
+  `ShieldedGrantTargets` is gone; `CredentialAlias` stays as it was, for
+  `AcceptedAliases`, where the word is still accurate.
 - **`bento profile --json` withholds a shielded read as `read-shielded`, not
   `shielded-credential`**, matching its `write-shielded` sibling, with the bucket
-  beside it in a new `holds` field.
+  beside it in a new `holds` field. A consumer switching on `reason` keeps one
+  code to match and can now tell a withheld history store from a withheld key.
 - **`profile` no longer proposes a rule for a host the run could not reach.** A
   destination the allowlist permitted and the dial then failed on - a host that
   is down, a name that does not resolve - was reported to the observer exactly as
@@ -368,7 +386,10 @@ about what it did and what this host could not do for it.
   passwd entry is the case that reaches it - reported nothing but "this host
   could not answer", dropping a missing entrypoint, an interpreter off PATH, a
   read grant naming nothing and a write grant spelled like a file, none of which
-  depend on the shields. Only the grant half is marked unknown now.
+  depend on the shields. Only the grant half is marked unknown now: `grants:
+  unknown` in the summary, `shields_unknown` in `--json`, where the refusal
+  fields stay absent because they could not be answered rather than because there
+  was nothing to say.
 - **`validate --relocatable` refuses a manifest whose paths pin it to one
   location.** The approval stamp attests the manifest as written and `run` checks
   it before resolving paths, so a manifest whose grants are all relative keeps
@@ -389,7 +410,8 @@ about what it did and what this host could not do for it.
   also printed verbatim twice on one screen. It prints once now, beside the grant
   it refuses, under its own `grants:` verdict; `--json` carries `refused_grants`,
   and `runnable` stays true where nothing is unstartable, so a gate reading
-  fields rather than the exit code must check both.
+  fields rather than the exit code must check both. Every refusal kind is marked
+  beside its grant now, not only the shielded ones.
 - **`validate` answers more of what a run would ask.** It names the env vars the
   manifest allowlists that this host has not set, says what an unset allowlisted
   `HOME` becomes, resolves the interpreter the way `run` does, notes a grant that
