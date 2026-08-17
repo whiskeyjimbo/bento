@@ -1905,6 +1905,15 @@ func TestWriteDegradationsSeparatesAHostFactFromAPolicyShortfall(t *testing.T) {
 		t.Errorf("the disclosure does not say the run is no less confined for it:\n%s", out)
 	}
 
+	// The header is written once, not once per layer: any layer no policy can require is
+	// report-only, so a second one is a `bento doctor` row away.
+	r.Add(enforce.Layer("some-other-host-fact"), enforce.Unavailable, "the host could not answer")
+	b.Reset()
+	writeDegradations(&b, r)
+	if n := strings.Count(b.String(), "this host cannot answer everything"); n != 1 {
+		t.Errorf("the host-fact header was written %d times for two facts, want 1:\n%s", n, b.String())
+	}
+
 	// A real shortfall alongside it still gets its own header and its own line.
 	r.Add(enforce.LayerFilesystem, enforce.Degraded, "no user namespaces")
 	b.Reset()
@@ -1915,5 +1924,39 @@ func TestWriteDegradationsSeparatesAHostFactFromAPolicyShortfall(t *testing.T) {
 	}
 	if !strings.Contains(out, "auto-exec-report") {
 		t.Errorf("the host fact was lost beside the policy shortfall:\n%s", out)
+	}
+}
+
+// fully_enforced in a RUN's JSON answers about the run. A report-only layer is carried
+// into that report for disclosure and judges nothing - no policy can ask for it, no
+// posture admitted the run on it, and the run's exit code is unaffected - so a host fact
+// coming back short must not flip the field a CI gate reads. Doctor keeps the plain form,
+// where every row of the table is part of what the host can do.
+func TestRunReportJSONKeepsFullyEnforcedOverAReportOnlyShortfall(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	r.Add(enforce.LayerAutoExecReport, enforce.Unavailable, "git is not on this host's PATH")
+
+	run := toRunReportJSON(r)
+	if !run.FullyEnforced {
+		t.Error("a run whose confinement all held reads as short because the host cannot answer a hint")
+	}
+	// Carried, not hidden: the disclosure is the point.
+	var listed bool
+	for _, l := range run.Layers {
+		listed = listed || l.Layer == string(enforce.LayerAutoExecReport)
+	}
+	if !listed {
+		t.Error("the host fact was dropped from the run's JSON layers")
+	}
+	// Doctor's form is unchanged: there the question is what the host can do.
+	if toReportJSON(r).FullyEnforced {
+		t.Error("doctor's report must still count the host fact against fully_enforced")
+	}
+	// A real shortfall beside it still reads short.
+	r.Set(enforce.LayerFilesystem, enforce.Degraded, "no user namespaces")
+	if toRunReportJSON(r).FullyEnforced {
+		t.Error("a degraded core layer must read as short in a run's report")
 	}
 }

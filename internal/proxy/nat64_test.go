@@ -428,7 +428,7 @@ func TestNAT64BlackoutsCountTheConnectionsTheRunActuallyLost(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				var lastErr error = fmt.Errorf("no addresses")
+				lastErr := fmt.Errorf("no addresses")
 				for _, ip := range c.addrs {
 					if err := p.guardUpstream(ctx, network, net.JoinHostPort(ip, port), nil); err != nil {
 						lastErr = err

@@ -121,6 +121,26 @@ func toReportJSON(r enforce.Report) reportJSON {
 	return out
 }
 
+// toRunReportJSON is toReportJSON for a RUN's report, where fully_enforced answers about
+// the run rather than about the host. A report-only layer is carried into a run's report
+// for disclosure and judges nothing - no policy can ask for it and no posture admitted the
+// run on it - so it is listed like any other layer but must not make the run's confinement
+// read as short. Doctor keeps the plain form, where the question is what this host can do
+// and every row of the table is part of the answer.
+func toRunReportJSON(r enforce.Report) reportJSON {
+	out := toReportJSON(r)
+	if !out.FullyEnforced {
+		out.FullyEnforced = true
+		for _, l := range r.Layers {
+			if l.State != enforce.Enforced && !l.Layer.ReportOnly() {
+				out.FullyEnforced = false
+				break
+			}
+		}
+	}
+	return out
+}
+
 // accessNoteJSON is one decision a profiling run made about an access it observed,
 // for `bento profile --json`. It carries the two lists that decision can land in - the
 // accesses profiling declined to propose, and the grants it proposed but wants a
@@ -1992,11 +2012,13 @@ func writeDegradations(w io.Writer, r enforce.Report) {
 			policyShort = append(policyShort, l)
 		}
 	}
-	for _, l := range hostOnly {
-		head := fmt.Sprintf("%s: %s - %s", l.Layer, l.State, l.Disclosure())
+	if len(hostOnly) > 0 {
 		fmt.Fprintln(w, "[bento] this host cannot answer everything this run reports on; nothing is less confined for it:")
-		for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
-			fmt.Fprintf(w, "[bento]   %s\n", line)
+		for _, l := range hostOnly {
+			head := fmt.Sprintf("%s: %s - %s", l.Layer, l.State, l.Disclosure())
+			for _, line := range wrapText(head, textWidth-len("[bento]   ")) {
+				fmt.Fprintf(w, "[bento]   %s\n", line)
+			}
 		}
 	}
 	if len(policyShort) == 0 {
