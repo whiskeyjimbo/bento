@@ -141,8 +141,13 @@ const aliasBudget = 50_000
 // The third return says an anchor went unread - a walk error, or a stat that failed - so
 // the empty answer that follows is a could-not-look rather than an absence.
 func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, map[string]bool, bool) {
-	// A host with no anchors shields nothing at all, which Check reports as unknown before
-	// this runs; the empty set here is that same answer said again rather than a claim.
+	// A host with no anchors shields nothing at all, and Check has already said so: it
+	// asks ShieldSet for the same anchors at gate.go:141, and an error there sets
+	// ShieldsUnknown and returns at :142 - before :146, the one call site this has. So the
+	// empty set here is that same answer said again rather than a claim, and the third
+	// return is left for the anchors that WERE read and could not be walked. Should a
+	// second caller reach this without that guard, the drop becomes a real absence
+	// reported as one, and this has to raise unread instead.
 	homes, _ := denylist.HomeAnchors()
 	roots := make([]string, 0, 128)
 	for _, a := range denylist.AliasAnchors(homes...) {
