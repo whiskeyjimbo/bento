@@ -98,6 +98,18 @@ commits that built it - none of them were ever in a release.
   was the sharpest case: `direnv.toml`'s `[whitelist]` skips the allow check
   entirely, so relocating it disarmed the allow-record shield beside it. The
   boundary moved inward, on hosts that set one of these.
+- **The credential-alias scan no longer walks the system package trees for
+  hardlinks.** `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, the `/etc` entries
+  bento binds itself, and the Nix store were walked on every launch whose
+  credentials carry an extra link. A hardlink there needs write on a root-owned
+  directory, and a root actor reads the credential without an alias, so the walk
+  could only find a link root put there. It is not free: on a single-filesystem
+  host the walk's device prune cannot skip `/usr`, and on a cold CI image the
+  scan expired its 30s bound and refused the run for a dead mount it never had.
+  A runtime prefix under the home (pyenv, mise) is still walked, and the mount
+  scan still finds a bind of a credential store onto any of these paths. The
+  boundary moved outward by the width of a root-planted hardlink; a same-tree
+  scan went from 0.70s to 0.05s warm, and from a timeout to instant cold.
 
 ### What a Run Tells You
 

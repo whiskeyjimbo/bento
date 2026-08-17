@@ -528,6 +528,37 @@ func TestRunRefusesAnAliasedCredential(t *testing.T) {
 	}
 }
 
+// The system package trees are exposed by bento itself on every run, and walking one for
+// a hardlink costs the whole tree - 30s and a timeout refusal on a cold CI image, where
+// /usr and the home share a device so the walk's prune cannot skip it. Nothing short of
+// root can link into one, so the walk skips them. A runtime prefix under the home stays
+// walked, which is the coverage the narrowing must not take with it, and a usrmerge host
+// hands over the resolved spelling of the FHS name.
+func TestAliasedCredentialsWalkSkipsSystemTreesButNotARuntimePrefix(t *testing.T) {
+	key := identifiedFile{path: "/home/u/.ssh/id_rsa", id: fileID{dev: 1, ino: 11}, links: 2}
+	sb := aliasSandbox(
+		map[string][]identifiedFile{"/home/u/.ssh": {key}},
+		map[string][]identifiedFile{
+			"/usr":                {{path: "/usr/share/alias", id: key.id}},
+			"/nix/store":          {{path: "/nix/store/abc-python/alias", id: key.id}},
+			"/usr/lib":            {{path: "/usr/lib/alias", id: key.id}},
+			"/home/u/.pyenv/3.12": {{path: "/home/u/.pyenv/3.12/lib/alias", id: key.id}},
+		},
+	)
+	sb.resolve = func(p string) string {
+		if p == "/lib" {
+			return "/usr/lib"
+		}
+		return p
+	}
+
+	got := scanAliases(t, sb, []string{"/usr", "/nix/store", "/usr/lib", "/home/u/.pyenv/3.12"}, nil)
+	want := []credentialAlias{{Path: "/home/u/.pyenv/3.12/lib/alias", Credential: key.path}}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want just the runtime prefix's alias %v", got, want)
+	}
+}
+
 // A bind whose mountpoint sits ABOVE the granted tree is the case path arithmetic loses
 // and the one that leaks most: bind the whole home to /srv/backup, grant
 // "read: /srv/backup/.ssh", and the key is reachable through a path that names no

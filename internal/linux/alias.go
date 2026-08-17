@@ -324,10 +324,12 @@ func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []s
 }
 
 // aliasedCredentials reports the paths inside the trees this run exposes that alias a
-// shielded credential. The trees are everything bwrap will bind, not only the paths the
-// policy names: an out-of-FHS interpreter has its whole install prefix bound read-only so
-// its stdlib comes along, and for a pyenv or nvm interpreter that prefix sits under the
-// user's home - a tree the policy never mentions and an alias planted there would be read
+// shielded credential. The trees are everything bwrap will bind - the hardlink walk
+// skipping the system package trees among them, see withoutSystemPackageTrees - not only
+// the paths the policy names: an out-of-FHS interpreter has its whole install prefix
+// bound read-only so its stdlib comes along, and for a pyenv or nvm interpreter that
+// prefix sits under the user's home - a tree the policy never mentions and an alias
+// planted there would be read
 // straight past the shield. A shield binds a path, so any other name for the same content
 // under a grant stays readable: a hardlink (a second directory entry for the inode) or
 // a bind mount (the same inode exposed at a second mountpoint).
@@ -345,9 +347,49 @@ func checkAliasedCredentials(sb sandbox, visible, literalOptIns, acceptUnder []s
 // without sharing an inode, so identity comparison never sees one; the whole scan is a
 // snapshot - a host actor can link after it runs; and a directory the walk may traverse
 // but not list (mode --x) hides an alias the run could still open by a name it already
-// knows. All three are accepted rather than engineered against, because the actor here
+// knows; and a hardlink planted under a root-owned system package tree is not looked for
+// at all. All four are accepted rather than engineered against, because the actor here
 // already holds the user's privileges and could read the credential directly; the value
 // delivered is naming where an alias is, not blocking someone who needs no alias.
+// withoutSystemPackageTrees drops the package trees bento exposes itself - the fixed
+// system read paths /usr, /bin, /sbin, /lib, /lib64 and the /etc entries systemReadPaths
+// names, plus the Nix store an interpreter there brings along - from the roots the
+// hardlink walk descends.
+//
+// Every one holds root-owned package content, so a hardlink inside one needs write on a
+// root-owned directory. The actor this scan exists for holds the invoking user's
+// privileges, and a root actor reads the credential without needing an alias, so walking
+// them can only find a link root put there itself. It is not free: /usr alone is
+// hundreds of thousands of inodes on a CI image and a Nix store is larger, and on a
+// single-filesystem host hostAliasesUnder's device prune cannot skip them because they
+// share a device with the home. That walk ran on every launch whose credentials carry an
+// extra link, and expired the credentialWalkTimeout bound outright on a cold CI runner.
+//
+// Only the walk narrows. The mount scan still matches these paths, because it is
+// O(mounts) either way and a bind of a credential store onto one is found for free.
+//
+// A runtime prefix under the home (pyenv, mise) stays walked, which is the coverage the
+// narrowing must not take with it: InterpreterPrefix answers "" for an interpreter
+// already in the base image, so such a prefix is never one of these paths.
+func withoutSystemPackageTrees(sb sandbox, trees []string) []string {
+	system := make(map[string]bool, len(systemReadPaths)+2)
+	// nixStore is what interpreterReadPath hands over for a Nix interpreter, and the
+	// degraded tier grants bare /nix; neither is a systemReadPaths entry.
+	for _, p := range append(slices.Clone(systemReadPaths), nixStore, "/nix") {
+		// Both spellings of a usrmerge symlink (/lib -> /usr/lib) have to match: a tree
+		// arrives here resolved, while the list is the raw FHS names.
+		system[p] = true
+		system[sb.resolve(p)] = true
+	}
+	out := make([]string, 0, len(trees))
+	for _, t := range trees {
+		if !system[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, error) {
 	creds, anchors, linked, err := credentialFiles(sb, literalOptIns)
 	if err != nil {
@@ -388,7 +430,7 @@ func aliasedCredentials(sb sandbox, trees, literalOptIns []string) (aliasScan, e
 	// is a leak.
 	var out []credentialAlias
 	if linked {
-		for _, t := range trees {
+		for _, t := range withoutSystemPackageTrees(sb, trees) {
 			aliases, err := bounded("the scan of "+t+" for credential aliases", func() ([]credentialAlias, error) {
 				return sb.aliasesUnder(t, want)
 			})
