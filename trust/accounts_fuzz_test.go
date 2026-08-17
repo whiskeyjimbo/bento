@@ -48,17 +48,21 @@ func FuzzParseAccountsRefusesCompat(f *testing.F) {
 // The oracle is that appending a line may only extend a gid's membership: with lines
 // parsed in order, the members the base alone yields must remain a prefix of what
 // base-plus-line yields, for every gid. An assignment would truncate or replace it.
+//
+// Both files, because the passwd loop appends primary members to the same gid the same
+// way and loses them the same way - a gid whose primary members were dropped is a
+// shared group reading as private just as surely.
 func FuzzParseAccountsMembershipIsMonotone(f *testing.F) {
-	f.Add("root:x:0:\njrose:x:1000:\n", "jrose:x:1000:peer\n")
-	f.Add("shared:x:1200:a,b\n", "shared:x:1200:c\n")
-	f.Add("shared:x:1200:a,b\n", "other:x:1200:\n")
-	f.Add("", "shared:x:1200:a\n")
-	f.Add("shared:x:1200:a\n", "")
-	f.Add("shared:x:1200:a\n", "not a group line")
+	f.Add("root:x:0:\njrose:x:1000:\n", "jrose:x:1000:peer\n", "jrose:x:1000:1200::/h:/bin/sh\n", "peer:x:1001:1200::/h:/bin/sh\n")
+	f.Add("shared:x:1200:a,b\n", "shared:x:1200:c\n", "", "")
+	f.Add("shared:x:1200:a,b\n", "other:x:1200:\n", "a:x:1:1200::/h:/bin/sh\n", "b:x:2:1200::/h:/bin/sh\n")
+	f.Add("", "shared:x:1200:a\n", "", "a:x:1:1200::/h:/bin/sh\n")
+	f.Add("shared:x:1200:a\n", "", "a:x:1:1200::/h:/bin/sh\n", "")
+	f.Add("shared:x:1200:a\n", "not a group line", "a:x:1:1200::/h:/bin/sh\n", "not a passwd line")
 
-	f.Fuzz(func(t *testing.T, group, extra string) {
-		base := parseAccounts(group, "")
-		grown := parseAccounts(group+"\n"+extra, "")
+	f.Fuzz(func(t *testing.T, group, extraGroup, passwd, extraPasswd string) {
+		base := parseAccounts(group, passwd)
+		grown := parseAccounts(group+"\n"+extraGroup, passwd+"\n"+extraPasswd)
 		// A compat entry in either body makes both sides unanswerable; the refusal is
 		// the other target's subject, and there is nothing to compare here.
 		if base == nil || grown == nil {
@@ -68,7 +72,14 @@ func FuzzParseAccountsMembershipIsMonotone(f *testing.F) {
 			now := grown.members[gid]
 			if len(now) < len(was) || !slices.Equal(now[:len(was)], was) {
 				t.Fatalf("appending %q to gid %d: members went from %q to %q - a later line replaced rather than added",
-					extra, gid, was, now)
+					extraGroup, gid, was, now)
+			}
+		}
+		for gid, was := range base.primary {
+			now := grown.primary[gid]
+			if len(now) < len(was) || !slices.Equal(now[:len(was)], was) {
+				t.Fatalf("appending %q to gid %d: primary members went from %v to %v - a later line replaced rather than added",
+					extraPasswd, gid, was, now)
 			}
 		}
 	})
