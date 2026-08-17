@@ -155,7 +155,7 @@ func TestRunDispatchesToTheDegradedTier(t *testing.T) {
 func TestLostRecordsNameWhichFaultDegradedTheNetworkLayer(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
-		observer, hander int
+		observer, handler int
 		want, absent     string
 	}{
 		{"observer", 3, 0, "observer panicked on 3 decision(s)", "after deciding them"},
@@ -165,7 +165,7 @@ func TestLostRecordsNameWhichFaultDegradedTheNetworkLayer(t *testing.T) {
 			var r enforce.Report
 			r.Set(enforce.LayerNetwork, enforce.Enforced, "")
 
-			noteLostRecords(&r, tc.observer, tc.hander)
+			noteLostRecords(&r, tc.observer, tc.handler)
 
 			if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
 				t.Fatalf("LayerNetwork = %v, want Degraded after a proxy fault", got)
