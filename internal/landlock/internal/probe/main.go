@@ -348,6 +348,23 @@ func verdict(err error) string {
 	return "OK"
 }
 
+// signalVerdict is verdict for the two signal arms, which cannot use it: a signal to a
+// child that never started or has already been reaped fails with ESRCH, and reporting
+// that as DENIED reads as a Landlock refusal the kernel never made. Only EPERM is one -
+// anything else is the probe's own problem and exits rather than answering.
+func signalVerdict(err error) string {
+	switch {
+	case err == nil:
+		return "OK"
+	case errors.Is(err, syscall.EPERM):
+		return "DENIED"
+	default:
+		fmt.Fprintf(os.Stderr, "signal: not a permission answer, so no verdict can be read from it: %v\n", err)
+		os.Exit(2)
+		return ""
+	}
+}
+
 // degraded applies the degraded ruleset, then reports the three things the tier's posture
 // rests on: a path outside every grant is still denied (so the ruleset was applied at
 // all), a socket under no grant, and a socket under the write grant. Both sockets were
@@ -437,7 +454,7 @@ func scopedIPC(read, write, outside, abstract, pathSock, port string) {
 	// answers the same question. Both children are killed on the way out regardless.
 	fmt.Printf("scoped_abstract_baseline=%s scoped_abstract=%s scoped_signal_outside=%s scoped_signal_samedomain=%s scoped_pathname=%s scoped_outsideread=%s scoped_tcp=%s\n",
 		baseline, dial(abstract),
-		verdict(outsideChild.Signal(syscall.SIGTERM)), verdict(sameDomain.Signal(syscall.SIGTERM)),
+		signalVerdict(outsideChild.Signal(syscall.SIGTERM)), signalVerdict(sameDomain.Signal(syscall.SIGTERM)),
 		dial(pathSock), readable(outside), connectLoopback(fresh, p))
 }
 
@@ -566,7 +583,9 @@ func startSleeper() (*os.Process, error) {
 		return nil, err
 	}
 	// The read below needs the child's address space mapped, which it is not until the
-	// exec completes; poll for the maps rather than racing it.
+	// exec completes; poll for the maps rather than racing it. The poll gives up rather
+	// than failing: a caller that has already applied a ruleset cannot read procfs at
+	// all, so an unreadable maps says nothing about the child.
 	for range 100 {
 		if _, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", cmd.Process.Pid)); err == nil {
 			break
