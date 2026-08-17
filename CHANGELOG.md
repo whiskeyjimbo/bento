@@ -9,12 +9,15 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
-## Unreleased
+## 0.3.0 (2026-08-17)
 
 The largest cycle so far. The boundary moved inward in a lot of small places -
 around a hundred new shielded paths, a network fence on the degraded tier, a few
 grants that used to slip past a shield - and a run says much more about what it
-did and what this host could not do for it.
+did and what this host could not do for it. It moved outward once, by the width
+of a root-planted hardlink, when the credential-alias scan stopped walking the
+system package trees. The minor bump is for that and for one removed JSON field:
+`shielded_grant_targets` is gone, absorbed into `shielded_grants`.
 
 ### Boundary Hardening
 
