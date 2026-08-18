@@ -302,7 +302,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 Manifests define the sandbox policy in YAML:
 
 ```yaml
-entrypoint: ./fetch.py          # Script or binary to execute
+entrypoint: ./fetch.py          # Script or binary to execute (also sets the working directory)
 interpreter: python3            # Optional interpreter (omit for compiled binaries)
 interpreter_args: [-u]          # Options for the interpreter itself, before the entrypoint
 args: [--verbose]               # Arguments for the script
@@ -326,6 +326,27 @@ provenance:
   approves: <sha256-fingerprint-over-policy-fields>
   blocked-hosts: []             # Destinations bento's own egress guard refused to reach
 ```
+
+### The entrypoint sets the working directory
+
+The sandbox starts in the **entrypoint's directory**, not the manifest's
+(`--chdir filepath.Dir(entrypoint)`). The two are usually the same, because an
+entrypoint is usually a script sitting beside its manifest - which is why this is
+easy to miss until it bites.
+
+It bites when the entrypoint is elsewhere. A manifest that runs a tool installed
+on the host:
+
+```yaml
+entrypoint: /usr/local/bin/some-agent
+read:  ["."]
+```
+
+still grants `.` relative to the *manifest*, so the target can reach that
+directory - but it does not start there. Relative paths it opens resolve against
+the install directory instead, and a target that goes looking for its inputs by
+relative name reports them missing while the grant is working perfectly. Name the
+inputs absolutely in that case, or keep the entrypoint beside the data it reads.
 
 Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
 the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an
