@@ -1,0 +1,45 @@
+# CodeQL as an advanced setup rather than GitHub's default setup. The two are mutually
+# exclusive, so default setup must be turned off in Settings > Code security before this
+# runs. The reason for the swap is Scorecard: its SAST check greps the default branch's
+# workflows for github/codeql-action/analyze, and default setup leaves no workflow to find.
+#
+# The languages, query suite and threat model mirror what default setup was configured
+# with, so switching does not quietly narrow coverage.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 9 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, go, python]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 #4.15.5
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+          config: |
+            threat-models: local
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 #4.15.5
