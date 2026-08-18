@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 #4.15.5
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd #4.15.5
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
@@ -42,4 +42,4 @@ jobs:
             threat-models: local
 
       - name: Analyze
-        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 #4.15.5
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd #4.15.5
