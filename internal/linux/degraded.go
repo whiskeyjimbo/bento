@@ -220,12 +220,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	cmd := exec.CommandContext(ctx, exe, cargs...)
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = proc.Stdin, proc.Stdout, proc.Stderr
-	// Run the launcher in its own process group so a descendant it leaves behind can be
-	// swept on teardown. Without a PID namespace this is the only sweep available, and
-	// it is best-effort - a descendant that calls setsid() escapes the group and
-	// survives, which the degraded report discloses. The default ctx-cancel kill hits
-	// only the launcher pid, so Cancel is overridden to kill the whole group too.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Without a PID namespace the process group is the only sweep available; see
+	// launcherProcAttr. The default ctx-cancel kill hits only the launcher pid, so Cancel
+	// is overridden to kill the whole group too.
+	cmd.SysProcAttr = &launcherProcAttr
 	cmd.Cancel = func() error { return killProcessGroup(cmd.Process) }
 	// A descendant the target backgrounds inherits the stdout/stderr pipes and, with no
 	// PID namespace, is not torn down when the target exits - so cmd.Wait would block
@@ -405,6 +403,18 @@ func (e *Enforcer) degradedProbe(ctx context.Context) enforce.Report {
 // host defect, because on the path this correction exists for the host has no defect: the
 // caller asked for this tier.
 const degradedTierReason = "this run was launched on the reduced-confinement tier, which uses no namespaces at all"
+
+// launcherProcAttr is how the degraded launcher is placed: its own process group, so a
+// descendant it leaves behind can be swept on teardown (killProcessGroup), and Pdeathsig
+// for the teardown that never runs - a SIGKILLed bento calls nothing, so without it the
+// launcher and everything under it outlives its supervisor.
+//
+// Both halves are best-effort in the same direction, which the degraded report discloses:
+// a descendant that calls setsid() escapes the group, and where the launcher stays a
+// supervisor rather than execveating the target over itself, Pdeathsig reaches only the
+// launcher and leaves its descendants. Under the systemd-run wrapper it still reaches the
+// launcher: a scope execs its command in place, and PDEATHSIG survives an ordinary execve.
+var launcherProcAttr = syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 
 // killProcessGroup SIGKILLs every process still in the launcher's group. The
 // negative pid targets the group (the launcher is its leader via Setpgid). ESRCH -
