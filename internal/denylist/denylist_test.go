@@ -109,6 +109,7 @@ func TestHomeShieldsSecretStores(t *testing.T) {
 		"/home/u/.keepassxc",           // password-manager vault
 		"/home/u/.config/keepassxc",    // and its config/cache siblings
 		"/home/u/.cache/keepassxc",
+		"/home/u/.local/state/keepassxc",
 		"/home/u/.config/Bitwarden",
 		"/home/u/.config/1Password",
 		"/home/u/.local/share/Enpass",

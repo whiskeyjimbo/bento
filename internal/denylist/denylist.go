@@ -2336,8 +2336,9 @@ var credentialAnchorDirs = []string{
 	".config/keepass",
 	".config/keepassx",
 	".config/keepassxc",
-	".config/KeePass",  // the .NET KeePass uses the capitalized name
-	".cache/keepassxc", // last-opened database paths and search history
+	".config/KeePass",        // the .NET KeePass uses the capitalized name
+	".cache/keepassxc",       // last-opened database paths and search history
+	".local/state/keepassxc", // the XDG state location for that same record
 	".local/share/keepass",
 	".local/share/KeePass",
 	".config/Bitwarden",
