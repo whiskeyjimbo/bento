@@ -9,6 +9,55 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
+## 0.3.1 (2026-09-08)
+
+A patch bump: nothing about the boundary moved outward. One shield was added and
+one grant narrowed, both inward, and the rest is a manifest bento could write but
+not read back. Every fix here came out of the nightly fuzz job rather than a
+report - which is also why the last entry is about that job finally being able to
+tell anyone what it found.
+
+### Boundary Hardening
+
+- **A write grant no longer escapes the root floor on a spelling.** An observed
+  write collapses to its directory, but the collapse ran on the path exactly as
+  the target spelled it, and `filepath.Dir` cleans only its own result. A write
+  to `/x` collapsed to `/` and was correctly dropped by the floor that refuses a
+  writable root; the same write spelled `/0/..` collapsed to `/0` and was
+  proposed as a grant. Every screen that reads the path before the collapse - the
+  runtime-tree drop among them - was deciding on spelling rather than on reach.
+  `bento profile` now cleans the path before any of them run. Inward, for a
+  proposal a reviewer would have been asked to approve.
+- **KeePassXC's XDG state directory is shielded.** `.local/state/keepassxc` holds
+  the same recent-database record `.cache/keepassxc` was already covering, so the
+  path to the vault was readable inside the sandbox. Adding a shield is not
+  breaking, but a manifest that was reaching this will now stop.
+
+### Writing a Manifest
+
+- **`profile` and `approve` can no longer write a manifest bento refuses to
+  read.** Two string values were emitted unquoted by the YAML encoder and did not
+  survive the round trip: one opening with `? `, which is the complex-mapping-key
+  indicator, produced a document the parser rejects outright, and an entrypoint of
+  `...` was emitted as the document-end marker and crashed the encoder. Both
+  values are legal and both read back correctly once quoted, so the fix is in the
+  writing: a scalar is now quoted whenever the encoder's own spelling of it does
+  not read back as the same string. That covers both cases and any further gap of
+  the same shape without waiting to find it.
+
+### Development
+
+- **The nightly fuzz job reports what it finds to the security tab.** It had no
+  `security-events` permission and never uploaded a SARIF report, so a crasher
+  existed only as a red scheduled run and a zip attached to it. Findings now
+  arrive as code-scanning alerts, and a clean night retires the previous night's
+  alert rather than leaving it to be closed by hand. The report names only the
+  crashers a run actually wrote, not the regression seeds already committed
+  alongside them.
+- `golangci-lint` moves to v2.13.2, whose staticcheck can build a Go 1.27
+  standard library. The pinned v2.12.2 panicked on it, which broke `make lint`
+  and `make check` for anyone ahead of the toolchain in `go.mod`.
+
 ## 0.3.0 (2026-08-17)
 
 The largest cycle so far. The boundary moved inward in a lot of small places -
