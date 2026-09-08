@@ -251,6 +251,11 @@ func Synthesize(entrypoint, interpreter string, interpreterArgs []string, obs Ob
 		if !filepath.IsAbs(p) {
 			return ""
 		}
+		// Cleaned before the screens below, not just before the collapse: filepath.Dir
+		// cleans its own result, so an observed "/0/.." would be screened as spelled and
+		// then collapse to "/0" - a grant of a directory the write never reached, and one
+		// that walks past the root floor the same write spelled "/x" is caught by.
+		p = filepath.Clean(p)
 		// A socket write is dropped by its observed name too, and for a sharper reason than
 		// the runtime case: the collapse would turn a write to /tmp/.X11-unix/X0 into a
 		// writable grant of the directory holding every display's socket, which no later
