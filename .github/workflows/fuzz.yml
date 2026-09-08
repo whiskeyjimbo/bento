@@ -77,7 +77,7 @@ jobs:
         if: always()
         run: GOWORK=off go run ./cmd/fuzz-sarif > "$RUNNER_TEMP/fuzz.sarif"
 
-      - uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # 4.15.5
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # 4.15.5
         if: always()
         with:
           sarif_file: ${{ runner.temp }}/fuzz.sarif
