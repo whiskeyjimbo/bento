@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write # the SARIF upload below, so a crasher raises a code-scanning alert
 
 jobs:
   fuzz:
@@ -64,3 +65,20 @@ jobs:
           name: fuzz-crashers
           path: '**/testdata/fuzz/**'
           if-no-files-found: ignore
+
+      # The artifact above is the whole corpus, committed seeds included, so it needs a
+      # human to tell the night's finding from the regression suite. This reports only the
+      # crashers this run wrote, as a code-scanning alert nobody has to remember to open.
+      #
+      # Both steps run on success too, and that is the point: the empty report a clean
+      # night uploads is what retires the alert from the night before, so a fixed target
+      # stops being reported without anyone closing it by hand.
+      - name: Report crashers
+        if: always()
+        run: GOWORK=off go run ./cmd/fuzz-sarif > "$RUNNER_TEMP/fuzz.sarif"
+
+      - uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # 4.15.5
+        if: always()
+        with:
+          sarif_file: ${{ runner.temp }}/fuzz.sarif
+          category: fuzz
