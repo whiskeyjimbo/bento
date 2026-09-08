@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -482,7 +483,33 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 	if !prov.isZero() {
 		m.Provenance = &prov
 	}
-	return yaml.Marshal(&m)
+	return yaml.MarshalWithOptions(&m, yaml.CustomMarshaler[string](quoteUnlessItReadsBack))
+}
+
+// quoteUnlessItReadsBack writes a string scalar the way goccy would, unless goccy's
+// spelling does not read back as the same string - then it forces double quotes.
+//
+// goccy/go-yaml v1.19.2 has at least two such gaps, both found by FuzzManifestRoundTrip:
+// a value opening with the complex-mapping-key indicator "? " is emitted bare, so
+// `interpreter: ? 0` is a document Parse refuses; and "..." is emitted bare as the
+// document-end marker, which encodes to no node at all. A hand-list of broken prefixes
+// would have caught the first and not the second, so the screen asks the question the
+// round-trip guarantee actually cares about rather than enumerating indicators.
+//
+// The values themselves are legal - Parse reads `interpreter: "? 0"` back unchanged - so
+// the defect is in the writing. Fixing it here rather than in policy.Validate is what
+// keeps an env value, where an arbitrary string is legitimate, from being refused for
+// the encoder's benefit.
+func quoteUnlessItReadsBack(s string) ([]byte, error) {
+	b, err := yaml.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var back string
+	if err := yaml.Unmarshal(b, &back); err == nil && back == s {
+		return b, nil
+	}
+	return []byte(strconv.Quote(s)), nil
 }
 
 // screenProvenance rejects a provenance field carrying a character that would deceive the
