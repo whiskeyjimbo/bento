@@ -77,7 +77,7 @@ func TestFilesystemLayerSplitsConsequencesFromTheRemedy(t *testing.T) {
 	if l.State != enforce.Degraded {
 		t.Fatalf("state = %v, want Degraded", l.State)
 	}
-	for _, buried := range []string{"no PID namespace", "netlink interface enumeration", "cannot restrict truncate"} {
+	for _, buried := range []string{"no PID namespace", "netlink interface enumeration", "cannot restrict truncate", "chmod"} {
 		if strings.Contains(l.Reason, buried) {
 			t.Errorf("reason still inlines the tier consequences (%q): %q", buried, l.Reason)
 		}

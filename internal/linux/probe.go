@@ -284,6 +284,11 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"killing the run's process group, which a setsid() escapes and which also stops a target that reads " +
 			"an interactive terminal), and no network namespace (" + netFenceClause(netTCPRestricted) +
 			unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
+			". Landlock has no right for file metadata at any ABI, so on any host path it can name - including " +
+			"one outside every grant - the target can still stat, chmod, chown what it owns, set timestamps " +
+			"(utimes) and set extended attributes (setxattr): a credential's mode can be widened, exec bits " +
+			"flipped and mtimes forged. Seccomp cannot close this, as it sees no paths and the same calls are " +
+			"what a granted workspace needs" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted)
 		return l
