@@ -101,3 +101,70 @@ func TestEveryLayerIsClassifiedAndReachable(t *testing.T) {
 func contains(layers []Layer, l Layer) bool {
 	return slices.Contains(layers, l)
 }
+
+// admissionLayers is written out rather than read from declaredLayers so that a new layer
+// fails the guard below until someone decides it belongs in the agreement grid.
+var admissionLayers = []Layer{
+	LayerFilesystem, LayerNetwork, LayerExec, LayerExecStrict,
+	LayerLimitsMemory, LayerLimitsPIDs, LayerLimitsCPU, LayerAutoExecReport,
+}
+
+// Admission and the post-run bar must agree cell for cell: a state that refuses a run
+// before it starts must fault the completed run when the backend discovers it late, and a
+// state admission accepts must not fault it. A report-only layer never faults.
+func TestAdmissionAndPostRunShortfallAgree(t *testing.T) {
+	for _, l := range declaredLayers(t, ".") {
+		if !slices.Contains(admissionLayers, l) {
+			t.Fatalf("layer %q is declared but missing from admissionLayers", l)
+		}
+	}
+	// A limited policy, so admitRunID judges the limits layers rather than refusing on
+	// the manifest alone, which no layer state could change.
+	limited := &policy.Policy{Limits: policy.Limits{Memory: "128M"}}
+	postures := []Options{
+		{}, {AllowDegraded: true}, {Strict: true},
+		{RunID: "job"}, {AllowDegraded: true, RunID: "job"}, {Strict: true, RunID: "job"},
+	}
+	for _, o := range postures {
+		for _, l := range admissionLayers {
+			for _, s := range []State{Enforced, Degraded, Unavailable} {
+				r := Report{Layers: []LayerStatus{{Layer: l, State: s}}}
+				faulted := len(postRunShortfall(o, r)) > 0
+				if l.ReportOnly() {
+					if faulted {
+						t.Errorf("%+v %s %s: a report-only layer faulted the run", o, l, s)
+					}
+					continue
+				}
+				refused := o.admit(r) != nil || admitRunID(limited, o, r) != nil
+				if refused != faulted {
+					t.Errorf("%+v %s %s: admission refused=%v, post-run faulted=%v", o, l, s, refused, faulted)
+				}
+			}
+		}
+	}
+
+	// A host doctor calls ready must be one every posture admits.
+	for _, o := range postures {
+		for _, s := range []State{Enforced, Degraded, Unavailable} {
+			var r Report
+			for _, l := range BaselineLayers() {
+				r.Layers = append(r.Layers, LayerStatus{Layer: l, State: s})
+			}
+			if len(r.forLayers(BaselineLayers()).Degradations()) == 0 && o.admit(r) != nil {
+				t.Errorf("%+v: a doctor-ready baseline was refused: %v", o, o.admit(r))
+			}
+		}
+	}
+}
+
+// ReportOnly is derived from a hard-coded maximal policy. A layer some policy requires
+// must not read as report-only, or a new policy field whose layer that policy omits
+// would silently stop gating runs.
+func TestARequirableLayerIsNeverReportOnly(t *testing.T) {
+	for l, row := range layerGrid {
+		if row.requires != nil && l.ReportOnly() {
+			t.Errorf("%s is required by %+v but ReportOnly() says no policy can ask for it", l, row.requires)
+		}
+	}
+}
