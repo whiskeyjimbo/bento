@@ -98,7 +98,7 @@ R = run.
   (validate.go:686, 693) calls each problem function by name and leaves out `ShieldCarveProblems`.
   So `validate --strict` prints `grants: NO - the grants marked REFUSED above` with no REFUSED line
   anywhere. The exit code is right. validate.go:788-791 says the "marked above" claim has to hold
-  for every kind. VERIFIED BY SPIKE.
+  for every kind. VERIFIED BY SPIKE. FIXED: the summary now marks it beside the write grant.
 - **F4 - `validate --json` doesn't carry the self-write, /tmp or broad-grant callouts (Grid B).
   UNHANDLED.** approve and human validate raise them, but `policyJSON` (validate.go:424-517) has
   no field for any of them. A CI gate reading the envelope can't see "write covers the manifest

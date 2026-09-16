@@ -821,6 +821,38 @@ func TestValidateFailsOnAGrantTheRunRefuses(t *testing.T) {
 	}
 }
 
+// The verdict says "the grants marked REFUSED above", which has to be true of every refusal
+// kind - including a write grant whose shield mount points this uid cannot create, the one
+// refusal whose sentence is about a directory the manifest never names.
+func TestValidateMarksACarveRefusalBesideTheGrant(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root creates entries in any directory, so no host directory refuses the carve")
+	}
+	home := t.TempDir()
+	grant := filepath.Join(home, ".config", "go")
+	if err := os.MkdirAll(grant, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.Chmod(grant, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(grant, 0o755) })
+	p := &policy.Policy{Entrypoint: "./job.sh", Interpreter: "sh", Write: []string{grant}}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+
+	out, err := runCapturingStdout(t, newValidateCmd(), path, "--strict")
+	if err == nil {
+		t.Errorf("--strict must fail on a grant whose shields cannot be carved; got:\n%s", out)
+	}
+	if !strings.Contains(out, "grants:       NO") {
+		t.Fatalf("the verdict must refuse the grants; got:\n%s", out)
+	}
+	if !strings.Contains(out, "REFUSED: ") || !strings.Contains(out, "and creating that mount point needs write permission on") {
+		t.Errorf("the verdict points at REFUSED marks above, so the carve refusal must be one; got:\n%s", out)
+	}
+}
+
 // interpreter_args changes what the interpreter does with the entrypoint, so the
 // summary a reviewer reads before approving has to show it - on its own line, so it
 // is not skimmed as part of the interpreter's path.

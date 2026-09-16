@@ -691,7 +691,9 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 	}
 	writeRefusals := gate.ShieldedWriteProblems(shieldSet, resolvedWrite)
 	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
-		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite))
+		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite),
+		// The reads too: an exact opt-in read grant means no mount point is carved for it.
+		gate.ShieldCarveProblems(shieldSet, resolvedRead, resolvedWrite))
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 	writeUnsetEnvNotes(w, p)
