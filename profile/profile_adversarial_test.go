@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -211,6 +210,12 @@ func FuzzProfileSynthesize(f *testing.F) {
 	f.Add("/bin/app", "python3", "/data/in.txt", "/data/out.txt", "api.example.com", "443", true)
 	f.Add("", "", "", "", "", "", false)
 	f.Add("\x00", "\x1b[31m", "relative/path", "/etc/cron.d/job", "\u202E", "80", false)
+	// Writes the run refuses although the gate does not: a submodule's live hooks, an
+	// editor task file behind a redirected .vscode, and a directory this uid cannot write.
+	// Synthesize has to propose each exactly as observed; withholding them is the clamp's.
+	f.Add("/repo/run.sh", "", "/repo/src/main.py", "/repo/.git/modules/sub/hooks/pre-commit", "", "", false)
+	f.Add("/proj/run.sh", "", "/proj/.vscode", "/proj/.vscode/tasks.json", "", "", false)
+	f.Add("/work/run.sh", "", "/work/ro", "/work/ro/out.dat", "", "", false)
 
 	f.Fuzz(func(t *testing.T, entry, interp, read, write, host, port string, execed bool) {
 		obs := Observation{
@@ -225,35 +230,29 @@ func FuzzProfileSynthesize(f *testing.F) {
 		}
 
 		// Soundness, the narrowing half of the one-sided invariant: approve stamps this
-		// proposal, so a grant the observation does not justify is a permission nobody
-		// asked for. Ancestor-or-equal rather than membership, because a write collapses
-		// to its directory - the observed /data/out.txt is proposed as /data.
-		// The root is spelled with its own separator, so the ordinary prefix test would
-		// read "/" as justifying nothing at all - and a grant of "/" is the one this most
-		// has to judge on its merits rather than on a string artifact.
-		justified := func(grant string, observed ...string) bool {
-			prefix := strings.TrimSuffix(grant, "/") + "/"
-			for _, o := range observed {
-				// Cleaned, because the grant is: "//0/" is observed and "/0" proposed, and
-				// the difference is spelling rather than reach.
-				if !filepath.IsAbs(o) {
-					continue
-				}
-				o = filepath.Clean(o)
-				if o == grant || strings.HasPrefix(o, prefix) {
-					return true
-				}
+		// proposal, so a grant wider than the observation is a permission nobody asked
+		// for. Stated exactly rather than as ancestor-or-equal, because an ancestor is the
+		// widening: a read of /data/in.txt proposed as /data, or a write collapsed two
+		// levels instead of one, passes a containment test. A read is proposed as observed
+		// and a write as the directory holding it, each cleaned, since the grant is and the
+		// difference between "//0/" and "/0" is spelling rather than reach.
+		exact := func(kind, grant, observed string, derive func(string) string) {
+			if !filepath.IsAbs(observed) || grant != derive(filepath.Clean(observed)) {
+				t.Errorf("%s grant %q is not what the observed %s %q justifies", kind, grant, kind, observed)
 			}
-			return false
 		}
 		for _, g := range p.Read {
-			if !justified(g, read) {
-				t.Errorf("read grant %q is not justified by the observed read %q", g, read)
-			}
+			exact("read", g, read, func(o string) string { return o })
 		}
 		for _, g := range p.Write {
-			if !justified(g, write) {
-				t.Errorf("write grant %q is not justified by the observed write %q", g, write)
+			exact("write", g, write, filepath.Dir)
+		}
+		if (p.Exec == policy.ExecAll) != execed {
+			t.Errorf("exec is %q for an observation with Execed=%v", p.Exec, execed)
+		}
+		for _, r := range p.Network {
+			if r.Host != host || r.Port != port {
+				t.Errorf("network rule %+v was not observed (observed %s:%s)", r, host, port)
 			}
 		}
 
