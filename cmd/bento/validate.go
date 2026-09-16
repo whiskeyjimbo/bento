@@ -70,6 +70,7 @@ func newValidateCmd() *cobra.Command {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(trust.CheckApproval(doc))
 				out.setRunnable(run)
+				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
 				if relocatable {
 					out.setRelocatable(pinned)
 				}
@@ -512,6 +513,15 @@ type policyJSON struct {
 	// Relocatable says whether every path anchors to the manifest's own directory, with
 	// PinnedPaths naming the ones that do not. A pointer because absent is the third
 	// answer, as it is for Runnable: the question is only asked under --relocatable.
+	// The judgements approve raises before stamping, so a gate reading fields sees what a
+	// reader of either command's prompt does. Absent where the grants could not be resolved,
+	// since none of them was asked.
+	WritesCoveringManifest   []string `json:"writes_covering_manifest,omitempty"`
+	WritesCoveringEntrypoint []string `json:"writes_covering_entrypoint,omitempty"`
+	TmpGrants                []string `json:"tmp_grants,omitempty"`
+	BroadReadGrants          []string `json:"broad_read_grants,omitempty"`
+	BroadWriteGrants         []string `json:"broad_write_grants,omitempty"`
+
 	Relocatable *bool    `json:"relocatable,omitempty"`
 	PinnedPaths []string `json:"pinned_paths,omitempty"`
 }
@@ -522,6 +532,17 @@ func (o *policyJSON) setRelocatable(pinned []string) {
 	ok := len(pinned) == 0
 	o.Relocatable = &ok
 	o.PinnedPaths = pinned
+}
+
+// setCallouts carries writeApprovalCallouts' manifest-wide judgements into the envelope.
+func (o *policyJSON) setCallouts(realPath, namedPath string, resolved *policy.Policy) {
+	if resolved == nil {
+		return
+	}
+	o.WritesCoveringManifest, o.WritesCoveringEntrypoint = selfWriteGrants(realPath, namedPath, resolved)
+	o.TmpGrants = tmpGrants(resolved)
+	o.BroadReadGrants = slices.DeleteFunc(slices.Clone(resolved.Read), func(g string) bool { return !isBroadDir(g) })
+	o.BroadWriteGrants = slices.DeleteFunc(slices.Clone(resolved.Write), func(g string) bool { return !isBroadDir(g) })
 }
 
 // setRunnable folds the host's verdict into the envelope, leaving every field absent

@@ -102,7 +102,8 @@ R = run.
 - **F4 - `validate --json` doesn't carry the self-write, /tmp or broad-grant callouts (Grid B).
   UNHANDLED.** approve and human validate raise them, but `policyJSON` (validate.go:424-517) has
   no field for any of them. A CI gate reading the envelope can't see "write covers the manifest
-  itself". VERIFIED BY READING.
+  itself". VERIFIED BY READING. FIXED: `writes_covering_manifest`, `writes_covering_entrypoint`,
+  `tmp_grants`, `broad_read_grants` and `broad_write_grants`.
 - **F5 (allowed direction here, but it breaks gate.go's own contract) - carve on the degraded
   tier.** `runDegraded` doesn't call `checkShieldsCarvable` (degraded.go:40-75), yet the gate
   refuses the carve on any tier. So under `--allow-degraded`, strict refuses a manifest the run

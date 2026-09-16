@@ -17,6 +17,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -282,6 +283,47 @@ func TestValidateJSONNamesWhatGrantsReach(t *testing.T) {
 	want := []grantTargetJSON{{Path: "~/.ssh", OnHost: target}}
 	if !slices.Equal(got.ResolvedRead, want) {
 		t.Errorf("resolved_read = %v, want %v - the absolute grant names its own target and needs no entry", got.ResolvedRead, want)
+	}
+}
+
+// A CI gate reads the envelope, not the human summary, so the judgements approve raises
+// before stamping have to be fields there too: a write covering the manifest or the
+// entrypoint, grants under /tmp, and grants over a whole home. Decoded loosely so a
+// missing field is a failure rather than a compile error.
+func TestValidateJSONCarriesTheApprovalCallouts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/tmp/bento-callout-elsewhere", "~"}, Write: []string{"."}}
+	path := writeManifest(t, p, manifest.Provenance{})
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, out)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+	dir := pathresolve.Existing(filepath.Dir(path))
+	for field, want := range map[string]string{
+		"writes_covering_manifest":   dir,
+		"writes_covering_entrypoint": dir,
+		"tmp_grants":                 "/tmp/bento-callout-elsewhere",
+		"broad_read_grants":          home,
+	} {
+		list, _ := got[field].([]any)
+		if !slices.Contains(list, any(want)) {
+			t.Errorf("%s = %v, want it to hold %q; got:\n%s", field, got[field], want, out)
+		}
+	}
+
+	// A host that could not resolve the grants asked none of these, so it says none.
+	t.Setenv("HOME", "relative/home")
+	out, err = runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "writes_covering_") || strings.Contains(out, "broad_") {
+		t.Errorf("unresolved grants must emit no callout fields; got:\n%s", out)
 	}
 }
 

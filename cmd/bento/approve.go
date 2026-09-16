@@ -279,26 +279,12 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	if resolved == nil {
 		notes = append(notes, "the grants could not be resolved on this host (an unusable $HOME), so nothing below was checked against what they reach - read them yourself.")
 	} else {
-		// Taken from the resolved policy rather than re-derived: manifest.Resolve expands a
-		// leading ~ against $HOME and anchors the rest to the manifest's directory, and a
-		// second implementation of that would answer differently for `entrypoint: ~/bin/x`
-		// exactly where CoversResolved's lexical test then reports no coverage.
-		// Asked under both its names for the same reason the manifest is: a script kept
-		// elsewhere and linked into the project is covered by a grant over that directory
-		// under the name the link carries, and replacing the link is how it rewrites its
-		// own code.
-		entrypoint, linkedEntrypoint := pathresolve.Existing(resolved.Entrypoint), leafNamePath(resolved.Entrypoint)
-		for _, g := range resolved.Write {
-			g = pathresolve.Existing(g)
-			// Two independent tests rather than a switch: one grant over a directory holding
-			// both the manifest and the script covers each of them, and reporting only the
-			// first would drop a callout that is true.
-			if policy.CoversResolved(g, realPath) || policy.CoversResolved(g, namedPath) {
-				notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
-			}
-			if policy.CoversResolved(g, entrypoint) || policy.CoversResolved(g, linkedEntrypoint) {
-				notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
-			}
+		coversManifest, coversEntrypoint := selfWriteGrants(realPath, namedPath, resolved)
+		for _, g := range coversManifest {
+			notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
+		}
+		for _, g := range coversEntrypoint {
+			notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
 		}
 		// The one callout here that is not merely broad: bento shields these on every
 		// run, and a grant naming one exactly is the only way to lift that shield. The
@@ -347,6 +333,31 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 // comparison against the resolved location alone.
 func leafNamePath(path string) string {
 	return filepath.Join(pathresolve.Existing(filepath.Dir(path)), filepath.Base(path))
+}
+
+// selfWriteGrants returns the resolved write grants covering the manifest and those covering
+// the entrypoint, the two ways a script rewrites what governs it. Two lists rather than a
+// switch: one grant over a directory holding both covers each of them.
+func selfWriteGrants(realPath, namedPath string, resolved *policy.Policy) (coversManifest, coversEntrypoint []string) {
+	// Taken from the resolved policy rather than re-derived: manifest.Resolve expands a
+	// leading ~ against $HOME and anchors the rest to the manifest's directory, and a
+	// second implementation of that would answer differently for `entrypoint: ~/bin/x`
+	// exactly where CoversResolved's lexical test then reports no coverage.
+	// Asked under both its names for the same reason the manifest is: a script kept
+	// elsewhere and linked into the project is covered by a grant over that directory
+	// under the name the link carries, and replacing the link is how it rewrites its
+	// own code.
+	entrypoint, linkedEntrypoint := pathresolve.Existing(resolved.Entrypoint), leafNamePath(resolved.Entrypoint)
+	for _, g := range resolved.Write {
+		g = pathresolve.Existing(g)
+		if policy.CoversResolved(g, realPath) || policy.CoversResolved(g, namedPath) {
+			coversManifest = append(coversManifest, g)
+		}
+		if policy.CoversResolved(g, entrypoint) || policy.CoversResolved(g, linkedEntrypoint) {
+			coversEntrypoint = append(coversEntrypoint, g)
+		}
+	}
+	return coversManifest, coversEntrypoint
 }
 
 // confirmApproval asks before the stamp goes on. A stdin that is not a terminal is
