@@ -146,3 +146,29 @@ func main() {
 	}
 	return bin
 }
+
+// The degraded twin of TestRunReconcilesTheLimitsLayersItGot: runDegraded has its own run
+// path, and a scope carrying no memory cap must worsen the layer in its report too.
+func TestDegradedRunReconcilesTheLimitsLayersItGot(t *testing.T) {
+	requireDegraded(t)
+	requireHostSafetyLimits(t)
+
+	orig := attestScopeLimits
+	attestScopeLimits = func(int) scopeLimits {
+		return readScopeCaps(fakeScope(t, map[string]string{"pids.max": "64\n"}))
+	}
+	t.Cleanup(func() { attestScopeLimits = orig })
+
+	p := &policy.Policy{
+		Entrypoint: buildEnvDumpProbe(t),
+		Exec:       policy.ExecNone,
+		Limits:     policy.Limits{Memory: "64M"},
+	}
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err != nil {
+		t.Fatalf("runDegraded: %v", err)
+	}
+	if got := res.Report.StateOf(enforce.LayerLimitsMemory); got != enforce.Unavailable {
+		t.Errorf("LayerLimitsMemory = %v in the degraded run's report, want unavailable: the scope it got carried no memory cap", got)
+	}
+}

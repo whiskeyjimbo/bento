@@ -235,8 +235,16 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// wrapper above; the launcher marks it close-on-exec so the target never sees it.
 	cmd.ExtraFiles = []*os.File{appliedReport}
 
-	err = cmd.Run()
+	// Read back while the target is alive, for the full tier's reason: systemd can accept
+	// a limit property and not apply it, and only the scope says which.
+	var attested scopeLimits
+	err = runCmd(cmd, func(pid int) {
+		if scoped {
+			attested = attestScopeLimits(pid)
+		}
+	})
 	_ = killProcessGroup(cmd.Process)
+	noteScopeLimits(&report, p.Limits, attested)
 	// See the same guard in Run: a cancel kills the launcher group and the signalled
 	// status it leaves is indistinguishable from the policy's limits ending the target.
 	// An ordinary exit status is not that kill: on the supervise path the launcher
