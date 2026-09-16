@@ -968,9 +968,14 @@ func printTmpGrants(w io.Writer, p *policy.Policy) []accessNoteJSON {
 // the same way the profiling run would have. A directory the script only probed is left
 // out, since it was never listed.
 func printListedDirGrants(w io.Writer, p *policy.Policy, obs profile.Observation) []accessNoteJSON {
+	// Cleaned, as Synthesize keys the same lookup: the observer's spelling need not match.
+	probed := map[string]bool{}
+	for _, d := range obs.Probed {
+		probed[filepath.Clean(d)] = true
+	}
 	var notes []accessNoteJSON
 	for _, g := range p.Read {
-		if slices.Contains(obs.Probed, g) || !isDirFollowingLinks(g) {
+		if probed[g] || !isDirFollowingLinks(g) {
 			continue
 		}
 		notes = append(notes, accessNoteJSON{Kind: "read", Path: g, Reason: "listed-directory"})

@@ -1837,7 +1837,7 @@ func TestPrintListedDirGrantsCallsOutAListing(t *testing.T) {
 	}
 	p := &policy.Policy{Read: []string{listed, probed, file}}
 	var out strings.Builder
-	notes := printListedDirGrants(&out, p, profile.Observation{Probed: []string{probed}})
+	notes := printListedDirGrants(&out, p, profile.Observation{Probed: []string{probed + "/"}})
 
 	want := []accessNoteJSON{{Kind: "read", Path: listed, Reason: "listed-directory"}}
 	if !slices.Equal(notes, want) {

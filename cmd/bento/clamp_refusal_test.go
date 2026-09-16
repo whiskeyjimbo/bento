@@ -204,6 +204,18 @@ func TestClampProposalWithholdsWalkDerivedRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A clean checkout reached through a symlink is honored: the run derives its shields
+	// on the resolved grant, where nothing is redirected.
+	linked := filepath.Join(dir, "linked")
+	if err := os.Symlink(repo, linked); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Write: []string{filepath.Join(linked, "src")}}
+	clampProposal(p)
+	if len(p.Write) != 1 {
+		t.Errorf("the clamp withheld a write into a clean checkout spelled through a symlink (kept %v)", p.Write)
+	}
+
 	for _, c := range []struct{ name, grant string }{
 		{"submodule hooks", filepath.Join(repo, ".git/modules/sub/hooks")},
 		{"linked worktree config.worktree", filepath.Join(repo, ".git/worktrees/wt/config.worktree")},

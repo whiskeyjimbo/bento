@@ -470,7 +470,11 @@ func withholdRedirectedWorkspace(p *policy.Policy) []refusedGrant {
 	return refused
 }
 
+// Asked of where the grant lands, because the backend asks it of the resolved grant: a
+// checkout reached through a symlinked mount derives its shields there, and they resolve to
+// themselves. Asked of the spelling, every shield under the link would read as redirected.
 func redirectedWorkspaceProblem(w string) string {
+	w = pathresolve.Existing(w)
 	if w == "/" || !isDirFollowingLinks(w) {
 		return ""
 	}
