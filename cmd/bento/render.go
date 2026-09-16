@@ -169,7 +169,7 @@ type accessNoteJSON struct {
 	Port string `json:"port,omitempty"`
 	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
 	// not-tunneled, read-shielded, write-shielded, too-broad, run-refused (withheld); above-write-shield,
-	// foreign-home-shield, target-steerable-tmp, whole-workdir (proposed and flagged).
+	// foreign-home-shield, target-steerable-tmp, whole-workdir, listed-directory (proposed and flagged).
 	Reason string `json:"reason"`
 	// Holds is what the shield was hiding (denylist.Holds.Code), on a read-shielded note
 	// and no other - it is the one decision whose consequence differs by bucket, and a

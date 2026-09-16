@@ -1819,3 +1819,34 @@ func TestEveryDegradedTierNoteNamesASurvivingGrant(t *testing.T) {
 		}
 	}
 }
+
+// ls ~/Documents proposes read of all of ~/Documents: a bind cannot allow the listing
+// without the contents, so the grant is kept and the reviewer is told what it covers.
+func TestPrintListedDirGrantsCallsOutAListing(t *testing.T) {
+	dir := t.TempDir()
+	listed := filepath.Join(dir, "listed")
+	probed := filepath.Join(dir, "probed")
+	file := filepath.Join(dir, "notes.txt")
+	for _, d := range []string{listed, probed} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Read: []string{listed, probed, file}}
+	var out strings.Builder
+	notes := printListedDirGrants(&out, p, profile.Observation{Probed: []string{probed}})
+
+	want := []accessNoteJSON{{Kind: "read", Path: listed, Reason: "listed-directory"}}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %+v, want %+v", notes, want)
+	}
+	if !strings.Contains(out.String(), listed) || !strings.Contains(out.String(), "all of its contents") {
+		t.Errorf("the callout does not say the grant covers the listed directory's contents: %q", out.String())
+	}
+	if !slices.Contains(p.Read, listed) {
+		t.Errorf("the grant was dropped; a listing needs it to run")
+	}
+}

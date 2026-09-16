@@ -659,7 +659,7 @@ func profileRound(cfg profileConfig, discovery *policy.Policy) (*policy.Policy, 
 		dropped:    obs.Dropped > 0,
 		blocked:    blockedHostKeys(obs.Blocked),
 		withheld:   append(withheld, clamped...),
-		flagged:    append(flagged, printTmpGrants(os.Stderr, proposed)...),
+		flagged:    slices.Concat(flagged, printTmpGrants(os.Stderr, proposed), printListedDirGrants(os.Stderr, proposed, obs)),
 	}, nil
 }
 
@@ -958,6 +958,24 @@ func printTmpGrants(w io.Writer, p *policy.Policy) []accessNoteJSON {
 	fmt.Fprintf(w, "[bento] a real workspace there can be told from the sandbox's own scratch - so a script that\n")
 	fmt.Fprintf(w, "[bento] opens guessed names under /tmp can put them here. Treat them as the script's request\n")
 	fmt.Fprintf(w, "[bento] rather than as something profiling discovered, and keep only the ones it needs.\n")
+	return notes
+}
+
+// printListedDirGrants names a proposed read grant on a directory the script opened, which
+// for a directory means it listed it. A bind has no list-only form, so the grant that lets
+// the listing succeed also exposes every file inside, including ones the script never
+// touched. Said, not withheld: the listing is real, and a manifest without the grant fails
+// the same way the profiling run would have. A directory the script only probed is left
+// out, since it was never listed.
+func printListedDirGrants(w io.Writer, p *policy.Policy, obs profile.Observation) []accessNoteJSON {
+	var notes []accessNoteJSON
+	for _, g := range p.Read {
+		if slices.Contains(obs.Probed, g) || !isDirFollowingLinks(g) {
+			continue
+		}
+		notes = append(notes, accessNoteJSON{Kind: "read", Path: g, Reason: "listed-directory"})
+		fmt.Fprintf(w, "[bento] proposing read %q - the script only listed this directory, but a read grant covers all of its contents, so everything in it becomes readable. Narrow it to the files the script needs if the directory holds more than that.\n", g)
+	}
 	return notes
 }
 
