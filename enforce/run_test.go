@@ -1184,6 +1184,22 @@ func TestRunIDRefusedWhenTheHostCannotScope(t *testing.T) {
 	}
 }
 
+// The same state found only once the scope exists must fault the completed run: admission
+// refuses it, and a backend learning of it second does not make the run reapable.
+func TestRunIDFaultsWhenTheLimitLapsesMidRun(t *testing.T) {
+	refined := fullyEnforced()
+	refined.Set(LayerLimitsMemory, Unavailable, "the memory controller is not delegated")
+	f := &fakeEnforcer{probe: fullyEnforced(), result: Result{Report: refined}}
+	_, err := Run(context.Background(), f, runIDPolicy(), Process{}, Options{RunID: "job_17", AllowDegraded: true})
+	var short *Shortfall
+	if !errors.As(err, &short) {
+		t.Fatalf("err = %v, want a Shortfall", err)
+	}
+	if !hasLayer(short.Short, LayerLimitsMemory) {
+		t.Errorf("shortfall does not name the limits layer: %+v", short.Short)
+	}
+}
+
 // The screen reads the limits layers the policy actually required. A cpu-only manifest
 // does not require LayerLimitsMemory, and a missing layer reads as Unavailable, so keying on
 // that layer alone refused a reapable cpu-only run on a host that delivers the scope

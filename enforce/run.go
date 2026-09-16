@@ -366,8 +366,14 @@ func postRunShortfall(opts Options, r Report) []LayerStatus {
 		return r.Degradations()
 	case opts.AllowDegraded:
 		// --allow-degraded waives the requested-limits bar at admission, so it is not
-		// re-applied here either: the operator took on running unbounded.
-		return r.shortfall(TierCore, Unavailable)
+		// re-applied here either: the operator took on running unbounded. A run id is
+		// the exception, as in admitRunID: waiving the limit does not waive the
+		// supervisor's ability to reap the target through its scope.
+		short := r.shortfall(TierCore, Unavailable)
+		if opts.RunID != "" {
+			short = append(short, unenforcedRequestedLimits(r)...)
+		}
+		return short
 	default:
 		return append(r.shortfall(TierCore, Degraded), unenforcedRequestedLimits(r)...)
 	}
