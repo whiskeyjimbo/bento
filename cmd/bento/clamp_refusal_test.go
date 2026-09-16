@@ -177,3 +177,47 @@ func TestClampProposalWithholdsAGrantWhoseShieldsCannotBeCarved(t *testing.T) {
 		t.Errorf("the proposal kept %q, whose shield mount points this uid cannot create; the run refuses it at its first step", grant)
 	}
 }
+
+// The backend refusals the gate deliberately misses, because it judges a manifest without
+// walking the grants: a shield derived from a submodule or linked-worktree gitdir, and a
+// checkout-derived shield a symlink redirects. The clamp must withhold both, since the
+// gate's tolerated direction is a refused manifest here.
+func TestClampProposalWithholdsWalkDerivedRefusals(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	for _, d := range []string{".git/modules/sub/hooks", ".git/worktrees/wt", "src"} {
+		if err := os.MkdirAll(filepath.Join(repo, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git/modules/sub/config"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	redirected := filepath.Join(dir, "proj")
+	if err := os.MkdirAll(filepath.Join(redirected, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../real", filepath.Join(redirected, ".vscode")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ name, grant string }{
+		{"submodule hooks", filepath.Join(repo, ".git/modules/sub/hooks")},
+		{"linked worktree config.worktree", filepath.Join(repo, ".git/worktrees/wt/config.worktree")},
+		{"redirected workspace shield", redirected},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &policy.Policy{Write: []string{c.grant, filepath.Join(repo, "src")}}
+			clampProposal(p)
+			if slices.Contains(p.Write, c.grant) {
+				t.Errorf("the clamp proposes write: %q, which the run refuses at its first step (kept %v)", c.grant, p.Write)
+			}
+			if !slices.Contains(p.Write, filepath.Join(repo, "src")) {
+				t.Errorf("the clamp withheld the ordinary project write beside it (kept %v)", p.Write)
+			}
+		})
+	}
+}

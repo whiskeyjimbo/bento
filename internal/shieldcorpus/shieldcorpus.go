@@ -72,10 +72,10 @@ const (
 	// Its position between the two DenyAll checks and the write-only ones is load-bearing,
 	// which is why it is judged in that order rather than appended to the end.
 	//
-	// It is the one verdict NO site outside the backend reproduces: the check does not go
-	// through Contains at all, so the shared verdict, the gate and the clamp each answer
-	// Honored, and the clamp keeps the grant. That divergence is carried on the verdict
-	// rather than on a per-case field because it holds for every case of this shape.
+	// The check does not go through Contains at all, so the shared verdict and the gate
+	// answer Honored; the clamp asks it separately and withholds the grant. The gate's
+	// divergence is carried on the verdict rather than on a per-case field because it holds
+	// for every case of this shape.
 	WorkspaceRedirected
 )
 
@@ -139,10 +139,6 @@ type Case struct {
 	// judges a manifest without walking the grants, so it answers Honored. That divergence
 	// is deliberate and one-directional - it misses a refusal rather than inventing one -
 	// and this field is where it is stated instead of being a hole in the corpus.
-	//
-	// The clamp's derivation is the shallower of the two: it skips the recursive gitdir
-	// scan the backend runs for submodules and linked worktrees, so a case anchored there
-	// would diverge again.
 	WorkspaceDerived bool
 	// ShieldOntoHome adds a shield rule whose symlink lands on the home anchor itself.
 	// Only the case testing that shape gets it: a rule resolving onto the home covers
@@ -242,6 +238,14 @@ var Cases = []Case{
 		WorkspaceDerived: true,
 	},
 	{
+		Name:             "write to the hooks dir of a submodule gitdir",
+		Why:              "a submodule keeps its own live hooks under .git/modules/<name>, which only a walk of the gitdir finds; a site deriving just the top-level checkout rules proposes a grant the run refuses, and leaves a hook the developer's next submodule command runs",
+		Grant:            "checkout/.git/modules/sub/hooks",
+		Write:            true,
+		Verdict:          UnderWriteShield,
+		WorkspaceDerived: true,
+	},
+	{
 		Name:             "write to the .git file of a linked-worktree checkout",
 		Why:              "a checkout whose .git is a FILE has no .git directory to shield, so the shield lands on the file itself; a site treating it as an ordinary checkout derives rules at .git/hooks and .git/config and leaves the file - which repoints the worktree at any gitdir the run fabricates - writable",
 		Grant:            "worktree/.git",
@@ -251,7 +255,7 @@ var Cases = []Case{
 	},
 	{
 		Name:    "write over a checkout whose hooks directory is a symlink",
-		Why:     "the shield binds at the resolved path while the host's git opens the link's own name, which stays inside the writable grant for the run to delete and replace with real hooks; the refusal is the backend's alone, so this is the case that keeps the other two sites' silence about it stated rather than assumed",
+		Why:     "the shield binds at the resolved path while the host's git opens the link's own name, which stays inside the writable grant for the run to delete and replace with real hooks; the gate cannot see it without walking the grant, so this is the case that keeps its silence stated rather than assumed and the clamp's withholding pinned",
 		Grant:   "redirected",
 		Write:   true,
 		Verdict: WorkspaceRedirected,
@@ -380,6 +384,7 @@ func Build(dir string, c Case) (string, error) {
 		// A git checkout, for the shields the backend derives from one. Nothing else in
 		// the layout sits under a .git, so it changes no other case's verdict.
 		"checkout/.git/hooks",
+		"checkout/.git/modules/sub/hooks",
 		// A second checkout whose own hooks directory is a symlink, and a third whose .git
 		// is a FILE. Both are separate trees rather than variations of the first, because
 		// the layout is shared by every case: redirecting the first checkout's hooks would
@@ -404,7 +409,7 @@ func Build(dir string, c Case) (string, error) {
 	// - EvalSymlinks against the way a write really lands, an isDir gate, Lstat against
 	// Stat - answers alike for the two only if it does not, and admitting an absent path
 	// that the run then creates is how a hooks directory reached the host once already.
-	for _, f := range []string{".ssh/config", "farm/ssh/known_hosts", "farm/keys/id_ed25519", "gnupg-target/notes"} {
+	for _, f := range []string{"checkout/.git/modules/sub/config", ".ssh/config", "farm/ssh/known_hosts", "farm/keys/id_ed25519", "gnupg-target/notes"} {
 		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
 			return "", err
 		}

@@ -138,11 +138,10 @@ func aboveWriteShieldGrants(set shield.Set, writes []string) []string {
 // reason stated there - gating admits a grant whose directory is still absent, lets the run
 // create it, and refuses on the next pass with the artifact already on the host.
 //
-// Two residuals against the backend's own derivation, both in the direction of missing a
-// refusal rather than inventing one, and both matching what the gate already misses: the
-// recursive gitdir scan for submodules and linked worktrees is not run (it needs the
-// sandbox's own directory seams), and neither is the redirected-workspace-shield refusal,
-// which does not go through Contains at all.
+// The recursive gitdir scan for submodules and linked worktrees is run here too, which the
+// gate declines to do: the gate may miss a refusal, but a proposal holding one is a
+// manifest that dies at its first step. The redirected-shield refusal does not go through
+// Contains, so withholdRunRefused asks it separately over these same rules.
 func workspaceShields(writes []string) []denylist.Rule {
 	var rules []denylist.Rule
 	seen := map[string]bool{}
@@ -163,10 +162,100 @@ func workspaceShields(writes []string) []denylist.Rule {
 			rules = append(rules, denylist.WorkspaceGitfile(root)...)
 		} else {
 			rules = append(rules, denylist.Workspace(root)...)
+			rules = append(rules, gitDirShields(root)...)
 		}
 	}
 	return rules
 }
+
+// gitDirShields is the backend's gitdir scan (internal/linux gitDirShields) over the host:
+// the hooks, config and config.worktree of every submodule gitdir under .git/modules, the
+// config.worktree of every linked worktree, a rule on every symlinked entry the walk
+// declines to follow, and a whole-subtree rule where the walk cannot see (unreadable, or
+// past the depth bound). It walks every real directory rather than only identified
+// gitdirs for the backend's reason: where to walk must not be decided by content the run
+// can write. It has to answer exactly as the backend does, since a rule missing here is a
+// refused grant proposed.
+func gitDirShields(checkout string) []denylist.Rule {
+	var rules []denylist.Rule
+	failClosed := func(d string) {
+		if isDirFollowingLinks(d) {
+			rules = append(rules, denylist.Rule{Path: d, Deny: denylist.DenyWrite, Dir: true})
+		}
+	}
+	redirected := func(path string) {
+		if _, err := os.Lstat(path); err == nil && pathresolve.Existing(path) != path {
+			rules = append(rules, denylist.Rule{Path: path, Deny: denylist.DenyWrite, Dir: true})
+		}
+	}
+	// names are the real subdirectories, links the symlinked entries, as the backend's
+	// hostListDir splits them.
+	listDir := func(d string) (names, links []string, ok bool) {
+		entries, err := os.ReadDir(d)
+		for _, e := range entries {
+			switch {
+			case e.IsDir():
+				names = append(names, e.Name())
+			case e.Type()&os.ModeSymlink != 0:
+				links = append(links, e.Name())
+			}
+		}
+		return names, links, err == nil
+	}
+	linkRules := func(d string, links []string) {
+		for _, name := range links {
+			rules = append(rules, denylist.Rule{Path: filepath.Join(d, name), Deny: denylist.DenyWrite, Dir: true})
+		}
+	}
+	worktreeConfigs := func(gd string) {
+		wt := filepath.Join(gd, "worktrees")
+		redirected(wt)
+		names, links, ok := listDir(wt)
+		if !ok {
+			failClosed(wt)
+			return
+		}
+		for _, name := range names {
+			rules = append(rules, denylist.Rule{Path: filepath.Join(wt, name, "config.worktree"), Deny: denylist.DenyWrite})
+		}
+		linkRules(wt, links)
+	}
+	var walk func(d string, depth int)
+	walk = func(d string, depth int) {
+		if depth > maxGitdirDepth {
+			failClosed(d)
+			return
+		}
+		cfg := filepath.Join(d, "config")
+		if _, err := os.Lstat(cfg); err == nil && !isDirFollowingLinks(cfg) {
+			rules = append(rules,
+				denylist.Rule{Path: cfg, Deny: denylist.DenyWrite},
+				denylist.Rule{Path: filepath.Join(d, "hooks"), Deny: denylist.DenyWrite, Dir: true},
+				denylist.Rule{Path: filepath.Join(d, "config.worktree"), Deny: denylist.DenyWrite},
+			)
+			worktreeConfigs(d)
+		}
+		names, links, ok := listDir(d)
+		if !ok {
+			failClosed(d)
+			return
+		}
+		linkRules(d, links)
+		for _, name := range names {
+			walk(filepath.Join(d, name), depth+1)
+		}
+	}
+	modules := filepath.Join(checkout, ".git", "modules")
+	redirected(modules)
+	walk(modules, 0)
+	worktreeConfigs(filepath.Join(checkout, ".git"))
+	return rules
+}
+
+// maxGitdirDepth is the backend's bound of the same name, and has to stay equal to it: a
+// smaller one fails closed on a subtree the run shields rule by rule, and a larger one
+// walks past where the run stopped seeing.
+const maxGitdirDepth = 64
 
 // isDirFollowingLinks is the backend's isDir seam: a symlink to a directory is a
 // directory, which is what decides whether a .git entry is a checkout's own or a gitfile
@@ -338,7 +427,8 @@ type refusedGrant struct {
 	Problem string
 }
 
-// withholdRunRefused removes from p every grant gate.Refusals names, which is the whole of
+// withholdRunRefused removes from p the write grants withholdRedirectedWorkspace names,
+// and every grant gate.Refusals names, which is the whole of
 // the backend's checkGrants the gate can answer: a looping grant, one landing on a managed
 // mount (/dev/shm, /dev/pts - the clamps above catch the other three only as an accident of
 // isBroadDir), a write that is a file, a write the invoker cannot stat, a write of the root.
@@ -356,6 +446,44 @@ type refusedGrant struct {
 // Grants are passed as the proposal spells them, not resolved: each of the non-shield checks
 // resolves for itself, and pre-resolving would change what the shield mirrors answer.
 func withholdRunRefused(p *policy.Policy) []refusedGrant {
+	refused := withholdRedirectedWorkspace(p)
+	return append(refused, withholdGateRefused(p)...)
+}
+
+// withholdRedirectedWorkspace removes the write grants checkWorkspaceShieldNotRedirected
+// refuses: a directory grant one of whose checkout-derived shields a symlinked component
+// redirects, so the shield would bind on the link's target while the host keeps walking
+// the link's own name inside the grant. The gate cannot ask it without walking the grants,
+// and it never goes through Contains, so nothing else between the observer and the
+// manifest does.
+func withholdRedirectedWorkspace(p *policy.Policy) []refusedGrant {
+	var refused []refusedGrant
+	var kept []string
+	for _, w := range p.Write {
+		if problem := redirectedWorkspaceProblem(w); problem != "" {
+			refused = append(refused, refusedGrant{Kind: "write", Path: w, Problem: problem})
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	p.Write = kept
+	return refused
+}
+
+func redirectedWorkspaceProblem(w string) string {
+	if w == "/" || !isDirFollowingLinks(w) {
+		return ""
+	}
+	for _, r := range workspaceShields([]string{w}) {
+		if real := pathresolve.Existing(r.Path); real != r.Path {
+			return fmt.Sprintf("it shields %q, but a symlinked directory component redirects that to %q, so the shield would bind on the target while the link's own name stays writable inside the grant", r.Path, real)
+		}
+	}
+	return ""
+}
+
+// withholdGateRefused is the gate.Refusals half of withholdRunRefused.
+func withholdGateRefused(p *policy.Policy) []refusedGrant {
 	// The whole proposal first, so the ordinary clean case pays for one walk of the
 	// credential stores rather than one per grant; the per-grant probes below are only for
 	// attributing a refusal back to the grant that earned it.

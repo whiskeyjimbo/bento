@@ -9,6 +9,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // The profiler clamp against the shield corpus (see internal/shieldcorpus). The
@@ -21,9 +22,9 @@ import (
 // it: a grant the run refuses must not be proposed, since the reviewer would approve a
 // manifest that cannot run. Two documented departures are carried on the case: OptInRead,
 // which the run honors but a draft manifest should not arrive holding, and ClampKeeps for
-// a grant that merely contains a shield, which the run re-shields the interior of. Two more
-// are read off the verdict below, because they hold for the shape rather than the case.
-// WorkspaceDerived is NOT one of the four: the clamp derives the checkout shields
+// a grant that merely contains a shield, which the run re-shields the interior of. A third
+// is read off the verdict below, because it holds for the shape rather than the case.
+// WorkspaceDerived is NOT one of the three: the clamp derives the checkout shields
 // under its write grants itself, so a refusal the run raises from one is a drop here too.
 func TestShieldCorpusClampDrops(t *testing.T) {
 	for _, c := range shieldcorpus.Cases {
@@ -44,14 +45,17 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 				reads = []string{g}
 			}
 			keptReads, keptWrites, dropped, writeShielded := clampShieldedGrants(set, reads, writes)
+			// The redirected-shield refusal never goes through Contains, so it is asked
+			// separately, as clampProposal does.
+			redirected := &policy.Policy{Write: keptWrites}
+			if refused := withholdRedirectedWorkspace(redirected); len(refused) > 0 {
+				writeShielded = append(writeShielded, refused[0].Path)
+			}
+			keptWrites = redirected.Write
 
-			// WorkspaceRedirected is the third departure, and the one the clamp cannot
-			// close: the refusal never goes through Contains, so no clamp built on the
-			// shield set reaches it, and the grant is kept.
 			wantDropped := (c.Verdict != shieldcorpus.Honored || c.OptInRead) &&
-				!c.ClampKeeps && c.Verdict != shieldcorpus.WorkspaceRedirected &&
-				c.Verdict != shieldcorpus.AboveWriteShield
-			// The fourth departure, and the only one whose answer is neither keep nor drop:
+				!c.ClampKeeps && c.Verdict != shieldcorpus.AboveWriteShield
+			// The third departure, and the only one whose answer is neither keep nor drop:
 			// a grant containing a DenyWrite shield is kept - dropping it would withhold
 			// write: ~/.pyenv from every full-tier proposal - and reported, so the reviewer
 			// is told the manifest cannot run degraded. Asserted here rather than left to the
