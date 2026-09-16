@@ -510,9 +510,6 @@ type policyJSON struct {
 	// such a target, so no rule carries the variable as its Source and the count reads like
 	// an ordinary host's while the store it moved is left unshielded.
 	UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
-	// Relocatable says whether every path anchors to the manifest's own directory, with
-	// PinnedPaths naming the ones that do not. A pointer because absent is the third
-	// answer, as it is for Runnable: the question is only asked under --relocatable.
 	// The judgements approve raises before stamping, so a gate reading fields sees what a
 	// reader of either command's prompt does. Absent where the grants could not be resolved,
 	// since none of them was asked.
@@ -522,6 +519,9 @@ type policyJSON struct {
 	BroadReadGrants          []string `json:"broad_read_grants,omitempty"`
 	BroadWriteGrants         []string `json:"broad_write_grants,omitempty"`
 
+	// Relocatable says whether every path anchors to the manifest's own directory, with
+	// PinnedPaths naming the ones that do not. A pointer because absent is the third
+	// answer, as it is for Runnable: the question is only asked under --relocatable.
 	Relocatable *bool    `json:"relocatable,omitempty"`
 	PinnedPaths []string `json:"pinned_paths,omitempty"`
 }

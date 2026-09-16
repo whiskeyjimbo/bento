@@ -94,13 +94,13 @@ R = run.
 - **F2b - AboveWriteShield (A15) and credential alias (A21).** Documented narrowings, forbidden
   under the invariant as given. The A15 strict pass is VERIFIED BY SPIKE, and the degraded refusal
   is VERIFIED BY READING (degraded.go:61). A21 is VERIFIED BY READING.
-- **F3 - carve refusal has no REFUSED line (A20, human output). WRONG.** `writePolicySummary`
+- **F3 - carve refusal has no REFUSED line (A20, human output). WRONG, now FIXED.** `writePolicySummary`
   (validate.go:686, 693) calls each problem function by name and leaves out `ShieldCarveProblems`.
   So `validate --strict` prints `grants: NO - the grants marked REFUSED above` with no REFUSED line
   anywhere. The exit code is right. validate.go:788-791 says the "marked above" claim has to hold
   for every kind. VERIFIED BY SPIKE. FIXED: the summary now marks it beside the write grant.
 - **F4 - `validate --json` doesn't carry the self-write, /tmp or broad-grant callouts (Grid B).
-  UNHANDLED.** approve and human validate raise them, but `policyJSON` (validate.go:424-517) has
+  UNHANDLED, now FIXED.** approve and human validate raise them, but `policyJSON` (validate.go:424-517) has
   no field for any of them. A CI gate reading the envelope can't see "write covers the manifest
   itself". VERIFIED BY READING. FIXED: `writes_covering_manifest`, `writes_covering_entrypoint`,
   `tmp_grants`, `broad_read_grants` and `broad_write_grants`.
