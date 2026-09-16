@@ -349,7 +349,8 @@ func judgedDegradations(r Report) []LayerStatus {
 // Only core layers outside strict, because that is what admission gates on: a
 // hardening layer the backend downgraded mid-run was never grounds to refuse the run,
 // so it is not grounds to fault the completed one either. The requested-limits check is
-// the one exception, and it rides along with the default branch for the same reason it
+// the one exception, and it rides along with the default branch (and with --allow-degraded
+// when a run id is set, as admitRunID refuses it) for the same reason it
 // refuses at admission: a limit the manifest asked for protects the *host*, and a
 // controller found undelegated only once the scope exists is the same unbounded target
 // arriving late. The identical state at admission refuses, so the completed run must
