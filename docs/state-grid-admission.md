@@ -119,3 +119,9 @@ and assert report-only never faults. A second loop over filesystem state x postu
 `len(r.forLayers(BaselineLayers()).Degradations()) == 0` implies `o.admit(...) == nil`.
 Keep the Layer list in the test next to a guard that fails when a constant is missing, so a
 new layer forces an edit. C1 gets its own case once its intended behavior is decided.
+
+## Status, 2026-09-16
+
+C1 is fixed: postRunShortfall faults an unenforced requested limit under --allow-degraded when
+a run id is set (f45da41). TestAdmissionAndPostRunShortfallAgree (0d0cde5) walks the whole
+grid, C1 included, and TestARequirableLayerIsNeverReportOnly pins the ReportOnly coupling.

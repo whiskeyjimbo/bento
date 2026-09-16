@@ -192,3 +192,10 @@ Widening half, per input, inside package profile for FuzzProfileSynthesize: each
 cannot be asserted there (clampProposal is package main).
 
 Permanent corpus seeds: A10 (gitdir hooks write), A11 (redirected .vscode), A12 (0555 dir write).
+
+## Status, 2026-09-16
+
+A10 and A11 are fixed: the clamp withholds gitdir-scan shields and redirected workspace shields,
+judged on the resolved grant (21dc076, 4817490), with corpus cases in shieldcorpus. C4 is called
+out as a listed-directory note (02b41bc). FuzzProfileSynthesize asserts the exact widening
+(f4b1aa0). A12 remains open with the gate gap.

@@ -86,3 +86,10 @@ mostly decides what is REPORTED; the arm column is where disclosure can drop.
 - Non-amd64 degraded paths (prerequisites refuse there).
 - Exec from write grants: both tiers appear to permit; bwrap mount flags not traced.
 - Readdir of a parent outside grants (stat succeeded in the spike; readdir not tested).
+
+## Status, 2026-09-16
+
+Limits: the degraded tier attests its scope and downgrades unapplied limits (3cc71f9).
+Metadata: disclosed in the filesystem layer's Consequences rather than blocked (d39a454,
+3771cee), because seccomp cannot scope chmod/utimensat/setxattr to paths and granted
+workspaces need them. The operations themselves remain possible outside the grants.
