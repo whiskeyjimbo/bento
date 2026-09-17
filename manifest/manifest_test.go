@@ -1,10 +1,12 @@
 package manifest
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -752,5 +754,163 @@ func TestMarshalRefusesAnOversizeDocument(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("the refusal must name the size, so an operator knows it is not a bad grant: %v", err)
+	}
+}
+
+// rep builds n path/arg elements from a format taking one int, so a table row can name
+// the shape it is testing rather than spelling out a list. n == 0 yields the empty
+// non-nil slice, which is a shape of its own: omitempty collapses it with absent.
+func rep(n int, format string) []string {
+	out := []string{}
+	for i := range n {
+		out = append(out, fmt.Sprintf(format, i))
+	}
+	return out
+}
+
+// The shape dimension of the Marshal/Parse pair, which the round-trip fuzzer cannot
+// reach: its tuple is fixed, so every list it builds holds exactly one element and
+// nil, empty and multi-element never occur. Those are finite and enumerated here.
+//
+// The oracle is deliberately NOT reflect.DeepEqual on the policy. Two shapes read back
+// normalized by design - an empty slice comes back nil because omitempty cannot tell it
+// from absent, and both mean deny (policy's package doc) - so DeepEqual would fail rows
+// the format intends. What must hold is that no grant moved and the provenance survived:
+// the fingerprint covers the scalars and the canonical exec mode, slices.Equal covers each
+// list's contents AND order while treating nil and empty as the one thing they mean (the
+// fingerprint sorts env, read, write and network, so it is blind to order on exactly the
+// fields where a multi-element row is interesting).
+func TestMarshalRoundTripsEveryShape(t *testing.T) {
+	t.Parallel()
+
+	base := func() *policy.Policy {
+		return &policy.Policy{Entrypoint: "/app/run.py", Interpreter: "python3", Exec: policy.ExecNone}
+	}
+	tests := []struct {
+		name  string
+		shape func(*policy.Policy)
+		prov  Provenance
+	}{
+		{name: "everything absent", shape: func(*policy.Policy) {}},
+
+		{name: "args nil", shape: func(p *policy.Policy) { p.Args = nil }},
+		{name: "args empty", shape: func(p *policy.Policy) { p.Args = []string{} }},
+		{name: "args one", shape: func(p *policy.Policy) { p.Args = rep(1, "--flag%d") }},
+		{name: "args many", shape: func(p *policy.Policy) { p.Args = rep(4, "--flag%d") }},
+
+		{name: "interpreter_args nil", shape: func(p *policy.Policy) { p.InterpreterArgs = nil }},
+		{name: "interpreter_args empty", shape: func(p *policy.Policy) { p.InterpreterArgs = []string{} }},
+		{name: "interpreter_args one", shape: func(p *policy.Policy) { p.InterpreterArgs = rep(1, "-X%d") }},
+		{name: "interpreter_args many", shape: func(p *policy.Policy) { p.InterpreterArgs = rep(4, "-X%d") }},
+
+		{name: "env nil", shape: func(p *policy.Policy) { p.Env = nil }},
+		{name: "env empty", shape: func(p *policy.Policy) { p.Env = []string{} }},
+		{name: "env one", shape: func(p *policy.Policy) { p.Env = rep(1, "VAR%d") }},
+		{name: "env many", shape: func(p *policy.Policy) { p.Env = rep(4, "VAR%d") }},
+
+		{name: "read nil", shape: func(p *policy.Policy) { p.Read = nil }},
+		{name: "read empty", shape: func(p *policy.Policy) { p.Read = []string{} }},
+		{name: "read one", shape: func(p *policy.Policy) { p.Read = rep(1, "/data/%d") }},
+		{name: "read many", shape: func(p *policy.Policy) { p.Read = rep(4, "/data/%d") }},
+
+		{name: "write nil", shape: func(p *policy.Policy) { p.Write = nil }},
+		{name: "write empty", shape: func(p *policy.Policy) { p.Write = []string{} }},
+		{name: "write one", shape: func(p *policy.Policy) { p.Write = rep(1, "/out/%d") }},
+		{name: "write many", shape: func(p *policy.Policy) { p.Write = rep(4, "/out/%d") }},
+
+		{name: "network nil", shape: func(p *policy.Policy) { p.Network = nil }},
+		{name: "network empty", shape: func(p *policy.Policy) { p.Network = []policy.NetworkRule{} }},
+		{name: "network one", shape: func(p *policy.Policy) {
+			p.Network = []policy.NetworkRule{{Host: "a.example.com", Port: "443"}}
+		}},
+		{name: "network many", shape: func(p *policy.Policy) {
+			p.Network = []policy.NetworkRule{
+				{Host: "a.example.com", Port: "443"},
+				{Host: ".example.org", Port: "1-1024"},
+				{Host: "10.0.0.1", Port: "8080"},
+			}
+		}},
+
+		{name: "limits zero", shape: func(p *policy.Policy) { p.Limits = policy.Limits{} }},
+		// PIDs alone writes memory: "" and cpu: "" beside it, because the block is a
+		// pointer and the two scalars are not omitempty.
+		{name: "limits pids only", shape: func(p *policy.Policy) { p.Limits = policy.Limits{PIDs: 32} }},
+		{name: "limits memory only", shape: func(p *policy.Policy) { p.Limits = policy.Limits{Memory: "128M"} }},
+		{name: "limits cpu only", shape: func(p *policy.Policy) { p.Limits = policy.Limits{CPU: "50%"} }},
+		{name: "limits full", shape: func(p *policy.Policy) {
+			p.Limits = policy.Limits{Memory: "128M", CPU: "50%", PIDs: 32}
+		}},
+
+		{name: "provenance zero", shape: func(*policy.Policy) {}, prov: Provenance{}},
+		{name: "provenance partial", shape: func(*policy.Policy) {}, prov: Provenance{GeneratedBy: "bento profile"}},
+		{
+			name:  "provenance blocked-hosts only",
+			shape: func(*policy.Policy) {},
+			prov:  Provenance{BlockedHosts: []string{"a.example.com:443", "b.example.com:80"}},
+		},
+		{
+			name:  "provenance blocked-hosts empty",
+			shape: func(*policy.Policy) {},
+			prov:  Provenance{GeneratedBy: "bento profile", BlockedHosts: []string{}},
+		},
+		{
+			name:  "provenance full",
+			shape: func(*policy.Policy) {},
+			prov: Provenance{
+				GeneratedBy: "bento approve", GeneratedAt: "2026-07-26T00:00:00Z",
+				Approves: strings.Repeat("a", 64), BlockedHosts: []string{"a.example.com:443"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := base()
+			tc.shape(p)
+
+			b, err := Marshal(p, tc.prov)
+			if err != nil {
+				t.Fatalf("Marshal refused a shape policy.Validate accepts: %v", err)
+			}
+			// A provenance block carrying nothing must leave no key behind, or every
+			// manifest bento writes grows an empty stanza a reviewer has to read past.
+			if tc.prov.isZero() && bytes.Contains(b, []byte("provenance:")) {
+				t.Errorf("an empty provenance block was written out:\n%s", b)
+			}
+			doc, err := Parse(bytes.NewReader(b))
+			if err != nil {
+				t.Fatalf("Parse rejected what Marshal wrote:\n%s\nerror: %v", b, err)
+			}
+			if got, want := doc.Policy.Fingerprint(), p.Fingerprint(); got != want {
+				t.Errorf("the fingerprint changed across the round trip, so a grant moved:\nbefore %+v\nafter  %+v\nmanifest:\n%s", p, doc.Policy, b)
+			}
+			// Order and element identity, which the fingerprint sorts away on env,
+			// read, write and network. nil and empty compare equal, which is the one
+			// normalization the format intends.
+			for _, l := range []struct {
+				field       string
+				before, got []string
+			}{
+				{"args", p.Args, doc.Policy.Args},
+				{"interpreter_args", p.InterpreterArgs, doc.Policy.InterpreterArgs},
+				{"env", p.Env, doc.Policy.Env},
+				{"read", p.Read, doc.Policy.Read},
+				{"write", p.Write, doc.Policy.Write},
+			} {
+				if !slices.Equal(l.before, l.got) {
+					t.Errorf("%s did not survive the round trip in order:\nbefore %q\nafter  %q\nmanifest:\n%s", l.field, l.before, l.got, b)
+				}
+			}
+			if !slices.Equal(p.Network, doc.Policy.Network) {
+				t.Errorf("network did not survive the round trip in order:\nbefore %+v\nafter  %+v\nmanifest:\n%s", p.Network, doc.Policy.Network, b)
+			}
+			if doc.Provenance.GeneratedBy != tc.prov.GeneratedBy ||
+				doc.Provenance.GeneratedAt != tc.prov.GeneratedAt ||
+				doc.Provenance.Approves != tc.prov.Approves ||
+				!slices.Equal(doc.Provenance.BlockedHosts, tc.prov.BlockedHosts) {
+				t.Errorf("the provenance did not survive the round trip:\nbefore %+v\nafter  %+v\nmanifest:\n%s", tc.prov, doc.Provenance, b)
+			}
+		})
 	}
 }
