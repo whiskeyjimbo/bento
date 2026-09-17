@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestDoctorJSONCarriesPlatformIndependentOfReady(t *testing.T) {
 	clean.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 
 	onPlatform(t, "linux/arm64")
-	dj := toDoctorJSON(clean, nil)
+	dj := toDoctorJSON(clean, nil, nil)
 	if dj.Platform != "linux/arm64" || dj.PlatformVerified {
 		t.Errorf("platform must be named and marked unverified; got %q verified=%v", dj.Platform, dj.PlatformVerified)
 	}
@@ -77,7 +78,7 @@ func TestDoctorJSONCarriesPlatformIndependentOfReady(t *testing.T) {
 	}
 
 	onPlatform(t, verifiedPlatform)
-	if dj := toDoctorJSON(clean, nil); !dj.PlatformVerified {
+	if dj := toDoctorJSON(clean, nil, nil); !dj.PlatformVerified {
 		t.Errorf("%s must be reported verified; got %+v", verifiedPlatform, dj)
 	}
 }
@@ -208,7 +209,7 @@ func TestDoctorJSONReadyMirrorsGate(t *testing.T) {
 	var netOnly enforce.Report
 	netOnly.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 	netOnly.Add(enforce.LayerNetwork, enforce.Unavailable, "no egress stack")
-	dj := toDoctorJSON(netOnly, nil)
+	dj := toDoctorJSON(netOnly, nil, nil)
 	if !dj.Ready {
 		t.Error("a network-only shortfall must still be ready (exit 0)")
 	}
@@ -218,7 +219,7 @@ func TestDoctorJSONReadyMirrorsGate(t *testing.T) {
 
 	var fsShort enforce.Report
 	fsShort.Add(enforce.LayerFilesystem, enforce.Degraded, "landlock-only")
-	if toDoctorJSON(fsShort, nil).Ready {
+	if toDoctorJSON(fsShort, nil, nil).Ready {
 		t.Error("a filesystem shortfall must not be ready")
 	}
 }
@@ -235,14 +236,14 @@ func TestDoctorJSONReportsAnUnanchorableHost(t *testing.T) {
 	var clean enforce.Report
 	clean.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 
-	dj := toDoctorJSON(clean, errors.New("denylist: no usable home directory"))
+	dj := toDoctorJSON(clean, nil, errors.New("denylist: no usable home directory"))
 	if dj.Ready {
 		t.Error("a host whose shields cannot be anchored refuses every run, so it is not ready")
 	}
 	if !strings.Contains(dj.ShieldAnchors, "no usable home directory") {
 		t.Errorf("the reason must reach the machine surface; got %q", dj.ShieldAnchors)
 	}
-	if got := toDoctorJSON(clean, nil); got.ShieldAnchors != "" {
+	if got := toDoctorJSON(clean, nil, nil); got.ShieldAnchors != "" {
 		t.Errorf("a host that anchors must carry no reason; got %q", got.ShieldAnchors)
 	}
 }
@@ -267,5 +268,37 @@ func TestDegradedSummaryNamesEveryLimitsLayer(t *testing.T) {
 	}
 	if strings.Contains(got, "runs with the gap reported") {
 		t.Errorf("every limits layer refuses, so nothing runs with a gap; got %q", got)
+	}
+}
+
+// doctor's human output names where the shields anchor and every host fact that moves
+// them, and a CI gate reading --json has no other way to see those while ready is true.
+func TestDoctorJSONCarriesTheShieldAnchorFacts(t *testing.T) {
+	var clean enforce.Report
+	clean.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	home := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", "run/user/1000")
+	t.Setenv("GNUPGHOME", home)
+	pureLookup(t, false)
+
+	dj := toDoctorJSON(clean, []string{home}, nil)
+	if !dj.Ready {
+		t.Fatal("these facts are notes, not a shortfall; ready must stay true")
+	}
+	if !slices.Equal(dj.ShieldAnchorHomes, []string{home}) {
+		t.Errorf("shield_anchor_homes = %v, want %q", dj.ShieldAnchorHomes, home)
+	}
+	if dj.UnshieldableRuntimeDir != "run/user/1000" {
+		t.Errorf("unshieldable_runtime_dir = %q, want the raw relative value", dj.UnshieldableRuntimeDir)
+	}
+	if dj.UnshieldableRelocations["GNUPGHOME"] != home {
+		t.Errorf("unshieldable_relocations = %v, want GNUPGHOME -> %q", dj.UnshieldableRelocations, home)
+	}
+	if !dj.LibcNSSPasswdLookup {
+		t.Error("libc_nss_passwd_lookup = false on an NSS build")
+	}
+	pureLookup(t, true)
+	if toDoctorJSON(clean, []string{home}, nil).LibcNSSPasswdLookup {
+		t.Error("libc_nss_passwd_lookup = true on the supported build")
 	}
 }

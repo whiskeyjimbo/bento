@@ -54,7 +54,7 @@ func newDoctorCmd() *cobra.Command {
 			// carries that: newSandbox fails before any tier is chosen, so Probe never sees
 			// it. Asked here so the machine surface and the exit code say what the human
 			// output on the same invocation already does.
-			_, anchorErr := denylist.HomeAnchors()
+			anchors, anchorErr := denylist.HomeAnchors()
 
 			// doctor exits non-zero only for a shortfall in a guarantee EVERY run needs,
 			// so a CI wrapper can gate on baseline host readiness without parsing output.
@@ -74,7 +74,7 @@ func newDoctorCmd() *cobra.Command {
 			shortfall := len(gatedShortfall(report)) > 0
 
 			if asJSON {
-				if err := writeJSON(os.Stdout, toDoctorJSON(report, anchorErr)); err != nil {
+				if err := writeJSON(os.Stdout, toDoctorJSON(report, anchors, anchorErr)); err != nil {
 					return err
 				}
 				if shortfall || anchorErr != nil {
@@ -138,19 +138,47 @@ func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 	return out
 }
 
+// doctorOutputJSON is doctor's envelope on a probed host: the matrix and verdict, and the
+// facts writeShieldAnchors prints about where the credential shields land, each under
+// the key validate or run already gives the same fact.
+type doctorOutputJSON struct {
+	doctorJSON
+	// ShieldAnchorHomes are the homes the shields anchor on, absent where they cannot be.
+	ShieldAnchorHomes []string `json:"shield_anchor_homes,omitempty"`
+	// NoUsablePasswdHome says $HOME is the only anchor, so whoever sets the environment
+	// decides where the shields land.
+	NoUsablePasswdHome bool `json:"no_usable_passwd_home,omitempty"`
+	// LibcNSSPasswdLookup says the passwd lookup behind the anchors runs through the
+	// host's NSS modules, which a caller can steer.
+	LibcNSSPasswdLookup     bool              `json:"libc_nss_passwd_lookup,omitempty"`
+	UnshieldableRuntimeDir  string            `json:"unshieldable_runtime_dir,omitempty"`
+	UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
+}
+
 // toDoctorJSON builds the doctor JSON output. Ready derives from the same
 // gatedShortfall and anchor error as the exit code, so the field a JSON consumer reads
 // and the process status a shell caller reads can never disagree.
-func toDoctorJSON(r enforce.Report, anchorErr error) doctorJSON {
-	var anchors string
+func toDoctorJSON(r enforce.Report, anchors []string, anchorErr error) doctorOutputJSON {
+	out := doctorOutputJSON{
+		doctorJSON: doctorJSON{
+			reportJSON:       toReportJSON(r),
+			Ready:            len(gatedShortfall(r)) == 0 && anchorErr == nil,
+			Platform:         platformName(),
+			PlatformVerified: platformVerified(),
+		},
+		// Said in both branches, as the human output does: a passwd lookup made to fail is
+		// how an NSS build loses its anchor.
+		LibcNSSPasswdLookup: !pureUserLookup,
+	}
 	if anchorErr != nil {
-		anchors = anchorErr.Error()
+		out.ShieldAnchors = anchorErr.Error()
+		return out
 	}
-	return doctorJSON{
-		reportJSON:       toReportJSON(r),
-		Ready:            len(gatedShortfall(r)) == 0 && anchorErr == nil,
-		ShieldAnchors:    anchors,
-		Platform:         platformName(),
-		PlatformVerified: platformVerified(),
+	out.ShieldAnchorHomes = anchors
+	if pw := denylist.PasswdHome(); pw == "" || pw == "/" {
+		out.NoUsablePasswdHome = true
 	}
+	out.UnshieldableRuntimeDir = denylist.UnshieldableRuntimeDir(anchors)
+	out.UnshieldableRelocations = denylist.UnshieldableRelocations(anchors)
+	return out
 }
