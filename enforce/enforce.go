@@ -300,7 +300,7 @@ type ExecRecord struct {
 	// "nothing was watching" are different answers.
 	Watched bool
 	Reason  string
-	// Complete is whether no exec can have gone unrecorded, not whether the record reached
+	// Complete is whether the record can be trusted as every exec the run made, not whether it reached
 	// its end marker: a recorder that lost or never attached to its target still writes
 	// the marker, and a watched record with no runs lost at least the target itself. The
 	// recorder is deliberately not allowed to kill the run it observes, so a partial
