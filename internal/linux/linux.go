@@ -94,9 +94,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 
 	report := e.Probe(ctx)
 
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, _, err := resolveBwrap()
 	if err != nil {
-		return enforce.Result{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
+		return enforce.Result{}, fmt.Errorf("linux: %w", err)
 	}
 	// A gate forces the egress stack up even with zero rules: a supervised run with
 	// no manifest network means "prompt on every host", so the proxy must exist for

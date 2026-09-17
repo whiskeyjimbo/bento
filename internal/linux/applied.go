@@ -20,6 +20,13 @@ import (
 // file, which Go places at FD 3, and bwrap passes it through to the launcher - the
 // same route the profiling observation report takes (observeReportFD), and the two
 // never coexist: profiling produces an observation, not an enforcement report.
+//
+// Nothing in the report's own bytes authenticates its writer, and nothing could: whatever
+// the host launches inherits this descriptor along with the host's argv and environment, so
+// a nonce or a shared secret would be handed to a substituted launcher with everything else.
+// The report's origin is established by resolveBwrap instead, which refuses to launch a
+// sandbox builder this uid could have replaced. parseApplied's job is narrower and stays
+// what it was: refusing content the genuine stage does not write.
 const appliedReportFD = 3
 
 // bridgeLivenessFD is the descriptor carrying the in-sandbox bridge's report of its

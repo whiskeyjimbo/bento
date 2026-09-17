@@ -59,9 +59,12 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	if !observeSupported() {
 		return profile.Observation{}, fmt.Errorf("linux: profiling is not supported on %s/%s: the observation backend is implemented for linux/amd64 only", runtime.GOOS, runtime.GOARCH)
 	}
-	bwrap, err := exec.LookPath("bwrap")
+	// The profiling launch passes the observation report on an inherited descriptor exactly
+	// as Run passes the applied-layer one, so it goes through the same provenance check: a
+	// launcher this uid could replace would write the observation the profile is built from.
+	bwrap, _, err := resolveBwrap()
 	if err != nil {
-		return profile.Observation{}, fmt.Errorf("linux: bubblewrap (bwrap) not found: %w", err)
+		return profile.Observation{}, fmt.Errorf("linux: %w", err)
 	}
 	// A limit the policy requests protects the host, and the profiled target is by
 	// construction the untrusted one, so a host that cannot apply the limits refuses

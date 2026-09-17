@@ -515,8 +515,21 @@ var pseudoFSFlags = []string{
 	"--tmpfs", "/tmp",
 }
 
+// sessionFlags detach the target from the invoking terminal, and are shared between the
+// real run (baseFlags) and the pre-run probe (canUnshare) for the same reason
+// namespaceFlags and pseudoFSFlags are: this is the whole of the bwrap tier's
+// terminal-injection defence. --new-session calls setsid(), which leaves the target with
+// no controlling terminal, and TIOCSTI is refused on a terminal that is not yours. Where
+// the degraded tier substitutes a seccomp filter and refuses fatally if it will not
+// install (degraded.go:120, :226), this tier has only the flag - so if bwrap silently
+// ignores it, a sandboxed program pushes characters into the user's shell that it reads
+// back as typed input after the run exits. The probe's canary proves from inside that it
+// took; a var rather than a literal in two places because that is how the two drift.
+var sessionFlags = []string{"--new-session"}
+
 func baseFlags() []string {
-	flags := append([]string{"--die-with-parent", "--new-session"}, namespaceFlags...)
+	flags := append([]string{"--die-with-parent"}, sessionFlags...)
+	flags = append(flags, namespaceFlags...)
 	return append(flags, pseudoFSFlags...)
 }
 
@@ -779,6 +792,31 @@ func hostResolve(path string) string {
 // answers the same way the mkdir bwrap is about to attempt will.
 func hostWritable(dir string) bool {
 	return unix.Access(dir, unix.W_OK) == nil
+}
+
+// hostWritablePrefix returns the first element of path this uid may write - the file
+// itself, or the nearest ancestor directory it could create a replacement in - and "" when
+// none of them is writable. It asks the kernel per component, like hostWritable, so an ACL
+// or a group grant answers the way the write would.
+//
+// It is the provenance test for a binary bento is about to execute and trust the report of:
+// a writable component means a program running as this user, which includes a sandboxed
+// target holding a write grant for that directory, can decide what runs. Answered for the
+// invoking uid rather than against a fixed list of system directories, so /nix/store and
+// /run/current-system/sw/bin are admitted for being root-owned rather than for being
+// spelled a way this package recognises.
+func hostWritablePrefix(path string) string {
+	if hostWritable(path) {
+		return path
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if hostWritable(dir) {
+			return dir
+		}
+		if dir == "/" || dir == "." {
+			return ""
+		}
+	}
 }
 
 // hostRootDirs lists the host's top-level entries to bind for a "/" read grant,

@@ -33,6 +33,22 @@ Attacker list (proposed, not confirmed - see "Attackers" below):
 `VERIFIED BY SPIKE` (both halves, in-process), with the escalating variant
 `UNSPIKEABLE HERE`.
 
+**RESOLVED** in `internal/linux/probe.go:466`. The resolution is unchanged -
+`exec.LookPath` still finds the binary, because a fixed list of system
+directories would refuse NixOS - but `trustLauncherPath` (`:486`) then refuses
+any path, or symlink target, one of whose components this uid may write. Both
+launch sites and the probe go through it, so a plant in a granted `bin`
+directory refuses the next run instead of unconfining it.
+
+The report's half is closed by the same check and not by anything on the
+channel. Nothing in the report's bytes can authenticate its writer: whatever the
+host launches inherits the argv and environment along with fd 3, so a nonce or a
+shared secret is handed to the forger too. Provenance of the binary is the only
+unforgeable thing, which is recorded at `internal/linux/applied.go:23`.
+`checkLauncher` (`linux.go:976`) was NOT the home, despite looking like it: it
+rules on `sb.bentoPath`, which already comes from `os.Executable()`, and two of
+its three callers run no bwrap at all.
+
 `internal/linux/linux.go:97` resolves the sandbox builder with
 `exec.LookPath("bwrap")`. Nothing verifies the image it finds:
 `checkLauncher` at `internal/linux/linux.go:976` looks like that check and is
@@ -104,6 +120,17 @@ retract a layer, so the direction that matters is the one that is open.
 
 `PARTIAL`. `VERIFIED BY READING`, with the runtime observation
 `UNSPIKEABLE HERE`.
+
+**RESOLVED** in `internal/linux/args.go:528` and `internal/linux/probe.go:607`.
+`--new-session` was hoisted out of `baseFlags` into a shared `sessionFlags`, the
+way `namespaceFlags` and `pseudoFSFlags` are shared, so `canUnshare` exercises
+the same flag the run does. The canary then proves from inside that it took, by
+reading a nonzero session id from the namespace-local procfs - a session leader
+outside the PID namespace is invisible in it and reads back as 0, so nonzero says
+the sandbox's own session leader is inside the sandbox, which only `setsid()`
+produces. Measured both ways on a working host: 1 with the flag, 0 without. A
+missing proof lands on the `unknown` verdict, which refuses the run rather than
+offering the degraded tier over an unverified fence.
 
 The degraded tier treats terminal injection as fatal: `degraded.go:120` refuses
 a run whose host cannot supply `seccomp.TerminalInjectionSupported`, and
@@ -243,7 +270,7 @@ so the launcher's is suffixed.
 
 | slug | inside / outside | who controls the outside | crossing |
 |---|---|---|---|
-| `lookpath-bwrap` | the host enforcer / the binary that builds the sandbox | anyone who can write a `PATH` directory, or set `PATH` | `internal/linux/linux.go:97` |
+| `lookpath-bwrap` | the host enforcer / the binary that builds the sandbox | anyone who can write a `PATH` directory, or set `PATH` | `internal/linux/probe.go:466` (`resolveBwrap`), reached from `linux.go:97`, `probe.go:512`, `profile.go:65` |
 | `run-launcher` | the in-sandbox stage / the namespace it woke up in | whatever built that namespace | `internal/launcher/launcher.go:108` |
 | `decodelaunch` | the in-sandbox stage / its own argv | whatever exec'd it | `internal/launcher/reexec.go:61` |
 | `parseapplied` | the host's report / fd 3 | whatever inherited fd 3 | `internal/linux/applied.go:109` |
@@ -298,11 +325,11 @@ planted fixture, `spiked` attempted against the real thing.
 
 | id | attacker | enforcement | effect | detection | grade | evidence |
 |---|---|---|---|---|---|---|
-| `lookpath-bwrap/identity-forged` | same-uid | `UNENFORCED` | a shim builds no sandbox and the run reports Enforced | `SILENT` | evidenced | `LookPath` resolved a planted shim; `internal/linux/linux.go:97`, non-check at `:976` |
+| `lookpath-bwrap/identity-forged` | same-uid | `ENFORCED` | a launcher any component of whose path this uid may write is refused, and the run with it | `LOGGED-ONLY` (the refusal names the writable component) | evidenced | `internal/linux/probe.go:486` (`trustLauncherPath`); `launchertrust_test.go`. Not `checkLauncher` at `linux.go:976`: that seam rules on `sb.bentoPath`, which comes from `os.Executable()`, and two of its three callers have no bwrap at all |
 | `lookpath-bwrap/check-bypassed` | same-uid | `PARTIAL` | four fences are re-checked from inside; eleven flags are not | `LOGGED-ONLY` (the four refusals name what they saw) | read | `verify.go:29,59,114`, `netns.go:29` against `args.go:501,513,519,662,388` |
-| `lookpath-bwrap/search-path-hijacked` | same-uid (next run) | `UNENFORCED` | a `bwrap` planted in a granted `bin` directory unconfines the next run | `SILENT` | read | `internal/linux/autoexec.go:32,63` names neither shape |
-| `lookpath-bwrap/privilege-inherited` | same-uid | `UNENFORCED` | the shim inherits fds 3 and 4, the report and liveness channels | `SILENT` | read | `internal/linux/linux.go:215`, `internal/linux/applied.go:23,30` |
-| `parseapplied/identity-forged` | same-uid (as the shim) | `UNENFORCED` | the host attests layers nothing installed | `SILENT` | evidenced | forged 3-line report parsed `complete=true landlock="yes"`; `internal/linux/applied.go:109` |
+| `lookpath-bwrap/search-path-hijacked` | same-uid (next run) | `ENFORCED` | a granted `bin` directory is by construction writable by this uid, so a `bwrap` planted in it refuses the next run instead of unconfining it | `LOGGED-ONLY` | evidenced | `internal/linux/probe.go:486`; `TestRunRefusesAUserWritableLauncher`. The auto-exec report still names neither shape (`autoexec.go:32,63`), which no longer matters for this row |
+| `lookpath-bwrap/privilege-inherited` | same-uid | `ENFORCED` | the descriptors are still inherited, but only by a launcher whose provenance was established first | `SILENT` | read | `internal/linux/probe.go:466` gates every launch that passes them; `internal/linux/applied.go:23` records why the channel's origin is rooted there and not in its bytes |
+| `parseapplied/identity-forged` | same-uid (as the shim) | `ENFORCED` (by provenance, not by content) | a forged report still parses, but only a launcher `resolveBwrap` vouched for can write one | `SILENT` | evidenced | `internal/linux/probe.go:466`; the residual is documented at `internal/linux/applied.go:23`. No authenticator on the bytes can close this: whatever the host launches shares its argv and environment, so a nonce reaches the forger too |
 | `parseapplied/state-mutated` | same-uid | `ENFORCED` | a post-marker edit voids the report rather than being accepted | `LOGGED-ONLY` | read | `internal/linux/applied.go:152,157` - monotone: claims can grow, never retract |
 | `parseapplied/path-traversal` | local-user | `ENFORCED` | a substituted file at the path cannot reach the read | `SILENT` | read | host holds the descriptor from before the child started; `internal/linux/applied.go:109`, `:90` (0600 in a 0700 per-run dir) |
 | `parseapplied/log-forgeable` | same-uid | `ENFORCED` | a newline in a detail cannot forge a record | n/a | read | `internal/launcher/applied.go:133` quotes every detail with `%q` |
@@ -311,7 +338,7 @@ planted fixture, `spiked` attempted against the real thing.
 | `run-launcher/state-mutated-tmp` | local-user | `ENFORCED` | a host `/tmp` (read and write, since `/tmp` is in the writable set) is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:29`; `verify_test.go:36` |
 | `run-launcher/state-mutated-pidns` | same-uid, as the shim | `ENFORCED` | the host process table and its `/proc` are refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:59`; `verify_test.go:90` |
 | `run-launcher/state-mutated-capbound` | same-uid, as the shim | `ENFORCED` | a non-empty bounding set, which would let the read-only binds be remounted rw, is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:114`; `verify_test.go:131` |
-| `run-launcher/state-mutated-terminal` | same-uid | `PARTIAL` | keystrokes injected into the user's shell, read as typed after the run exits | `SILENT` | read | fatal in the degraded tier at `degraded.go:120,226`; bwrap tier has only `args.go:519` and no in-sandbox check. Test probe: `internal/linux/newsession_test.go` |
+| `run-launcher/state-mutated-terminal` | same-uid | `ENFORCED` | a bwrap that did not put the sandbox in a session of its own refuses the run | `LOGGED-ONLY` | evidenced | fatal in the degraded tier at `degraded.go:120,226`; the bwrap tier now probes it from the shared `args.go:528` (`sessionFlags`) and proves it from inside at `internal/linux/probe.go:607` (`sessionProof`, a nonzero session id in the namespace-local procfs). Tests: `newsession_test.go` end to end over a real pty, and `TestTheNamespaceProbeProvesTheNewSessionTook` on every host |
 | `run-launcher/state-mutated-dev` | same-uid | `UNENFORCED` | host device nodes, gated by group membership rather than by bento | `SILENT` | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `args.go:514` |
 | `run-launcher/state-mutated-shields` | same-uid | `UNENFORCED` (conditional) | nothing, unless the run carries a broad read grant that the shield was covering; then that credential store for the run's length. A narrow-grant run has nothing for a dropped shield to uncover, and a broad grant already warns | `SILENT` | read | `args.go:318`; no in-sandbox check, and `landlock_linux.go:102` read-grants `/` |
 | `run-launcher/privilege-inherited` | same-uid (bento's embedder) | `ENFORCED` | every leaked descriptor is CLOEXEC-marked before the bridge or the target | `SILENT` | read | `internal/launcher/launcher.go:189` (`dropInheritedFDs`); `launcher_test.go:230` |

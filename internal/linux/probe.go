@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -448,11 +449,73 @@ const (
 	namespacesUnknown
 )
 
+// resolveBwrap resolves the binary that builds the sandbox and refuses one this uid could
+// have planted. It is the single resolution every bwrap launch and probe goes through: the
+// image it returns decides what the sandbox is, and it also inherits the descriptors the
+// host passes it - the applied-layer report (appliedReportFD) and the bridge liveness pipe
+// (bridgeLivenessFD) - so it, and not the report's contents, is where that report's origin
+// is established. There is no authenticator on the report that a substituted launcher could
+// not also produce: it shares this process's argv and environment, so a nonce or a shared
+// secret would be handed to the forger along with everything else. Provenance of the binary
+// is the only thing that cannot be forged from inside the sandbox, which is why it is
+// checked here rather than by looking harder at what comes back on fd 3.
+//
+// notInstalled separates the binary's absence from its provenance because the two land on
+// opposite verdicts in usableNamespaces: absence is the permissive one that offers the
+// Landlock-only tier, and a hijacked launcher must never reach it.
+func resolveBwrap() (path string, notInstalled bool, err error) {
+	p, lookErr := exec.LookPath("bwrap")
+	if lookErr != nil {
+		return "", true, fmt.Errorf("bubblewrap (bwrap) not found: %w", lookErr)
+	}
+	if err := trustLauncherPath(p); err != nil {
+		return "", false, err
+	}
+	return p, false, nil
+}
+
+// trustLauncherPath refuses a resolved launcher path that this uid may replace. Both the
+// path as resolved on PATH and its symlink target are checked, so a link that lives in a
+// root-owned directory but points into a writable one is refused for where it lands.
+//
+// Refusal rather than a warning, and refusal of the whole run: what a launcher this uid can
+// replace produces is an unconfined run with a report claiming every layer was enforced,
+// and that report is the one artifact the user reads afterwards to decide whether the run
+// was confined. Nothing downstream can recover from it, because a substituted launcher
+// never execs bento's in-sandbox stage and so none of its own re-checks run.
+func trustLauncherPath(path string) error {
+	// Root may write everywhere, which makes the question vacuous rather than answered -
+	// and an attacker who is already root does not need to plant a launcher. Refusing here
+	// would refuse every run instead of reporting anything.
+	if os.Getuid() == 0 {
+		return nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("the sandbox builder at %s cannot be resolved (%w), so nothing proves which binary would build the sandbox", path, err)
+	}
+	for _, candidate := range []string{path, resolved} {
+		writable := hostWritablePrefix(candidate)
+		if writable == "" {
+			continue
+		}
+		return fmt.Errorf("refusing to build a sandbox with %s: %s is writable by this user, so any program running as you - including a sandboxed target with a write grant for it - can replace the binary that builds the sandbox and have the run report layers it never applied. Install bubblewrap system-wide and remove %s from PATH, or unset the PATH entry that shadows it",
+			candidate, writable, filepath.Dir(candidate))
+	}
+	return nil
+}
+
 // usableNamespaces reports whether bwrap is installed and can build here the
 // namespaces and base mounts its filesystem and network confinement depend on,
 // with a reason a user can act on when it cannot.
 func usableNamespaces(ctx context.Context) (namespaceProbe, string) {
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, notInstalled, err := resolveBwrap()
+	if err != nil && !notInstalled {
+		// Unknown, not blocked: blocked is the permissive verdict that offers the
+		// Landlock-only tier, and a launcher whose provenance cannot be established is not
+		// a host that refused a namespace. The reason carries the remedy already.
+		return namespacesUnknown, err.Error()
+	}
 	if err != nil {
 		// Cause only, no verdict: every caller leads with this string and each one
 		// reaches a different conclusion from it - the network layer is unavailable,
@@ -511,6 +574,12 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	args := append([]string{}, namespaceFlags...)
 	args = append(args, "--unshare-net", "--bind", "/", "/")
 	args = append(args, pseudoFSFlags...)
+	// The terminal detachment the whole tier's terminal-injection defence rests on. It sat
+	// in baseFlags alone, so this probe never exercised it and nothing confirmed it from
+	// inside: a bwrap that swallowed the flag left the target holding the invoking
+	// terminal, and TIOCSTI from there is host command execution as the user after the run
+	// exits. Exercised from the shared sessionFlags, for the reason namespaceFlags is.
+	args = append(args, sessionFlags...)
 	args = append(args, shBinary(), "-c", namespaceCanary)
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
@@ -530,6 +599,14 @@ func canUnshare(ctx context.Context, bwrap string) error {
 		// tier, and offering a tier on a bwrap that proved nothing is the fail-open half.
 		return fmt.Errorf("bubblewrap exited successfully but the canary inside it did not report a user namespace, so nothing proves the namespaces were built (%q)", forReason(string(out)))
 	}
+	// Checked after the namespace proof so a bwrap that reports nothing at all keeps the
+	// namespace diagnosis, which is the one a user acts on. Its own reason, and deliberately
+	// not a *usernsError: nothing here is a namespace refusal, so this must not land on
+	// classifyUnshare's AppArmor diagnosis, and the fall-through's unknown refuses the run
+	// rather than offering a tier over an unverified fence.
+	if !strings.Contains(string(out), sessionProof) {
+		return fmt.Errorf("bubblewrap built the namespaces but the sandbox was not in a session of its own, so --new-session did not take and a target could inject commands into your terminal with TIOCSTI after the run exits (%q)", forReason(string(out)))
+	}
 	return nil
 }
 
@@ -547,15 +624,36 @@ func canUnshare(ctx context.Context, bwrap string) error {
 // and no netns while the report called the filesystem and network layers Enforced.
 //
 // What it does not catch: bento itself already running inside a namespace that maps one uid,
-// under a bwrap that builds nothing. That needs the wrapper AND the nesting, and the
-// deliberate version of it needs write access to a host $PATH directory, which is the same
-// premise the threat model already excludes.
+// under a bwrap that builds nothing. That needs the wrapper AND the nesting. The deliberate
+// version of it needs write access to the directory the launcher resolves out of, which is
+// resolveBwrap's business rather than this canary's - a proof read from inside cannot rule
+// on the binary that produced it.
 const namespaceProof = "bento-namespace-built"
 
 // Every step is checked, and the range is checked for BEING something as well as for not
 // being the host's: a read that fails leaves n empty, and "not the whole range" alone would
 // take that for proof - which is the fail-open direction this exists to close.
-const namespaceCanary = `read _ _ n < /proc/self/uid_map || exit 1; [ -n "$n" ] || exit 1; [ "$n" != 4294967295 ] || exit 1; echo ` + namespaceProof
+const namespaceCanary = `read _ _ n < /proc/self/uid_map || exit 1; [ -n "$n" ] || exit 1; [ "$n" != 4294967295 ] || exit 1; echo ` + namespaceProof +
+	`; read _ _ _ _ _ sid _ < /proc/self/stat && case "$sid" in '' | 0 | *[!0-9]*) ;; *) echo ` + sessionProof + `;; esac`
+
+// sessionProof is what the canary prints once it has confirmed, from inside, that
+// --new-session took. The reading is the session id in field 6 of /proc/self/stat, against
+// the fresh procfs pseudoFSFlags mounts inside the PID namespace: a session leader outside
+// that namespace is not visible in it and the kernel reports the id as 0, so a NONZERO
+// session id is the proof - it says the sandbox's own session leader is inside the sandbox,
+// which only setsid() produces. Measured both ways on a working host before it was trusted:
+// with the flag the canary reads 1, without it 0.
+//
+// It depends on the fresh procfs and on --unshare-pid, both of which canUnshare already
+// exercises from the shared lists; against the host's own /proc the reading is the host's
+// session id and the check is vacuous. Separate from namespaceProof rather than folded into
+// the same token because the two failures have different remedies and the namespace one
+// would otherwise hand a user an AppArmor diagnosis for a dropped flag.
+//
+// A failure to read leaves sid empty, and an unparseable field is not a zero: both are
+// non-proof and print nothing, which refuses. That is the fail-closed direction, since what
+// the absent fence costs is arbitrary host command execution as the user.
+const sessionProof = "bento-session-detached"
 
 type usernsError struct {
 	output string

@@ -21,11 +21,14 @@ import (
 // The bwrap tier installs no terminal-injection filter. Where the degraded tier blocks
 // TIOCSTI/TIOCLINUX with seccomp, the full tier relies entirely on bwrap's --new-session
 // calling setsid(), which leaves the target with no controlling terminal - and TIOCSTI is
-// refused on a terminal that is not yours. That flag lives in baseFlags rather than
-// namespaceFlags, so canUnshare's pre-run probe never exercises it: nothing was checking
-// the guarantee the whole tier leans on. If it ever stops holding, a sandboxed program can
+// refused on a terminal that is not yours. If it ever stops holding, a sandboxed program can
 // push characters into the terminal that the user's shell reads back as typed input after
 // the run exits.
+//
+// This asserts the guarantee end to end, over a real terminal the launching side owns, and
+// skips where the host cannot give it one. canUnshare now also proves it from inside on
+// every run, which is what covers the hosts this test can only skip on; see sessionProof and
+// TestTheNamespaceProbeProvesTheNewSessionTook below.
 //
 // Detachment is asserted through open("/dev/tty") rather than through TIOCSTI itself,
 // because that call is the definition of "do I have a controlling terminal" and it stays
@@ -178,5 +181,49 @@ func TestBwrapTierDetachesControllingTerminalHelper(t *testing.T) {
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		t.Log("SANDBOX_" + line)
+	}
+}
+
+// The test above needs a controlling terminal the launching process owns, and skips without
+// one - which is most CI runners, and every host where /dev/tty answers ENXIO. So the flag
+// the whole defence rests on was walked only where a pty was available. canUnshare now
+// exercises it from the shared sessionFlags and the canary proves from inside that it took,
+// which runs on every Run and every doctor probe on every host.
+//
+// The proof reads the session id from the fresh procfs inside the PID namespace, where a
+// session leader outside that namespace reads back as 0. Nonzero means the sandbox's own
+// session leader is inside it, which only setsid() produces.
+func TestTheNamespaceProbeProvesTheNewSessionTook(t *testing.T) {
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		skipMissingDep(t, "bwrap not installed")
+	}
+	ctx := context.Background()
+
+	// Positive control first: a proof a working host fails refuses every run here, which is
+	// worse than the gap it closes. A host that genuinely refuses the namespace skips; a
+	// probe that could not answer is the failure being guarded against, so it fails.
+	if cerr := canUnshare(ctx, bwrap); cerr != nil {
+		if ns, reason := classifyUnshare(cerr); ns == namespacesBlocked {
+			skipMissingDep(t, "this host refuses the namespace: %s", reason)
+		}
+		t.Fatalf("real bwrap did not satisfy the session proof, which would refuse every run on a working host: %v", cerr)
+	}
+
+	// The failure the check exists for: bwrap that does not detach the session, whether
+	// because the flag was dropped here or because a wrapper swallowed it.
+	orig := sessionFlags
+	sessionFlags = nil
+	t.Cleanup(func() { sessionFlags = orig })
+
+	cerr := canUnshare(ctx, bwrap)
+	if cerr == nil {
+		t.Fatal("canUnshare passed a sandbox built with no --new-session, so the target keeps the invoking terminal and TIOCSTI is host command execution as the user")
+	}
+	if !strings.Contains(cerr.Error(), "session of its own") {
+		t.Errorf("reason = %q, want it to name the missing session rather than a namespace diagnosis", cerr)
+	}
+	if ns, _ := classifyUnshare(cerr); ns != namespacesUnknown {
+		t.Errorf("ns = %v, want unknown: unknown refuses the run, where blocked would offer the degraded tier over an unverified fence", ns)
 	}
 }
