@@ -4,7 +4,9 @@ package launcher
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -187,14 +189,26 @@ func foreignDevNodes(names []string, ownMount func(string) bool) []string {
 // A leaked host /dev's own submounts, mqueue and hugepages, pass for the same reason.
 // What would close it is comparing against what the run actually granted, which means the
 // grant set reaching Config from internal/linux.
+//
+// A grant is usually nested - /dev/net/tun, /dev/dri/card0, /dev/snd/pcmC0D0p - and bwrap
+// creates the intermediate directories as plain entries of /dev's tmpfs, so only the leaf
+// is a mount. The top-level name is therefore accepted when any mount sits beneath it. A
+// leaked host /dev's own plain directories (disk, block, char, input) hold only symlinks
+// and nodes on /dev's st_dev, so they stay foreign.
 func ownMountUnderDev(devFS uint64) func(string) bool {
 	return func(name string) bool {
-		var st unix.Stat_t
-		if err := unix.Lstat(sandboxDev+"/"+name, &st); err != nil {
-			// A name bento cannot inspect is not one it may vouch for, so it stays foreign.
-			return false
-		}
-		return st.Dev != devFS
+		found := false
+		// A path bento cannot inspect is not one it may vouch for, so a walk error counts
+		// for nothing and the walk goes on, in case a sibling is the mount.
+		_ = filepath.WalkDir(sandboxDev+"/"+name, func(path string, d fs.DirEntry, walkErr error) error {
+			var st unix.Stat_t
+			if walkErr == nil && unix.Lstat(path, &st) == nil && st.Dev != devFS {
+				found = true
+				return fs.SkipAll
+			}
+			return nil
+		})
+		return found
 	}
 }
 

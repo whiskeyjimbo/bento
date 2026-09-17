@@ -45,10 +45,12 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 		args = append(args, "--dev", "/dev")
 	}
 	// Not a weakening: a policy may grant a path inside /dev, and the grant binds after
-	// baseFlags, so bwrap carves the name into the sandbox's own /dev. /dev/null stands in
-	// for the granted source because it exists on every host.
+	// baseFlags, so bwrap carves the name into the sandbox's own /dev. Nested, because
+	// that is the common shape and bwrap makes the intermediate directory a plain entry
+	// rather than a mount. /dev/null stands in for the granted source because it exists on
+	// every host.
 	if weaken == "devgrant" {
-		args = append(args, "--ro-bind", "/dev/null", "/dev/kvm")
+		args = append(args, "--ro-bind", "/dev/null", "/dev/net/tun")
 	}
 	// The host's own /tmp in place of the fresh one, which is what a shim filtering
 	// --tmpfs out of argv leaves behind - and it keeps /tmp writable, so the binary bind
