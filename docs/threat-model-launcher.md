@@ -130,7 +130,10 @@ outside the PID namespace is invisible in it and reads back as 0, so nonzero say
 the sandbox's own session leader is inside the sandbox, which only `setsid()`
 produces. Measured both ways on a working host: 1 with the flag, 0 without. A
 missing proof lands on the `unknown` verdict, which refuses the run rather than
-offering the degraded tier over an unverified fence.
+offering the degraded tier over an unverified fence. The reading is namespace-local
+and therefore vacuous against a host `/proc`, so the probe is one leg of two: the
+other is `internal/launcher/verify.go`'s `verifyPidNamespace`, which refuses at
+launch the only shape that satisfies the probe vacuously.
 
 The degraded tier treats terminal injection as fatal: `degraded.go:120` refuses
 a run whose host cannot supply `seccomp.TerminalInjectionSupported`, and
@@ -338,7 +341,7 @@ planted fixture, `spiked` attempted against the real thing.
 | `run-launcher/state-mutated-tmp` | local-user | `ENFORCED` | a host `/tmp` (read and write, since `/tmp` is in the writable set) is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:29`; `verify_test.go:36` |
 | `run-launcher/state-mutated-pidns` | same-uid, as the shim | `ENFORCED` | the host process table and its `/proc` are refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:59`; `verify_test.go:90` |
 | `run-launcher/state-mutated-capbound` | same-uid, as the shim | `ENFORCED` | a non-empty bounding set, which would let the read-only binds be remounted rw, is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:114`; `verify_test.go:131` |
-| `run-launcher/state-mutated-terminal` | same-uid | `ENFORCED` | a bwrap that did not put the sandbox in a session of its own refuses the run | `LOGGED-ONLY` | evidenced | fatal in the degraded tier at `degraded.go:120,226`; the bwrap tier now probes it from the shared `args.go:528` (`sessionFlags`) and proves it from inside at `internal/linux/probe.go:607` (`sessionProof`, a nonzero session id in the namespace-local procfs). Tests: `newsession_test.go` end to end over a real pty, and `TestTheNamespaceProbeProvesTheNewSessionTook` on every host |
+| `run-launcher/state-mutated-terminal` | same-uid | `ENFORCED` | a bwrap that did not put the sandbox in a session of its own refuses the run | `LOGGED-ONLY` | evidenced | fatal in the degraded tier at `degraded.go:120,226`; the bwrap tier now probes it from the shared `args.go:528` (`sessionFlags`) and proves it from inside at `internal/linux/probe.go:607` (`sessionProof`, a nonzero session id in the namespace-local procfs). The probe's reading is namespace-local, so it is vacuous against a host `/proc`; what refuses that shape is `internal/launcher/verify.go` (`verifyPidNamespace`) seeing the host process table at launch, so the two legs together are the fence. Tests: `newsession_test.go` end to end over a real pty, and `TestTheNamespaceProbeProvesTheNewSessionTook` on every host |
 | `run-launcher/state-mutated-dev` | same-uid | `UNENFORCED` | host device nodes, gated by group membership rather than by bento | `SILENT` | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `args.go:514` |
 | `run-launcher/state-mutated-shields` | same-uid | `UNENFORCED` (conditional) | nothing, unless the run carries a broad read grant that the shield was covering; then that credential store for the run's length. A narrow-grant run has nothing for a dropped shield to uncover, and a broad grant already warns | `SILENT` | read | `args.go:318`; no in-sandbox check, and `landlock_linux.go:102` read-grants `/` |
 | `run-launcher/privilege-inherited` | same-uid (bento's embedder) | `ENFORCED` | every leaked descriptor is CLOEXEC-marked before the bridge or the target | `SILENT` | read | `internal/launcher/launcher.go:189` (`dropInheritedFDs`); `launcher_test.go:230` |

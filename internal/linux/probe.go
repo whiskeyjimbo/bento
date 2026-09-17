@@ -465,6 +465,16 @@ const (
 // Landlock-only tier, and a hijacked launcher must never reach it.
 func resolveBwrap() (path string, notInstalled bool, err error) {
 	p, lookErr := exec.LookPath("bwrap")
+	// A relative PATH entry - "." or an empty one - resolves bwrap out of the current
+	// directory, and LookPath stops there with ErrDot rather than going on to /usr/bin. That
+	// is a provenance failure, not an absence: the binary IS installed, and the one found
+	// sits in whatever directory the invocation happened in, which for a sandboxed target
+	// holding a write grant on the project is a directory it can plant in. Reporting it as
+	// not installed would land it on the permissive verdict and tell the user to install a
+	// package they already have.
+	if errors.Is(lookErr, exec.ErrDot) {
+		return "", false, fmt.Errorf("refusing to build a sandbox with %s: PATH resolves bwrap relative to the current directory, so which binary builds the sandbox depends on where bento was run - and any program running as you can plant one there. Remove the \".\" or empty entry from PATH", p)
+	}
 	if lookErr != nil {
 		return "", true, fmt.Errorf("bubblewrap (bwrap) not found: %w", lookErr)
 	}
@@ -646,7 +656,10 @@ const namespaceCanary = `read _ _ n < /proc/self/uid_map || exit 1; [ -n "$n" ] 
 //
 // It depends on the fresh procfs and on --unshare-pid, both of which canUnshare already
 // exercises from the shared lists; against the host's own /proc the reading is the host's
-// session id and the check is vacuous. Separate from namespaceProof rather than folded into
+// session id and the check is vacuous. So this proof is the probe's half and not the whole
+// fence: a bwrap that dropped both --new-session and --proc would satisfy it here, and what
+// refuses that run is the in-sandbox stage seeing the host process table
+// (internal/launcher/verify.go, verifyPidNamespace). Neither leg alone is the guarantee. Separate from namespaceProof rather than folded into
 // the same token because the two failures have different remedies and the namespace one
 // would otherwise hand a user an AppArmor diagnosis for a dropped flag.
 //

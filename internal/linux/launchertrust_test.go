@@ -98,3 +98,30 @@ func TestResolveBwrapAcceptsTheHostsOwnBwrap(t *testing.T) {
 		t.Errorf("resolveBwrap = %q, want %q", got, bwrap)
 	}
 }
+
+// The absence of bwrap and the hijackability of the one found land on opposite verdicts, and
+// a relative PATH entry looks like the first while being the second: LookPath stops at the
+// "." entry with ErrDot instead of going on to /usr/bin, so bwrap IS installed and the one it
+// found sits in whatever directory bento happened to be run in. Reported as not installed it
+// would reach the permissive verdict - which offers the Landlock-only tier - and tell the
+// user to install a package they already have.
+func TestResolveBwrapRefusesARelativePathEntry(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bwrap"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("PATH", ".")
+
+	_, notInstalled, err := resolveBwrap()
+	if err == nil {
+		t.Fatal("resolveBwrap accepted a bwrap resolved relative to the current directory")
+	}
+	if notInstalled {
+		t.Error("a bwrap resolved out of the cwd was reported as not installed, which is the permissive verdict")
+	}
+
+	if ns, reason := usableNamespaces(context.Background()); ns != namespacesUnknown {
+		t.Errorf("ns = %v (%q), want unknown", ns, reason)
+	}
+}
