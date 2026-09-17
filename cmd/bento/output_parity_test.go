@@ -89,8 +89,8 @@ var parityRows = []parityRow{
 	{writers: []string{"writeNSSCaveat"}, fixture: "doctor", marker: "Built against libc NSS", key: "libc_nss_passwd_lookup"},
 	{writers: []string{"writeDroppedRelocations"}, fixture: "doctor", marker: "move a store where the shields cannot reach", key: "unshieldable_relocations"},
 	{writers: []string{"writeDegradedSummary"}, exempt: "D6: the refused/reported/host-only split is decided by layers[] tier and layer"},
-	{writers: []string{"writeNestedAnchors"}, exempt: "D11: not in doctor --json yet (bv2-39fgx)"},
-	{writers: []string{"writeRelocatedShields"}, exempt: "D13: not in doctor --json yet (bv2-39fgx)"},
+	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
+	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
 
 	{writers: []string{"writeJSON"}, exempt: "the encoder every --json path writes through, not a human writer"},
 }
@@ -112,6 +112,9 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 		"refusal":   parityRunRefusal,
 		"validate":  parityValidate,
 		"doctor":    parityDoctor,
+		// Rendered after "doctor", whose rows come first: the relocation it sets would
+		// otherwise reach that fixture too.
+		"doctor-relocated": parityDoctorRelocated,
 	}
 	type rendered struct {
 		human   string
@@ -282,6 +285,26 @@ func parityValidate(t *testing.T) (string, map[string]any) {
 		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
 	}
 	return human, machine
+}
+
+// parityDoctorRelocated is the host the ordinary doctor fixture cannot be: a $HOME inside
+// the passwd home, which the test cannot arrange, is passed as anchors directly, and a
+// variable moves a shield somewhere no home contains.
+func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
+	t.Setenv("HISTFILE", "/usr/bin/python3")
+	anchors := []string{"/home/u/.aws", "/home/u"}
+	var human bytes.Buffer
+	writeNestedAnchors(&human, anchors)
+	writeRelocatedShields(&human)
+	encoded, err := json.Marshal(toDoctorJSON(enforce.Report{}, anchors, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var machine map[string]any
+	if err := json.Unmarshal(encoded, &machine); err != nil {
+		t.Fatal(err)
+	}
+	return human.String(), machine
 }
 
 func parityDoctor(t *testing.T) (string, map[string]any) {

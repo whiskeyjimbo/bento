@@ -1898,17 +1898,30 @@ func writeShieldAnchors(w io.Writer) {
 // operator gets a home replaced by an empty tmpfs with nothing naming the cause. Only the
 // anchors can explain it, which is why it is said here rather than at the rule.
 func writeNestedAnchors(w io.Writer, anchors []string) {
+	for _, n := range nestedAnchors(anchors) {
+		fmt.Fprintf(w, "  %s sits inside %s, and both anchor the shields. If the inner one is\n", strconv.Quote(n.Inner), strconv.Quote(n.Outer))
+		fmt.Fprintf(w, "  a credential store bento shields whole, the run replaces it with an empty\n")
+		fmt.Fprintf(w, "  tmpfs - correct, since the credentials must stay hidden, but it means a home\n")
+		fmt.Fprintf(w, "  that reads as empty to the script. Point $HOME outside the other home to undo it.\n")
+	}
+}
+
+// anchorNesting is one anchor that sits inside another.
+type anchorNesting struct {
+	Inner string `json:"inner"`
+	Outer string `json:"outer"`
+}
+
+func nestedAnchors(anchors []string) []anchorNesting {
+	var nested []anchorNesting
 	for _, inner := range anchors {
 		for _, outer := range anchors {
-			if inner == outer || !policy.CoversResolved(outer, inner) {
-				continue
+			if inner != outer && policy.CoversResolved(outer, inner) {
+				nested = append(nested, anchorNesting{Inner: inner, Outer: outer})
 			}
-			fmt.Fprintf(w, "  %s sits inside %s, and both anchor the shields. If the inner one is\n", strconv.Quote(inner), strconv.Quote(outer))
-			fmt.Fprintf(w, "  a credential store bento shields whole, the run replaces it with an empty\n")
-			fmt.Fprintf(w, "  tmpfs - correct, since the credentials must stay hidden, but it means a home\n")
-			fmt.Fprintf(w, "  that reads as empty to the script. Point $HOME outside the other home to undo it.\n")
 		}
 	}
+	return nested
 }
 
 // writeDroppedRelocations names the variables that moved a store somewhere no shield can
@@ -1950,17 +1963,7 @@ func writeDroppedRelocations(w io.Writer, anchors []string) {
 // naming: it is set on nearly every host, but Runtime stamps it only where it points
 // somewhere other than /run, which is a real relocation and not an ordinary host.
 func writeRelocatedShields(w io.Writer) {
-	set, err := commandShieldSet()
-	if err != nil {
-		return
-	}
-	paths := map[string][]string{}
-	for _, r := range set.Builtin() {
-		if r.Source == "" {
-			continue
-		}
-		paths[r.Source] = append(paths[r.Source], r.Path)
-	}
+	paths := relocatedShields()
 	if len(paths) == 0 {
 		return
 	}
@@ -1979,6 +1982,23 @@ func writeRelocatedShields(w io.Writer) {
 	}
 	fmt.Fprintf(w, "  Nothing bounds these targets, so a variable pointing at a path the script needs\n")
 	fmt.Fprintf(w, "  hides it and the run fails naming only that path. Unset the variable to undo one.\n")
+}
+
+// relocatedShields maps each variable that moved a built-in shield to the paths it moved
+// them to. A shield set that cannot be built has nothing to say about relocation: doctor
+// reports that failure through the anchors already.
+func relocatedShields() map[string][]string {
+	set, err := commandShieldSet()
+	if err != nil {
+		return nil
+	}
+	paths := map[string][]string{}
+	for _, r := range set.Builtin() {
+		if r.Source != "" {
+			paths[r.Source] = append(paths[r.Source], r.Path)
+		}
+	}
+	return paths
 }
 
 // commonDir returns the deepest directory holding every path, for naming a group of

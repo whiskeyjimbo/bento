@@ -75,9 +75,9 @@ same class as run's pre-run notes, not counted as a cell.
 | D8 | no usable passwd home, $HOME is the only anchor | no_usable_passwd_home | HANDLED, fixed in c973708 (was UNHANDLED: the caller-steerable half of D7) | READING (same writer, branch not constructed) |
 | D9 | XDG_RUNTIME_DIR unshieldable | unshieldable_runtime_dir | HANDLED, fixed in c973708 (was UNHANDLED; validate carries it, doctor did not) | SPIKE |
 | D10 | libc NSS caveat (writeNSSCaveat) | libc_nss_passwd_lookup | HANDLED, fixed in c973708 (was UNHANDLED) | SPIKE |
-| D11 | nested anchors (writeNestedAnchors) | none | UNHANDLED, open in bv2-39fgx; exempt row in the guard | READING |
+| D11 | nested anchors (writeNestedAnchors) | nested_anchors | HANDLED; keyed row in the guard | SPIKE |
 | D12 | dropped relocations, store NOT shielded (writeDroppedRelocations) | unshieldable_relocations | HANDLED, fixed in c973708 (was UNHANDLED; validate carried unshieldable_relocations and doctor did not) | SPIKE |
-| D13 | relocated shields, variable -> path (writeRelocatedShields) | none | UNHANDLED, open in bv2-39fgx; exempt row in the guard | READING |
+| D13 | relocated shields, variable -> path (writeRelocatedShields) | relocated_shields | HANDLED; keyed row in the guard | SPIKE |
 
 ## Grid R - run result: human fact x --json event (26 cells)
 
@@ -150,7 +150,7 @@ Blast-radius order.
 6. **FIXED in 66c8850. V8, V9, V12 - validate --json drops the HOME, unset-env and loopback notes.** VERIFIED BY
    SPIKE (all three printed human, envelope carried only env and network lists).
 7. **D10, D11, D13, V3** - NSS caveat, nested anchors, relocated shields, resolved interpreter.
-   D10 fixed in c973708 and V3 fixed in 66c8850; D11 and D13 stay open.
+   D10 fixed in c973708, V3 in 66c8850, D11 and D13 via nested_anchors and relocated_shields.
    D10 VERIFIED BY SPIKE; D11, D13, V3 VERIFIED BY READING (writers with no JSON counterpart).
 8. **FIXED in 0eacfd5. Tier 2: R23, R24, R25, warnStampAtRisk** - stderr in both modes, absent from the envelope.
    VERIFIED BY READING (run.go pre-run block writes os.Stderr unconditionally; the verdict
@@ -179,7 +179,7 @@ marker, json key, or exempt reason), rendered once per fixture (run verdict, run
 unreached, run refusal, validate via the command, doctor), and TestEveryHumanWriterHasAParityRow
 is the go/ast pass. A sibling of 5c3676f rather than an extension: that guard ranges over
 gate.Runnability's fields, and these facts are prose with no struct to range over. Exempt rows:
-R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), D11/D13 (bv2-39fgx), writeJSON, and
+R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), writeJSON, and
 run's pre-run note writers, whose runNotesJSON fields are filled beside the write in newRunCmd.
 The ast pass scans render.go, validate.go and doctor.go only: approve.go, journal.go, profile.go
 and root.go writers, Grid A, and non-write* writers such as warnStampAtRisk are outside it.

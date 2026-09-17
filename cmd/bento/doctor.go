@@ -153,6 +153,9 @@ type doctorOutputJSON struct {
 	LibcNSSPasswdLookup     bool              `json:"libc_nss_passwd_lookup,omitempty"`
 	UnshieldableRuntimeDir  string            `json:"unshieldable_runtime_dir,omitempty"`
 	UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
+	NestedAnchors           []anchorNesting   `json:"nested_anchors,omitempty"`
+	// RelocatedShields maps each variable that moved a built-in shield to its new paths.
+	RelocatedShields map[string][]string `json:"relocated_shields,omitempty"`
 }
 
 // toDoctorJSON builds the doctor JSON output. Ready derives from the same
@@ -180,5 +183,7 @@ func toDoctorJSON(r enforce.Report, anchors []string, anchorErr error) doctorOut
 	}
 	out.UnshieldableRuntimeDir = denylist.UnshieldableRuntimeDir(anchors)
 	out.UnshieldableRelocations = denylist.UnshieldableRelocations(anchors)
+	out.NestedAnchors = nestedAnchors(anchors)
+	out.RelocatedShields = relocatedShields()
 	return out
 }
