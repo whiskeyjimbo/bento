@@ -306,7 +306,7 @@ func applyLayers(cfg Config, applied *appliedReport) error {
 	// contingent on the backstop, inverting the relationship. (An absent Landlock
 	// is a silent no-op inside Restrict, not an error.)
 	//
-	// Unlike the four fences above, this one is not verified from inside, and it cannot
+	// Unlike the five fences above, this one is not verified from inside, and it cannot
 	// be: every path the ruleset would deny with EACCES is already EROFS under bwrap's
 	// read-only binds, so no write the launcher can attempt distinguishes a ruleset that
 	// landed from one that did not. A probe of the sandbox root returns EROFS with or
