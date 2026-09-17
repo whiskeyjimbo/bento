@@ -40,3 +40,38 @@ Not filed, with reasons:
 - Network Unavailable refused at admission but not judged post-run (admission C2): a
   missing network namespace cannot appear mid-run.
 - File-write collapse to its directory and `exec: all` (profile C): documented widenings.
+
+## Second sweep, 2026-09-17
+
+Signals added over the first sweep: enum declarations counted against their switch and
+reference sites, build-tag and platform splits of the same file, and the human vs JSON
+output pairs that the validate grid's F4 exposed.
+
+| # | Candidate | Signals | Invariant | Grid shape | Fit | Route |
+|---|-----------|---------|-----------|------------|-----|-------|
+| 11 | Landlock ABI x right x disclosure (`internal/landlock`, `internal/linux/probe.go` Consequences) | Repeated one-at-a-time disclosures: truncate (<3), ioctl_dev (<5), TCP (<4), abstract unix (<6), resolve_unix (<9), metadata (any); ABI levels are an ordered enum | For every right the running ABI cannot restrict, the degraded filesystem or network layer's Consequences names it; nothing is claimed that the ABI lacks | ABI floor..9 x Landlock right family (fs access, truncate, ioctl, net bind/connect, scope signal/abstract, resolve_unix, metadata) ~ 30-40, collapse on ABI thresholds | Strong | grid |
+| 12 | `enforce.Layer` x its consumers (probe, applied, scopeattest, degraded, render legend, doctor) | Enum x call sites: 10 layers referenced 28x in probe.go, 12x applied.go, 10x render.go, 2x doctor.go; `fix(run)` 46 incl. legend gaps | Every layer a backend can report in a non-Enforced state has a probe arm, an applied arm and a legend/remedy line in both human and JSON; no layer renders as fine when not Enforced | layer (10) x consumer (5-6), collapse consumers that iterate generically | Strong | grid |
+| 13 | Non-amd64 and off-Linux stubs (`internal/seccomp/*_other.go`, `gate/{alias,carve}_other.go`, `trust_other.go`, `landlock` stub) | Build-tag mirror pairs; the degraded-tier grid left non-amd64 unwalked | A stub never lets a fence or check read as held: its Supported is false AND the consuming probe reports the layer not Enforced, or the gate marks the answer Unknown/Partial | stubbed function (~14) x consumer verdict | Good | grid (cross-compile `GOARCH=arm64`/`GOOS=darwin` vet to spike) |
+| 14 | `trust.ApprovalState` x consumers (validate 9 switch arms, run 3, approve) | Enum x call sites; `fix(approve)` 19, `fix(trust)` 15 | Run never proceeds on a state validate or approve reports unapproved; every state has an arm in each frontend | state (~5) x frontend (validate human, validate JSON, approve, run) ~ 20 | Good | grid |
+| 15 | Result arms re-grid (`enforce.Result` x backend return arms) | Prior grid file `state-grid-result-arms.md` is gone; `runDegraded` was restructured through `runCmd` (3cc71f9) | Every return arm carries every Result field a consumer reads | arm (8+) x field | Re-grid | grid, re-open against the 2026-08-13 memory |
+| 16 | Human vs JSON output parity across `validate`, `doctor`, `run` | validate F4 (three callouts missing from JSON); `5c3676f` guards Runnability fields only | Every fact the human output states is present in JSON | fact x frontend x format | Medium, overlaps 12 and 14 | fold into 12/14 as a consumer column, or a reflection guard test |
+| 17 | `internal/denylist` Deny/Holds switches (18 arms in one file) | Enum x call sites, but one file | | | Weak for a grid | `fuzz-oracle` (existing FuzzCoversAgreesWithIndex) |
+
+## Second outcome, 2026-09-17
+
+Rows 11, 12 and 14 were gridded: `state-grid-landlock-abi.md`, `state-grid-layer-consumers.md`,
+`state-grid-approval.md`. The reviewers' worktrees were based on 924e291, before the
+2026-09-16 fix batch; findings touching that batch were re-read on `docs/state-grids`.
+
+Filed: bv2-vnic2, bv2-ivg7h, bv2-688em (Landlock ABI); bv2-ofg48 (layer consumers);
+bv2-65id6, bv2-mxvq6, bv2-7o2mm (approval).
+
+Not filed, with reasons:
+- `landlocktsync` on an ABI 1-7 kernel says "this kernel has no Landlock": wording only, the run refuses.
+- `ioctlDevResidual` says "the host's whole /dev": over-disclosure, the allowed direction.
+- Entrypoint content, `blocked-hosts` edits, reformatting and relocation keep a stamp current: by
+  design per fingerprint.go:29-32 and manifest.go:82-88.
+- `run --allow-unapproved` on a stale or unstamped manifest names no state: the flag is the
+  consent and its help mentions stale. Left for the owner to decide; the unrecorded-stamp note
+  under the same flag does print.
+- Layer x consumers left profile's writeRefusal path untraced, assumed to match run's.
