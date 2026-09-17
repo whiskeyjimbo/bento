@@ -491,10 +491,11 @@ type policyJSON struct {
 	// inside it, because a manifest can be perfectly startable and still hold one.
 	RefusedGrants []string `json:"refused_grants,omitempty"`
 	// ShieldsUnknown says this host could not work out where its shields anchor, so
-	// refused_grants and credential_aliases are absent because they could not be answered
-	// rather than because there was nothing to report. A gate reading the envelope has
-	// nothing else to tell those two apart, and the run there is refused for this same
-	// reason - so absent is the wrong reading of a manifest, and this is what says so.
+	// credential_aliases is absent because it could not be answered rather than because
+	// there was nothing to report, and refused_grants holds only the refusals the shield set
+	// has no part in. A gate reading the envelope has nothing else to tell those apart, and
+	// the run there is refused for this same reason - so a short or absent list is the wrong
+	// reading of a manifest, and this is what says so.
 	// A verdict rather than a note, the only one here that is about the host: --strict
 	// fails on it, as doctor's exit code does on the same fact.
 	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
@@ -567,9 +568,9 @@ func (o *policyJSON) setCallouts(realPath, namedPath string, resolved *policy.Po
 // setRunnable folds the host's verdict into the envelope, leaving every field absent
 // where the host could not answer. A host that answered nothing emits nothing, since
 // runnable is what a CI gate keys on and an unasked question must not read as a green one.
-// A host that could not anchor its shields answered everything but the grant half, so it
-// emits what it knows and marks that half unknown rather than leaving a gate to read the
-// absent fields as clean.
+// A host that could not anchor its shields answered everything but the shielded half, so it
+// emits what it knows, the unshielded refusals included, and marks that half unknown rather
+// than leaving a gate to read the absent fields as clean.
 func (o *policyJSON) setRunnable(r gate.Runnability) {
 	if r.Unresolved {
 		return
@@ -580,8 +581,8 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
 	o.ShieldsUnknown = r.ShieldsUnknown
+	o.RefusedGrants = r.Refusals
 	if !r.ShieldsUnknown {
-		o.RefusedGrants = r.Refusals
 		for _, a := range r.CredentialAliases {
 			o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})
 		}

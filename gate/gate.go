@@ -102,8 +102,9 @@ type Runnability struct {
 	// indistinguishable from a manifest a healthy host has nothing to say about.
 	Unresolved bool
 	// ShieldsUnknown marks the narrower gap: this host cannot work out where its shields
-	// anchor, so Refusals and CredentialAliases could not be answered and are empty for
-	// that reason rather than for want of anything to report. Every other field above is a
+	// anchor, so CredentialAliases could not be answered and is empty for that reason
+	// rather than for want of anything to report, and Refusals holds only the classes the
+	// shield set has no part in. Every other field above is a
 	// fact about the manifest and the filesystem that the shield set has no part in, and
 	// stands. Said separately from Unresolved because a consumer that folds them reports
 	// the half this host is sure of as unknown, or the half it is not as clean.
@@ -133,16 +134,17 @@ func Check(resolved *policy.Policy) Runnability {
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
 	// A host that cannot anchor its shields refuses every run, and it cannot say which
-	// grants that run would have refused - so those are unknown rather than the empty
-	// refusal set a host with nothing to refuse yields, which is what the same manifest
-	// looks like on a healthy host. Everything above is a fact about the manifest and the
-	// host's filesystem that the shield set has no part in, so it survives.
-	set, err := ShieldSet()
+	// shielded grants that run would have refused - so ShieldsUnknown marks the list short
+	// of those, and the alias scan, which walks the shielded stores, is not attempted. The
+	// looped, file-write, root-write and mount refusals are facts about the manifest and
+	// the filesystem that the shield set has no part in, so they are still answered
+	// against the zero set, as Refusals does and as validate's summary prints them.
+	set, err := shieldSet()
+	r.Refusals = refusals(set, resolved)
 	if err != nil {
 		r.ShieldsUnknown = true
 		return r
 	}
-	r.Refusals = refusals(set, resolved)
 	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
 }
@@ -299,6 +301,10 @@ func MountGrantProblems(read, write []string) []string {
 	}
 	return problems
 }
+
+// shieldSet is the seam Check reads the shield set through, so a test can reach the
+// unanchored-host branch: making HomeAnchors fail for real needs a uid with no passwd home.
+var shieldSet = ShieldSet
 
 // ShieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
 // same rules, the same symlink expansion and the same drops, from internal/shield - the

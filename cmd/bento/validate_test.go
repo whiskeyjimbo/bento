@@ -1059,6 +1059,7 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 		ShieldsUnknown: true,
 		Problems:       []string{`entrypoint "/nope/missing.py": no such file or directory`},
 		MissingReads:   []string{"/nope/nothere"},
+		Refusals:       []string{`write grant "/" would make the entire host root writable; grant a specific directory`},
 	}
 
 	var out strings.Builder
@@ -1077,8 +1078,13 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 	if len(o.RunnableProblems) != 1 || len(o.MissingReadGrants) != 1 {
 		t.Errorf("the answered half must reach the envelope; got %v %v", o.RunnableProblems, o.MissingReadGrants)
 	}
-	if o.RefusedGrants != nil || o.CredentialAliases != nil || !o.ShieldsUnknown {
-		t.Errorf("the shield half must stay absent and be marked unknown; got %v %v %v", o.RefusedGrants, o.CredentialAliases, o.ShieldsUnknown)
+	if o.CredentialAliases != nil || !o.ShieldsUnknown {
+		t.Errorf("the shield half must stay absent and be marked unknown; got %v %v", o.CredentialAliases, o.ShieldsUnknown)
+	}
+	// The refusals a zero shield set still answers are printed REFUSED beside their grants
+	// on this host, so the envelope must carry them too.
+	if len(o.RefusedGrants) != 1 || o.RefusedGrants[0] != r.Refusals[0] {
+		t.Errorf("refused_grants = %v, want the root-write refusal the summary prints", o.RefusedGrants)
 	}
 
 	// The same host with a resolving entrypoint knows just as much, and the envelope must
@@ -1209,7 +1215,7 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 	}
 
 	// The envelope is built from a host that COULD anchor its shields: setRunnable
-	// deliberately withholds the grant half under ShieldsUnknown, so seeding both at once
+	// deliberately withholds the alias half under ShieldsUnknown, so seeding both at once
 	// would let a field that never reaches --json pass as one that was withheld on purpose.
 	// The flag itself is asserted from its own envelope below.
 	marshal := func(r gate.Runnability) string {
