@@ -179,9 +179,14 @@ func foreignDevNodes(names []string, ownMount func(string) bool) []string {
 // instead, and a mount is exactly what bento's argv can add and what a host device node
 // is not.
 //
-// It costs the fence almost nothing. A leaked host /dev shows its own submounts - mqueue
-// and hugepages - as mounts too, so those pass, but every plain device node it carries
-// (kvm, mem, sda, the tty and loop sets) shares /dev's st_dev and is still named.
+// The residual, and it is the honest cost of having no grant set here: mount-ness cannot
+// tell bento's own grant bind from a shim's. A --dev-bind /dev/mem /dev/mem appended to
+// the argv is a mount too, so it passes, while the host's /dev mounted whole is still
+// refused - its plain device nodes (kvm, mem, sda, the tty and loop sets) share /dev's
+// st_dev. So this fence catches the wholesale substitution and not single-node injection.
+// A leaked host /dev's own submounts, mqueue and hugepages, pass for the same reason.
+// What would close it is comparing against what the run actually granted, which means the
+// grant set reaching Config from internal/linux.
 func ownMountUnderDev(devFS uint64) func(string) bool {
 	return func(name string) bool {
 		var st unix.Stat_t

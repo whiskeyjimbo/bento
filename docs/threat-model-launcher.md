@@ -208,7 +208,7 @@ grant - the case `docs/threat-model.md` section 4.2 exists for.
 ### F4. `/dev` was unverified, and statfs could not settle it - FIXED
 
 `VERIFIED BY SPIKE` (the negative result), then closed by `verifyDevMount`
-(`verify.go:130`), which reads the directory listing instead of the filesystem
+(`verify.go:131`), which reads the directory listing instead of the filesystem
 type. Two spikes under bento's own `baseFlags` put bwrap's `/dev` at 14 entries
 without a controlling terminal and 15 with one, against this host's 216. The extra
 name is `/dev/console`, which bwrap binds from the *invoking* process's controlling
@@ -227,7 +227,7 @@ consequence:
   `/proc/net/dev` would then describe the host stack and fail
   `verifyEmptyNetns` (`netns.go:29`). `internal/launcher/netns_test.go` and
   `verify_test.go` both drive those refusals.
-- `/dev` is confirmed by `verifyDevMount` (`verify.go:130`), by listing rather
+- `/dev` is confirmed by `verifyDevMount` (`verify.go:131`), by listing rather
   than by statfs - see below.
 
 The obvious fix does not work, which is what the spike bought over reading. On
@@ -239,7 +239,7 @@ is a denylist of the kind this codebase declines to build elsewhere.
 
 Effect, and it is modest, which is why this sits here rather than at F1: a host
 `/dev` in the sandbox offers `/dev/kvm`, `/dev/mem`, `/dev/net/tun`. As the
-invoking uid with an empty capability bounding set (`verify.go:114` confirms the
+invoking uid with an empty capability bounding set (`verify.go:212` confirms the
 set is empty), `/dev/mem` at `0600 root` and `/dev/kvm` at `0660 root:kvm` are
 reachable only where the user is already in those groups. `/dev/net/tun` is
 commonly `0666`, and an interface created through it lands in the sandbox's
@@ -337,7 +337,7 @@ planted fixture, `spiked` attempted against the real thing.
 | id | attacker | enforcement | effect | detection | grade | evidence |
 |---|---|---|---|---|---|---|
 | `lookpath-bwrap/identity-forged` | same-uid | `ENFORCED` | a launcher any component of whose path this uid may write is refused, and the run with it | `LOGGED-ONLY` (the refusal names the writable component) | evidenced | `internal/linux/probe.go:486` (`trustLauncherPath`); `launchertrust_test.go`. Not `checkLauncher` at `linux.go:976`: that seam rules on `sb.bentoPath`, which comes from `os.Executable()`, and two of its three callers have no bwrap at all |
-| `lookpath-bwrap/check-bypassed` | same-uid | `PARTIAL` | five fences are re-checked from inside; ten flags are not | `LOGGED-ONLY` (the five refusals name what they saw) | read | `verify.go:29,59,114,130`, `netns.go:29` against `args.go:501,513,519,662,388` |
+| `lookpath-bwrap/check-bypassed` | same-uid | `PARTIAL` | five fences are re-checked from inside; ten flags are not | `LOGGED-ONLY` (the five refusals name what they saw) | read | `verify.go:29,59,131,212`, `netns.go:29` against `args.go:501,513,519,662,388` |
 | `lookpath-bwrap/search-path-hijacked` | same-uid (next run) | `ENFORCED` | a granted `bin` directory is by construction writable by this uid, so a `bwrap` planted in it refuses the next run instead of unconfining it | `LOGGED-ONLY` | evidenced | `internal/linux/probe.go:486`; `TestRunRefusesAUserWritableLauncher`. The auto-exec report still names neither shape (`autoexec.go:32,63`), which no longer matters for this row |
 | `lookpath-bwrap/privilege-inherited` | same-uid | `ENFORCED` | the descriptors are still inherited, but only by a launcher whose provenance was established first | `SILENT` | read | `internal/linux/probe.go:466` gates every launch that passes them; `internal/linux/applied.go:23` records why the channel's origin is rooted there and not in its bytes |
 | `parseapplied/identity-forged` | same-uid (as the shim) | `ENFORCED` (by provenance, not by content) | a forged report still parses, but only a launcher `resolveBwrap` vouched for can write one | `SILENT` | evidenced | `internal/linux/probe.go:466`; the residual is documented at `internal/linux/applied.go:23`. No authenticator on the bytes can close this: whatever the host launches shares its argv and environment, so a nonce reaches the forger too |
@@ -348,9 +348,9 @@ planted fixture, `spiked` attempted against the real thing.
 | `run-launcher/state-mutated-netns` | same-uid, as the shim | `ENFORCED` | a host network stack is refused before the target runs | `LOGGED-ONLY` | read | `internal/launcher/netns.go:29`; `netns_test.go:68` |
 | `run-launcher/state-mutated-tmp` | local-user | `ENFORCED` | a host `/tmp` (read and write, since `/tmp` is in the writable set) is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:29`; `verify_test.go:36` |
 | `run-launcher/state-mutated-pidns` | same-uid, as the shim | `ENFORCED` | the host process table and its `/proc` are refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:59`; `verify_test.go:90` |
-| `run-launcher/state-mutated-capbound` | same-uid, as the shim | `ENFORCED` | a non-empty bounding set, which would let the read-only binds be remounted rw, is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:114`; `verify_test.go:131` |
+| `run-launcher/state-mutated-capbound` | same-uid, as the shim | `ENFORCED` | a non-empty bounding set, which would let the read-only binds be remounted rw, is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:212`; `verify_test.go:202` |
 | `run-launcher/state-mutated-terminal` | same-uid | `ENFORCED` | a bwrap that did not put the sandbox in a session of its own refuses the run | `LOGGED-ONLY` | evidenced | fatal in the degraded tier at `degraded.go:120,226`; the bwrap tier now probes it from the shared `args.go:528` (`sessionFlags`) and proves it from inside at `internal/linux/probe.go:607` (`sessionProof`, a nonzero session id in the namespace-local procfs). The probe's reading is namespace-local, so it is vacuous against a host `/proc`; what refuses that shape is `internal/launcher/verify.go` (`verifyPidNamespace`) seeing the host process table at launch, so the two legs together are the fence. Tests: `newsession_test.go` end to end over a real pty, and `TestTheNamespaceProbeProvesTheNewSessionTook` on every host |
-| `run-launcher/state-mutated-dev` | same-uid | `ENFORCED` | host device nodes, gated by group membership rather than by bento | `LOGGED-ONLY` (the refusal names the nodes it saw) | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `verifyDevMount` (`verify.go:130`) lists `/dev` against the closed set bwrap's `--dev` creates, treating a name that is a mount of its own as a grant bento's own argv bound (`checkGrantNotManagedMount` refuses only the whole root); `verify_test.go`'s `TestRunRefusesTheHostsDev` and `TestRunAcceptsAGrantInsideDev` |
+| `run-launcher/state-mutated-dev` | same-uid | `PARTIAL` | the host device set wholesale is refused; a single injected device bind is not | `LOGGED-ONLY` (the refusal names the nodes it saw) | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `verifyDevMount` (`verify.go:131`) lists `/dev` against the closed set bwrap's `--dev` creates. It skips a name that is a mount of its own, because a policy may grant a path inside `/dev` (`checkGrantNotManagedMount` refuses only the whole root) and that grant binds after `baseFlags`. Mount-ness cannot tell bento's grant bind from a shim's `--dev-bind /dev/mem /dev/mem`, which is the `adds a mount the argv never asked for` half of F3 and is the residual: spiked, `st_dev` 7 against `/dev`'s 63, so it passes. Closing it needs the run's grant set on `launcher.Config`, which `internal/linux` assembles - filed. Tests: `verify_test.go`'s `TestRunRefusesTheHostsDev` and `TestRunAcceptsAGrantInsideDev` |
 | `run-launcher/state-mutated-shields` | same-uid | `UNENFORCED` (conditional) | nothing, unless the run carries a broad read grant that the shield was covering; then that credential store for the run's length. A narrow-grant run has nothing for a dropped shield to uncover, and a broad grant already warns | `SILENT` | read | `args.go:318`; no in-sandbox check, and `landlock_linux.go:102` read-grants `/` |
 | `run-launcher/privilege-inherited` | same-uid (bento's embedder) | `ENFORCED` | every leaked descriptor is CLOEXEC-marked before the bridge or the target | `SILENT` | read | `internal/launcher/launcher.go:189` (`dropInheritedFDs`); `launcher_test.go:230` |
 | `run-launcher/internal-disclosed` | same-uid (the target) | `ENFORCED` | `/proc/<launcher>/fd` would reopen dropped fds by path and disclose host paths | `SILENT` | read | `PR_SET_DUMPABLE` at `internal/launcher/launcher.go:224`, and its comment on why bwrap alone is not the guarantee |
