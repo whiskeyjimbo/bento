@@ -39,7 +39,7 @@ Scope notes, decided from the code:
 | V4 | broad grant notes (writeBroadGrantNotes) | broad_read_grants / broad_write_grants | HANDLED, setCallouts | READING (TestValidateJSONCarriesTheApprovalCallouts exists) |
 | V5 | shielded-grant opt-in note | shielded_grants | HANDLED, toShieldGrantsJSON | READING |
 | V6 | REFUSED beside the lists, healthy host (writeGrantRefusals: shielded, looped, file-write, mount, root, carve) | refused_grants | HANDLED, gate.refusals is the same six classes (gate/gate.go:173-181) | READING |
-| V7 | REFUSED beside the lists on a host that cannot anchor shields: looped/file-write/mount/root refusals still printed (zero shield set) | refused_grants, shields_unknown true | HANDLED, fixed in 9451ea4 (was WRONG: gate.Check returned before refusals(), and setRunnable set RefusedGrants only when !ShieldsUnknown) | UNSPIKEABLE HERE (needs a uid with no passwd home plus an unusable $HOME; gate.ShieldSet is not injectable) |
+| V7 | REFUSED beside the lists on a host that cannot anchor shields: looped/file-write/mount/root refusals still printed (zero shield set) | refused_grants, shields_unknown true | HANDLED, fixed in 9451ea4 (was WRONG: gate.Check returned before refusals(), and setRunnable set RefusedGrants only when !ShieldsUnknown) | TEST (9451ea4 made gate.ShieldSet swappable; TestCheckStillRefusesUnshieldedClassesWithoutAnchors) |
 | V8 | HOME not passed through / allowlisted but unset / HOME inside sandbox (writeSandboxHome) | sandbox_home_from_host, home_not_passed_through, home_allowlisted_unset | HANDLED, fixed in 66c8850 (was UNHANDLED: depends on host $HOME, not on the env list alone) | SPIKE |
 | V9 | allowlisted env not set on this host (writeUnsetEnvNotes) | unset_env | HANDLED, fixed in 66c8850 (was UNHANDLED: host environment, not derivable) | SPIKE |
 | V10 | network rule covers a guard-refused destination | network_blocked | HANDLED | READING |
@@ -140,8 +140,8 @@ Blast-radius order.
 3. **FIXED in 9451ea4. V7 - validate --json drops shield-independent refusals when shields are unknown.** Human
    prints REFUSED for looped/file-write/mount/root grants; gate.Check returns before computing
    them, so refused_grants is absent. The gate learns the host refuses but loses which manifest
-   defects to fix. WRONG. UNSPIKEABLE HERE: needs a uid with no passwd home and an unusable
-   $HOME, or an injectable gate.ShieldSet.
+   defects to fix. WRONG at the time; 9451ea4 made gate.ShieldSet swappable and pins the fix
+   with TestCheckStillRefusesUnshieldedClassesWithoutAnchors.
 4. **R14 - run verdict does not say the target never ran.** VERIFIED BY SPIKE
    (Setup=SetupTargetUnreached, ExitCode 127: human said "never ran ... exit 127 is bento's",
    verdict was `{"event":"verdict","exit_code":127,...}`).
