@@ -75,3 +75,18 @@ Not filed, with reasons:
   consent and its help mentions stale. Left for the owner to decide; the unrecorded-stamp note
   under the same flag does print.
 - Layer x consumers left profile's writeRefusal path untraced, assumed to match run's.
+
+## Third sweep, 2026-09-17
+
+Signals added: which rows the first two sweeps nominated and nobody picked, `shield.Verdict`
+against the shared corpus that drives its differential tests, and fix scopes since 2026-09-01
+(`linux`, `validate`, `clamp` lead, all already gridded).
+
+| # | Candidate | Signals | Invariant | Grid shape | Fit | Route |
+|---|-----------|---------|-----------|------------|-----|-------|
+| 13 | Non-amd64 and off-Linux stubs | Carried from the second sweep, unpicked; the degraded-tier grid left non-amd64 unwalked | A stub never lets a fence or check read as held | stubbed function (~14) x consumer verdict | Good | grid; spike by cross-compiled vet and a `GOARCH=arm64` test build |
+| 15 | Result arms re-grid | Carried; the earlier grid file is gone and `runDegraded` was restructured | Every return arm carries every Result field a consumer reads | arm (8+) x field, ~40 before collapsing | Good | grid |
+| 18 | `shield.Verdict` x tier x `shieldcorpus` | 7 verdicts; the corpus has 21 rows driving gate, linux and clamp differentials, but no `InsideCallerShield` row and no degraded-tier (`internal/launcher`) differential; `AboveWriteShield` is documented as tier-specific | For every verdict, each consumer (gate, full-tier backend, degraded tier, clamp) refuses at least what the corpus says; the gate never refuses what both backends admit | verdict (7) x kind (2) x consumer (4), collapsed on kind where the verdict is kind-bound, ~30 | Good; differentials already walk most full-tier cells, so the yield is the degraded column and the empty rows | grid, then add the missing corpus rows as the exhaustive test |
+| 6 | `gate/` vs backend `checkNotShielded` re-open | Carried; 21 gate commits since the 2026-08-13 grid | as row 6 | re-open pass | Overlaps 18 heavily | fold into 18 |
+| 16 | Human vs JSON parity | Carried | as row 16 | | Medium | a reflection guard test, not a grid |
+| 19 | `examples/embed` mirroring the backend's shield and grant sets (main.go:296, :442) | Mirror prose in library-consumer example | The example never claims a fence the backend does not apply | small | Weak: example code, `make examples` verifies it | ordinary review |
