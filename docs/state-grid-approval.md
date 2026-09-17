@@ -62,7 +62,7 @@ the enum.
 | F | validate | HANDLED | "current" plus the unrecorded note under it (validate.go:194 reportApproval) | EXECUTION |
 | F | validate --strict | HANDLED (by design) | exit 0; stampNote documents a note never a refusal (journal.go unrecordedStamp comment) | EXECUTION |
 | F | validate --json | HANDLED | `"approval":"current"` with `approval_note` carrying the unrecorded note (TestValidateJSONCarriesTheUnrecordedStampNote) | EXECUTION |
-| F | --json --strict | HANDLED (by design) | exit 0, as human strict; same missing field as above | EXECUTION |
+| F | --json --strict | HANDLED (by design) | exit 0 with `approval_note` carried; a note never a refusal | EXECUTION |
 | F | approve | HANDLED | shortcut declined, re-review with "cannot confirm it was stamped here" (approve.go:154) | EXECUTION |
 | F | approve --yes | HANDLED | same notice, stamps, records journal | EXECUTION |
 | J | run | HANDLED | stampNote journalUntrusted -> sharedJournal note | READING |
