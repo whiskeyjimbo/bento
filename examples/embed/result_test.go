@@ -235,6 +235,20 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 	}
 }
 
+// The alias scan walks the shield set, so a host with no anchored shields never ran it, and
+// the note must not read as though everything but the shield check was answered.
+func TestWriteRunnabilityShieldsUnknownClaimsNoAliasScan(t *testing.T) {
+	var out strings.Builder
+	writeRunnability(&out, gate.Runnability{ShieldsUnknown: true})
+	got := out.String()
+	if strings.Contains(got, "everything else stands") {
+		t.Errorf("the note claims completeness over a skipped alias scan; got:\n%s", got)
+	}
+	if !strings.Contains(got, "no second name for a credential was looked for") {
+		t.Errorf("the note must say the alias scan was skipped; got:\n%s", got)
+	}
+}
+
 // A stage that never reached the target must say so and must NOT print the bypass hint:
 // a setup failure makes no connection either, and the hint would point an operator at a
 // network problem that does not exist.
