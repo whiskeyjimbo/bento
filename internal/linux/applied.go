@@ -212,7 +212,13 @@ func parseApplied(f *os.File) applied {
 				// its absence is the section's own first line lost. Keyed on the value rather
 				// than on recorderSeen because a bare "exec-recorder" line names no recorder
 				// either, and execRecord would report {watched:false, complete:true} for it.
-				a.execRecordComplete = !garbled && a.execRecorder != ""
+				//
+				// A recorder that reports "no" is not whole either, though its section is: the
+				// trace lost its target, and the marker only says the list that follows is the
+				// list the launcher held, not every exec the run made. "absent" stays whole
+				// because nothing could ever watch, so nothing was lost, which is how the
+				// degraded tier reports the same fact.
+				a.execRecordComplete = !garbled && a.execRecorder != "" && a.execRecorder != launcher.AppliedNo
 				recordClosed = true
 			case recorderSeen:
 				// Inside the record section, an unrecognized line is the section's problem

@@ -1236,6 +1236,25 @@ func TestAnExecRecordWithNoRecorderLineIsNotComplete(t *testing.T) {
 	}
 }
 
+// A trace that lost its target still writes its section, marker included, because the target
+// ran. What the host must not do is read that marker as a whole record: the list ends where
+// the trace did.
+func TestAFailedRecorderIsNotComplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	section := launcher.AppliedExecRecorder + " " + launcher.AppliedNo + " \"tracing: no such process\"\n" +
+		launcher.AppliedExecRan + " 0 \"/bin/sh\" \"sh\"\n" + launcher.AppliedExecRecordMarker + "\n"
+	if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\n"+section), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete || len(a.execRuns) != 1 {
+		t.Fatalf("the report or its record did not parse: %+v", a)
+	}
+	if rec := a.execRecord(true); rec.Watched || rec.Complete {
+		t.Errorf("a recorder that lost its trace was reported as %+v, want neither watched nor complete", rec)
+	}
+}
+
 // The tolerance ea3381c gave lines after the recorder line belongs to the recorder line
 // too: writeExecRecord emits it first, so a write cut at "exec-reco" is a short write on a
 // fully fenced run, and voiding there refuses the run with three Unavailable layers.
