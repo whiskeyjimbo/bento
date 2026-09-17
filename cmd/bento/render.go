@@ -771,13 +771,11 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	// reads "on a command" and does not cover a refused socket. It only stands up where
 	// the seccomp egress filter does (filesystemLayer).
 	//
-	// Degraded on this layer is two states, not one: the probed Landlock-only tier, and a
-	// bwrap run whose Landlock backstop failed to apply inside the sandbox while the mount
-	// namespace held. The second has a netns and an egress proxy, so it answers neither
-	// this errno nor this claim. A non-empty network: block rules the first out - the
-	// egress stack that tier would need reports Unavailable without a netns and the run
-	// refuses - which is why the zero-rule test is what separates them.
-	netDeniedSeccomp := len(p.Network) == 0 && res.Report.StateOf(enforce.LayerFilesystem) == enforce.Degraded
+	// Keyed on the tier the run took, not on a Degraded filesystem layer: a bwrap run whose
+	// Landlock backstop failed reports that too, and it has a netns, which answers neither
+	// this errno nor this claim. The layer still gates it, since that is where the filter
+	// standing up is attested.
+	netDeniedSeccomp := len(p.Network) == 0 && res.Degraded && res.Report.StateOf(enforce.LayerFilesystem) == enforce.Degraded
 	if !mountNSConfines && !netDeniedSeccomp && execMode == "" {
 		return
 	}

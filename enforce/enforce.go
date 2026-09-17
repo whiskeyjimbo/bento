@@ -358,6 +358,12 @@ type Result struct {
 	// presence, absence and failure all leave the Report and Setup exactly as they would
 	// have been, so a frontend must never read a shortfall out of it.
 	ExecRecord *ExecRecord
+	// Degraded is whether the run took the backend's reduced-confinement tier, the one
+	// RunOptions.Degraded selects. Run sets it from the same decision, so a backend never
+	// has to. A frontend reads it rather than a Degraded filesystem layer, which a full-tier
+	// run also reports when only a second kernel layer behind its mount namespace failed:
+	// the errors a denial arrives as differ between the two, and the layer cannot say which.
+	Degraded bool
 	// EgressConnections is how many outbound connections reached the egress proxy
 	// during the run, including any the proxy turned away at its concurrency limit
 	// before reading their request. A count of zero on a run that could egress (the

@@ -217,6 +217,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
 		RunID:              opts.RunID,
 	})
+	res.Degraded = degraded
 
 	// Report exactly what was judged. Start from the pre-run probe (already filtered
 	// to the required layers - warning about egress a no-network policy never asked

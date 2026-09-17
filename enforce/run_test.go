@@ -539,7 +539,8 @@ func TestDegradedCoreRefusesByDefaultAndRunsWhenAllowed(t *testing.T) {
 	}
 
 	f = &fakeEnforcer{probe: newProbe()}
-	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true}); err != nil {
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true})
+	if err != nil {
 		t.Fatalf("--allow-degraded should permit a degraded core layer: %v", err)
 	}
 	if !f.ran {
@@ -550,14 +551,20 @@ func TestDegradedCoreRefusesByDefaultAndRunsWhenAllowed(t *testing.T) {
 	if !f.gotDegraded {
 		t.Error("--allow-degraded on a degraded core layer must pass degraded=true to the backend")
 	}
+	// The frontend reads the tier off the result, because a full-tier run can report the
+	// same Degraded filesystem layer while answering denials with different errors.
+	if !res.Degraded {
+		t.Error("a run on the reduced-confinement tier must say so in its result")
+	}
 
 	// A fully-enforced host runs with degraded=false: the backend uses its full tier.
 	f = &fakeEnforcer{probe: fullyEnforced()}
-	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+	res, err = Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if err != nil {
 		t.Fatalf("a fully-enforced run should proceed: %v", err)
 	}
-	if f.gotDegraded {
-		t.Error("a fully-enforced run must pass degraded=false")
+	if f.gotDegraded || res.Degraded {
+		t.Error("a fully-enforced run must pass and report degraded=false")
 	}
 }
 

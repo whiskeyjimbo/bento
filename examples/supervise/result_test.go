@@ -113,6 +113,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"ExitCode":   "the script's own code, returned by run() rather than reported",
 		"Report":     "warned about through Degradations(), which is the part that fell short",
 		"ExecRecord": "a diagnostic, not an honesty surface: nil unless the run sets RunOptions.RecordExec, which this example never does, and its own contract is that nothing in it is a shortfall",
+		"Degraded":   "which tier ran, already warned about through Degradations(): that tier is admitted only on a Degraded filesystem layer",
 	}
 	warned := map[string]bool{
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,

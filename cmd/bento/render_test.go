@@ -304,13 +304,16 @@ func TestDenialLegendFiresOnACleanRun(t *testing.T) {
 		{"a block that never landed names no exec field", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: execUnavailable()}, "", true, false},
 		// Each line answers for its own layer, so a tier that cannot produce EROFS drops
 		// the write line and keeps the exec one.
-		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS()}, "exec: none", false, true},
+		{"a tier without the remount does not promise EROFS", &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: degradedFS(), Degraded: true}, "exec: none", false, true},
 		// A manifest with network rules cannot be the Landlock-only tier - that tier has no
 		// egress stack and the run refuses - so this is a bwrap run whose Landlock backstop
 		// failed, where egress went through a proxy and the claim would contradict the
 		// manifest the reader has open.
 		{"network rules rule the seccomp egress line out", &policy.Policy{Exec: policy.ExecNone, Network: []policy.NetworkRule{{Host: "example.com"}}}, enforce.Result{Report: degradedFS()}, "exec: none", false, false},
-		{"the degraded tier still fences egress, and says only that", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false, true},
+		{"the degraded tier still fences egress, and says only that", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable), Degraded: true}, "", false, true},
+		// A bwrap run whose Landlock backstop failed reads Degraded on the same layer, but
+		// its netns answers ENETUNREACH, never EPERM on a socket.
+		{"a failed backstop on the full tier is not the seccomp tier", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Degraded, enforce.Unavailable)}, "", false, false},
 		{"neither layer in force says nothing at all", &policy.Policy{Exec: policy.ExecAll}, enforce.Result{Report: report(enforce.Unavailable, enforce.Unavailable)}, "", false, false},
 		// The hints that explain a failure have already spoken by here, and the legend's
 		// own subject is the run that reported nothing.
@@ -384,7 +387,7 @@ func TestDenialLegendNamesAnEmptyNetworkField(t *testing.T) {
 	// The Landlock-only tier fences egress with a seccomp filter instead of a netns, so it
 	// names the same field off a different errno - EPERM on socket(), not ENETUNREACH.
 	b.Reset()
-	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded)}, false)
+	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecNone}, enforce.Result{Report: report(enforce.Degraded), Degraded: true}, false)
 	if strings.Contains(b.String(), "Network is unreachable") {
 		t.Errorf("legend claims a shape no layer here produces: %q", b.String())
 	}
@@ -428,7 +431,7 @@ func TestDenialLegendFollowsTheGenericHint(t *testing.T) {
 	landlockOnly.Add(enforce.LayerFilesystem, enforce.Degraded, "")
 	landlockOnly.Add(enforce.LayerExec, enforce.Unavailable, "")
 	b.Reset()
-	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecAll}, enforce.Result{ExitCode: 1, Report: landlockOnly}, true)
+	writeDenialLegend(&b, &policy.Policy{Exec: policy.ExecAll}, enforce.Result{ExitCode: 1, Report: landlockOnly, Degraded: true}, true)
 	if out := b.String(); !strings.Contains(out, "if that message was a denial") || !strings.Contains(out, "on a socket or connection") {
 		t.Errorf("the one shape this tier produces must arrive with its lead: %q", out)
 	}
