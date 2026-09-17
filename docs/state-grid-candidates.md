@@ -130,3 +130,27 @@ exposed when widened (bv2-ati60, bv2-uzlc2).
 | 24 | `denylist.Holds` (`HoldsUnknown`) x shield rules x clamp | 11 uses; open P1 bv2-h7k3b disputes what Holds decides | | | Decline: the semantics are under an open decision | revisit after bv2-h7k3b |
 | 25 | `internal/observe` | 66 fixes; this session saw an uncommitted change time it out | | | Bad for a grid | `concurrency-audit` |
 | 26 | Open board, 47 beads | Several beads this session were stale on arrival (cites moved, fixed on another base) | | | Not a grid | `bead-groom` |
+
+## Fourth outcome, 2026-09-17
+
+Rows 20, 21 and 22 were gridded: `state-grid-gate-unknowns.md`, `state-grid-trust-flaws.md`,
+`state-grid-exec-record.md`, each reviewed at 7bc186f with a re-open pass. Row 26 was groomed
+separately (one bead closed, twenty descriptions corrected, no blocker edges broken).
+
+Reopened: bv2-pf2n. Its fix, 3b14c98, marked the recorder on a lost trace but left
+`execRecordComplete` keyed on a non-empty recorder line, so a partial record still reads complete.
+
+Filed: bv2-chp2i, bv2-ncpur (exec record); bv2-t7nrj, bv2-c1pca, bv2-k95b0, bv2-c80hv
+(gate unknowns, the last an owner decision); bv2-cr963, bv2-pt74y (trust flaws). Trust-flaws
+findings 1 and 3 are bv2-ati60 and bv2-uzlc2, which f2d50d2 addresses from another session.
+
+Not filed, with reasons:
+- run --json refusal events dropping stamp_at_risk before enforce.Run: nothing ran, and approve
+  refuses on the same fatal flaws and warns on the rest (approve.go:65, :412-421).
+- Human "nothing was watching" when a failed recorder left runs: under-claiming, the allowed direction.
+- Exec record in embed, supervise and profile: nothing but run.go:163 sets RecordExec.
+- Degraded-tier exec record states beyond unavailable: degraded.go:334 returns a fixed record.
+- Profile's clamp skipping the shield clamp silently when the shield set fails (gate unknowns D3):
+  the profiling run's own sandbox fails on the same anchor error first; reachable only if the
+  anchors break between the run and the clamp. Read only, not spiked.
+- run and validate exiting 0 on a fatal location flaw: advisory by design, trustwarn.go:33-36.
