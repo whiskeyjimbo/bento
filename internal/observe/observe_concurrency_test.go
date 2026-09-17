@@ -4,6 +4,7 @@ package observe
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,12 +136,18 @@ func TestConcurrentTracesDoNotStealEachOthersStops(t *testing.T) {
 	// consumed elsewhere blocks in its wait loop, so an unbounded Wait would turn a
 	// regression into a ten-minute suite timeout and a stack dump instead of a named
 	// failure. The passing case takes about a second.
+	//
+	// The deadline exits the process rather than failing the test: the stuck traces are
+	// still in their Wait4(-1) loops and outlive t.Fatal, so every later test that traces
+	// has its stops stolen and hangs until the suite timeout, burying this failure under a
+	// stack dump from whichever test happened to run next.
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		t.Fatal("a trace never returned; its wait status was consumed by a concurrent trace")
+		fmt.Fprintln(os.Stderr, "--- FAIL: "+t.Name()+": a trace never returned; its wait status was consumed by a concurrent trace, and the traces still stuck would hang every later test")
+		os.Exit(1)
 	}
 
 	for i, o := range results {
