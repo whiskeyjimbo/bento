@@ -15,10 +15,10 @@ func RestrictTo(read, write []string) error {
 	return errors.New("landlock: no filesystem confinement off Linux")
 }
 
-// RestrictDegraded refuses off Linux. Landlock is the degraded tier's ONLY filesystem confinement, so a nil here
-// would report the primary fence applied while restricting nothing. The tier is
-// Linux-only and its launcher is linux-tagged, so nothing reaches this - but a
-// fail-open stub is the wrong thing to leave for whoever does.
+// RestrictDegraded refuses off Linux. Landlock is the degraded tier's ONLY filesystem
+// confinement, so a nil here would report the primary fence applied while restricting
+// nothing. The tier is Linux-only and its launcher is linux-tagged, so nothing reaches
+// this - but a fail-open stub is the wrong thing to leave for whoever does.
 func RestrictDegraded(read, write, exec []string) error {
 	return errors.New("landlock: the degraded tier has no filesystem confinement off Linux")
 }
