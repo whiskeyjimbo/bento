@@ -190,3 +190,30 @@ func TestWriteSummaryReportsSetupFailure(t *testing.T) {
 		})
 	}
 }
+
+// The interrupt and error arms print writeRunFacts and nothing else of the Result. A
+// supervised run that timed out after the human admitted a host is the one the backend
+// carries GateAdmitted out of a cancel for, so a fact dropped here is dropped on the run
+// most in need of it.
+func TestWriteRunFactsSurfacesShieldAndNetworkFacts(t *testing.T) {
+	var out strings.Builder
+	writeRunFacts(&out, theme{}, populatedResult())
+	got := out.String()
+
+	for _, want := range []string{
+		`"ads.example\x1b[2K" port 443`,
+		`"internal.example\x1b[2K" port 443`,
+		`"api.githb.example\x1b[2K" port 443`,
+		`"plain.example\x1b[2K" port 80`,
+		`"declined.example\x1b[2K" port 443`,
+		`"/home/u/.ssh"`,
+		`"/backup/\x1b[2Kid_rsa" aliases`,
+		`"/home/u/.aws\""`,
+		`"/repo/\x1b[2Kpackage.json"`,
+		`"/repo/\x1b[2Khooks"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run facts are missing %q; on an interrupted or failed run an unprinted fact reads as clean.\ngot:\n%s", want, got)
+		}
+	}
+}
