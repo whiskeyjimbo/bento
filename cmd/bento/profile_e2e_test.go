@@ -356,3 +356,31 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 		}
 	})
 }
+
+// The parity fixture hands location flaws straight to profileResultJSON, so only a real
+// profile pins that the command computes them and forwards them into the envelope.
+func TestProfileJSONCarriesTheManifestLocationFlaws(t *testing.T) {
+	requireSandbox(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "noop.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := runProfileNonInteractively(t, "--json", "--out", filepath.Join(shared, "m.yaml"), script)
+	var env struct {
+		LocationFlaws []string `json:"location_flaws"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("decoding the envelope: %v (exit %v)\n%s", err, runErr, out)
+	}
+	if len(env.LocationFlaws) == 0 {
+		t.Errorf("a manifest written into a world-writable directory must carry location_flaws (exit %v)\n%s", runErr, out)
+	}
+}

@@ -104,7 +104,6 @@ var parityRows = []parityRow{
 	{writers: []string{"writeReapprovalNotice", "writeJournalDiff"}, exempt: "approve has no --json; validate --json carries the approval state and approval_note, but not the changed-field diff, which only this host's journal can produce"},
 
 	// Trust warnings, shared across frontends.
-	{writers: []string{"warnUntrusted"}, exempt: "run carries it as stamp_at_risk and validate through warnStampAtRisk; approve has no --json"},
 	{writers: []string{"warnStampAtRisk"}, fixture: "validate-stamped", marker: "attests only what whoever can write it leaves there", key: "stamp_at_risk"},
 
 	{writers: []string{"writeJSON"}, exempt: "the encoder every --json path writes through, not a human writer"},
