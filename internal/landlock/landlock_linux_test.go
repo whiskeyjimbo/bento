@@ -677,6 +677,12 @@ func TestRestrictDegradedTruncatesAReadGrantOnlyBelowABI3(t *testing.T) {
 			if !strings.Contains(got, "trunc_readonly="+want) {
 				t.Errorf("got %q, want trunc_readonly=%s at preset %s", got, want, preset)
 			}
+			// A file under no grant follows the same column: truncate(2) is not an open,
+			// so the path rules do not stop it, which is why the disclosure reaches past
+			// the grants.
+			if !strings.Contains(got, "trunc_outside="+want) {
+				t.Errorf("got %q, want trunc_outside=%s at preset %s", got, want, preset)
+			}
 			// The control that separates "truncate is restricted" from "the write grant
 			// stopped working": the RW helpers grant truncate, so this is OK at every ABI.
 			if !strings.Contains(got, "trunc_write=OK") {
@@ -709,18 +715,19 @@ func TestRestrictDegradedKeepsAReadGrantedDeviceIoctlableAtEveryPreset(t *testin
 }
 
 // runFSResidualProbe builds the layout the fsresiduals probe expects - a read grant
-// holding "f" and a write grant holding "w" - and returns its verdict line. The device is
+// holding "f", a write grant holding "w" and a file under neither - and returns its
+// verdict line. The device is
 // /dev/null: the arm needs a node whose ioctl the caller cannot be denied for any reason
 // but Landlock, and it is the one device present on every host this runs on.
 func runFSResidualProbe(t *testing.T, bin string, extra ...string) string {
 	t.Helper()
-	read, write := t.TempDir(), t.TempDir()
-	for path, dir := range map[string]string{"f": read, "w": write} {
+	read, write, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	for path, dir := range map[string]string{"f": read, "w": write, "o": outside} {
 		if err := os.WriteFile(filepath.Join(dir, path), []byte("content"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	args := append([]string{"fsresiduals", read, write, os.DevNull}, extra...)
+	args := append([]string{"fsresiduals", read, write, os.DevNull, filepath.Join(outside, "o")}, extra...)
 	out, err := exec.Command(bin, args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("probe: %v\n%s", err, out)

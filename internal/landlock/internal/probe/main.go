@@ -82,16 +82,19 @@
 // that ABI enforces; without the tag the run fails rather than silently measuring the
 // host's own ABI.
 //
-// Usage: probe fsresiduals <read-dir> <write-dir> <device> [preset]
+// Usage: probe fsresiduals <read-dir> <write-dir> <device> <outside-file> [preset]
 // Applies the DEGRADED ruleset with read-dir readable and write-dir writable, then
 // reports the two filesystem rights whose absence from an older kernel's handled set the
 // degraded run report discloses as residuals. read-dir must contain a file named "f" and
-// write-dir a file named "w"; device is a device node under read-dir. Prints
-// "trunc_readonly=OK|DENIED trunc_write=OK|DENIED ioctl_readonly=OK|DENIED".
+// write-dir a file named "w"; device is a device node under read-dir; outside-file is a
+// file under no grant. Prints "trunc_readonly=OK|DENIED trunc_outside=OK|DENIED
+// trunc_write=OK|DENIED ioctl_readonly=OK|DENIED".
 //
 // trunc_readonly is the arm under test: truncate enters the handled set at ABI 3, and no
 // read rule grants it, so from ABI 3 zeroing a read-granted file is denied and below it
-// the file can still be zeroed - the integrity gap truncateResidual discloses. trunc_write
+// the file can still be zeroed - the integrity gap truncateResidual discloses.
+// trunc_outside is the same arm for a file no grant covers: truncate(2) is not an open, so
+// the path rules never see it and below ABI 3 the gap reaches the whole host. trunc_write
 // is the control that separates "truncate is restricted" from "the write grant is broken":
 // the RW helpers grant truncate, so it must stay OK at every ABI.
 //
@@ -221,13 +224,13 @@ func main() {
 		degradedNet(os.Args[2], os.Args[3])
 		return
 	}
-	if len(os.Args) == 5 && os.Args[1] == "fsresiduals" {
-		fsResiduals(os.Args[2], os.Args[3], os.Args[4])
+	if len(os.Args) == 6 && os.Args[1] == "fsresiduals" {
+		fsResiduals(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 		return
 	}
-	if len(os.Args) == 6 && os.Args[1] == "fsresiduals" {
-		applyTierPreset(os.Args[5])
-		fsResiduals(os.Args[2], os.Args[3], os.Args[4])
+	if len(os.Args) == 7 && os.Args[1] == "fsresiduals" {
+		applyTierPreset(os.Args[6])
+		fsResiduals(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 		return
 	}
 	if len(os.Args) == 8 && os.Args[1] == "scopedipc" {
@@ -482,13 +485,13 @@ func applyTierPreset(name string) {
 
 // fsResiduals applies the degraded ruleset and reports the truncate and ioctl_dev arms.
 // See the usage note above for which of them is the arm and which are the controls.
-func fsResiduals(read, write, device string) {
+func fsResiduals(read, write, device, outside string) {
 	if err := landlock.RestrictDegraded([]string{read, filepath.Dir(device)}, []string{write}, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "restrict:", err)
 		os.Exit(2)
 	}
-	fmt.Printf("trunc_readonly=%s trunc_write=%s ioctl_readonly=%s\n",
-		truncatable(filepath.Join(read, "f")), truncatable(filepath.Join(write, "w")), ioctlable(device))
+	fmt.Printf("trunc_readonly=%s trunc_outside=%s trunc_write=%s ioctl_readonly=%s\n",
+		truncatable(filepath.Join(read, "f")), truncatable(outside), truncatable(filepath.Join(write, "w")), ioctlable(device))
 }
 
 // truncatable reports whether path can be zeroed. os.Truncate is the truncate(2) path

@@ -290,7 +290,7 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"flipped and mtimes forged. Seccomp cannot close this, as it sees no paths and the same calls are " +
 			"what a granted workspace needs" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
-			resolveUnixResidual(resolveUnixRestricted)
+			resolveUnixResidual(resolveUnixRestricted) + unknownRightsResidual
 		return l
 	default:
 		return status(enforce.Unavailable, joinReason(nsReason,
@@ -307,15 +307,18 @@ func joinReason(reason, clause string) string {
 }
 
 // truncateResidual is the degraded-tier disclosure clause for a kernel whose Landlock
-// ABI (< 3) cannot restrict truncate: a read-granted file can still be zeroed, since
-// Landlock leaves an unhandled right unrestricted and this tier has no mount namespace
-// behind it. It is empty when truncate is restricted.
+// ABI (< 3) cannot restrict truncate. The gap is not confined to the grants: truncate(2)
+// takes a path and is not an open, so the ABI-1 path rules never see it, and with the
+// right unhandled any file the target can write under DAC can be zeroed, wherever it
+// sits on the host. It is the metadata residual's shape and is worded to match. Empty
+// when truncate is restricted.
 func truncateResidual(truncateRestricted bool) string {
 	if truncateRestricted {
 		return ""
 	}
 	return ". Additionally this kernel's Landlock ABI is below 3, which cannot restrict truncate, so a " +
-		"read-only granted file can still be truncated (zeroed) - an integrity gap this tier cannot close"
+		"file the target's own permissions let it write can be truncated (zeroed), including one outside every " +
+		"grant or under a read-only one - an integrity gap this tier cannot close"
 }
 
 // ioctlDevResidual is the degraded-tier disclosure clause for a kernel whose Landlock
@@ -344,14 +347,22 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 // socket CREATION, so it cannot revoke an AF_INET descriptor the target is handed over
 // SCM_RIGHTS, while Landlock's connect(2) hook evaluates the calling task's domain and
 // denies it whatever its origin.
+//
+// Even from ABI 4 the domain is partial, and the restricted arm says so: its hooks are
+// TCP bind(2) and connect(2), so a passed descriptor that needs neither - one already
+// connected, or a UDP, raw or packet socket - is past both fences. MPTCP is not named
+// because it is not open here: the filter allowlists socket(2) by domain alone, so an
+// AF_INET MPTCP socket is refused at creation, and a passed one is the passed-descriptor
+// case already disclosed.
 func netFenceClause(netTCPRestricted bool) string {
 	if netTCPRestricted {
 		return "seccomp blocks IP egress and Landlock denies TCP connect on a descriptor the filter " +
-			"cannot revoke, but neither reaches netlink interface enumeration, nor "
+			"cannot revoke, though not use of a passed descriptor that needs no connect - one already " +
+			"connected, or a UDP, raw or packet socket. Neither reaches netlink interface enumeration, nor "
 	}
 	return "seccomp blocks IP egress, but this kernel's Landlock ABI is below 4 and cannot restrict TCP " +
-		"connect, so an already-created AF_INET descriptor passed to the target over SCM_RIGHTS stays " +
-		"usable - the filter governs socket creation, not use, and has nothing behind it here. Nor does " +
+		"connect, so an AF_INET descriptor passed to the target over SCM_RIGHTS stays usable, whether " +
+		"unconnected, already connected, or a UDP, raw or packet socket - the filter governs socket creation, not use, and has nothing behind it here. Nor does " +
 		"it reach netlink interface enumeration, or "
 }
 
@@ -411,6 +422,15 @@ func resolveUnixResidual(resolveUnixRestricted bool) string {
 		"unix sockets, so the target can reach any host daemon socket its path names regardless of the " +
 		"grants - and that daemon's own network access with it"
 }
+
+// unknownRightsResidual discloses what the pinned handled sets leave out on a kernel
+// newer than this build. Landlock restricts only the rights a ruleset handles, and the
+// degraded sets stop at ABI 9 on purpose (internal/landlock's handledFS explains why), so
+// a right a later ABI adds is unrestricted. It is unconditional rather than keyed on the
+// raw ABI: on a kernel at or below 9 it is vacuous, which over-states nothing that
+// matters, while a missed newer kernel would stay silent about a real gap.
+const unknownRightsResidual = ". Nor does it restrict any access right a kernel past Landlock ABI 9 " +
+	"adds: this build handles only the rights it knows"
 
 // namespaceProbe is what the user-namespace probe could establish. The third state
 // is the point of the type: an unanswered probe - the canary reaped under memory
