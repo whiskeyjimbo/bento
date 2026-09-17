@@ -112,13 +112,27 @@ func TestRunRefusesTheHostsPidNamespace(t *testing.T) {
 // showing through a recursive bind - and /dev is a granted write, so those nodes are
 // writable too. The names are real entries from an ordinary host's /dev.
 func TestForeignDevNodesNamesNodesBwrapDidNotCreate(t *testing.T) {
+	noMounts := func(string) bool { return false }
 	host := []string{"null", "zero", "kvm", "pts", "mem", "shm", "sda", "tty", "net"}
-	if got := foreignDevNodes(host); !slices.Equal(got, []string{"kvm", "mem", "sda", "net"}) {
+	if got := foreignDevNodes(host, noMounts); !slices.Equal(got, []string{"kvm", "mem", "sda", "net"}) {
 		t.Fatalf("foreignDevNodes = %v, want the host's own nodes; a stripped --dev would go unnoticed", got)
 	}
 	bwrapDev := []string{"core", "fd", "full", "null", "ptmx", "pts", "random", "shm", "stderr", "stdin", "stdout", "tty", "urandom", "zero"}
-	if got := foreignDevNodes(bwrapDev); len(got) != 0 {
+	if got := foreignDevNodes(bwrapDev, noMounts); len(got) != 0 {
 		t.Errorf("foreignDevNodes = %v, want none: this is exactly what bwrap's --dev builds", got)
+	}
+}
+
+// A policy may grant a path inside /dev - internal/linux's checkGrantNotManagedMount
+// refuses only the whole root - and bwrap carves that bind into the sandbox's own /dev, so
+// the name is one --dev never creates. Refusing it would fail a legitimate run with a
+// message blaming a shimmed bwrap, and a host device node showing through is not a mount,
+// which is what tells the two apart.
+func TestForeignDevNodesAcceptsAGrantBentoMounted(t *testing.T) {
+	granted := map[string]bool{"dri": true, "net": true}
+	names := []string{"null", "dri", "net", "kvm", "sda"}
+	if got := foreignDevNodes(names, func(n string) bool { return granted[n] }); !slices.Equal(got, []string{"kvm", "sda"}) {
+		t.Fatalf("foreignDevNodes = %v, want only the host's own nodes: a granted /dev/dri run must not be refused", got)
 	}
 }
 
@@ -142,6 +156,25 @@ func TestRunRefusesTheHostsDev(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "is not the device directory bwrap builds") {
 		t.Errorf("Run failed without the device-mount refusal: %q", out)
+	}
+}
+
+// The other half of the /dev claim, and the half a fixture cannot show: a real sandbox
+// carrying a granted bind inside /dev must not be refused. Without this the refusal above
+// passes just as well with the allowlist short of every name a policy can add.
+func TestRunAcceptsAGrantInsideDev(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "devgrant")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Run refused a sandbox carrying a granted path inside /dev: %v\n%s", err, out)
 	}
 }
 

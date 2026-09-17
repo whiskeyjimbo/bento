@@ -44,6 +44,12 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	if weaken != "dev" {
 		args = append(args, "--dev", "/dev")
 	}
+	// Not a weakening: a policy may grant a path inside /dev, and the grant binds after
+	// baseFlags, so bwrap carves the name into the sandbox's own /dev. /dev/null stands in
+	// for the granted source because it exists on every host.
+	if weaken == "devgrant" {
+		args = append(args, "--ro-bind", "/dev/null", "/dev/kvm")
+	}
 	// The host's own /tmp in place of the fresh one, which is what a shim filtering
 	// --tmpfs out of argv leaves behind - and it keeps /tmp writable, so the binary bind
 	// below still has somewhere to land.

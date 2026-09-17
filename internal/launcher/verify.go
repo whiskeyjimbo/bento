@@ -136,7 +136,11 @@ func verifyDevMount() error {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if extra := foreignDevNodes(names); len(extra) > 0 {
+	var devSt unix.Stat_t
+	if err := unix.Lstat(sandboxDev, &devSt); err != nil {
+		return fmt.Errorf("launcher: lstat of %s to verify the sandbox's device mount: %w", sandboxDev, err)
+	}
+	if extra := foreignDevNodes(names, ownMountUnderDev(devSt.Dev)); len(extra) > 0 {
 		// Named and capped for verifyPidNamespace's reason: a host /dev holds hundreds, and
 		// an operator needs enough to tell a shimmed bwrap from a bento bug.
 		return fmt.Errorf("launcher: %s is not the device directory bwrap builds; it holds %d name(s) bwrap did not create, including %s, so the target holds a granted write over the host's device nodes",
@@ -145,19 +149,47 @@ func verifyDevMount() error {
 	return nil
 }
 
-// foreignDevNodes names every entry in a /dev listing that bwrap's --dev does not create.
+// foreignDevNodes names every entry in a /dev listing that neither bwrap's --dev created
+// nor bento's own argv mounted. ownMount decides the second case; see ownMountUnderDev.
+//
 // Kept separate from foreignPids rather than sharing a filter: the two lists answer
 // different questions, and verifyPidNamespace is one of two legs holding the pid-namespace
 // claim up (see internal/linux's sessionProof).
-func foreignDevNodes(names []string) []string {
+func foreignDevNodes(names []string, ownMount func(string) bool) []string {
 	var extra []string
 	for _, name := range names {
-		if bwrapDevNodes[name] {
+		if bwrapDevNodes[name] || ownMount(name) {
 			continue
 		}
 		extra = append(extra, name)
 	}
 	return extra
+}
+
+// ownMountUnderDev reports whether a name under /dev is a mount of its own rather than an
+// entry of the device directory itself, given /dev's own st_dev.
+//
+// This is what keeps the allowlist from refusing a legitimate run. A grant naming a path
+// inside /dev is permitted - internal/linux's checkGrantNotManagedMount refuses only the
+// whole root, and the grant binds after baseFlags, so bwrap carves the mount point into
+// the sandbox's own /dev - which means a policy reading /dev/dri or /dev/net/tun puts a
+// name there that bwrap's --dev never creates. Config carries the write grants but not the
+// read ones (see bv2-775q3), so the set cannot be assembled from configuration; the kernel
+// answers it instead, and a mount is exactly what bento's argv can add and what a host
+// device node is not.
+//
+// It costs the fence almost nothing. A leaked host /dev shows its own submounts - mqueue
+// and hugepages - as mounts too, so those pass, but every plain device node it carries
+// (kvm, mem, sda, the tty and loop sets) shares /dev's st_dev and is still named.
+func ownMountUnderDev(devFS uint64) func(string) bool {
+	return func(name string) bool {
+		var st unix.Stat_t
+		if err := unix.Lstat(sandboxDev+"/"+name, &st); err != nil {
+			// A name bento cannot inspect is not one it may vouch for, so it stays foreign.
+			return false
+		}
+		return st.Dev != devFS
+	}
 }
 
 // procSelfStatus carries the caller's capability sets, among much else. It is read from
