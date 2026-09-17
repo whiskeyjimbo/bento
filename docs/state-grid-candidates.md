@@ -154,3 +154,17 @@ Not filed, with reasons:
   the profiling run's own sandbox fails on the same anchor error first; reachable only if the
   anchors break between the run and the clamp. Read only, not spiked.
 - run and validate exiting 0 on a fatal location flaw: advisory by design, trustwarn.go:33-36.
+
+## Fifth sweep, 2026-09-17
+
+Thin by design: four rounds have taken the strong mirror pairs and the enums with many call
+sites. This sweep looked at what is left, which is mostly areas the fit check sends elsewhere.
+Signals added: fuzz targets read for which fields their oracle actually varies, and the
+parse/serialize pair in `manifest`.
+
+| # | Candidate | Signals | Invariant | Grid shape | Fit | Route |
+|---|-----------|---------|-----------|------------|-----|-------|
+| 27 | `manifest.Marshal`/`Parse` field coverage (manifest.go `fromPolicy`, `toPolicy`, `quoteUnlessItReadsBack`, `screenSource`, `screenProvenance`) | Parser/serializer mirror pair; `FuzzManifestRoundTrip` has a real DeepEqual oracle but its literal varies only 8 of 10 `policy.Policy` fields (not InterpreterArgs, not Args), passes `Provenance{}` always, and uses single-element lists | Marshal may refuse what Validate accepts, but must never write a manifest that Parse reads back as a different policy or provenance | field (10 policy + 4 provenance) x concern (fromPolicy, toPolicy, quoting, screen, fuzz-covered) ~28, collapsible | Good: the fuzzer's oracle is strong and its input list is a hand-list, which is exactly where a grid adds coverage | grid, then widen the fuzz target for the fields the grid finds unvaried |
+| 28 | `policy.Validate` vs `policy/match.go` | Mirror pair named at match.go:7 ("the runtime counterpart to the rule validation in Validate"); 33 fix commits | Validate must never accept a rule the matcher cannot match as written | rule field x spelling | Weak here: two fuzz targets exist, but `FuzzPolicyValidation` only fuzzes Validate and `FuzzPortMatches` only PortMatches, so neither asserts the pair agrees | `fuzz-oracle`: the missing target is a cross-assertion, not a grid |
+| 29 | `internal/credhunt`, `internal/pathresolve` | 8 and 4 fixes, small surfaces | | | Decline: one dimension, linear flow | ordinary review if anything |
+| 30 | `internal/denylist` Deny/Holds | 89 fixes, but `HoldsUnknown` semantics sit under open P1 bv2-h7k3b | | | Decline, unchanged from row 24 | revisit after bv2-h7k3b |
