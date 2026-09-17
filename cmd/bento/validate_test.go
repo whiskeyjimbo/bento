@@ -1440,3 +1440,52 @@ func TestAnUnknownApprovalStateFailsLoudly(t *testing.T) {
 		t.Errorf("an unknown approval state must be an error; printed:\n%s", buf.String())
 	}
 }
+
+// The notes validate prints beside env:, interpreter: and network: are host facts, and a
+// gate reading --json has no other way to learn them.
+func TestValidateJSONCarriesTheHostNotes(t *testing.T) {
+	bin := t.TempDir()
+	interp := filepath.Join(bin, "fakepython")
+	if err := os.WriteFile(interp, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("BENTO_TEST_UNSET_VAR", "")
+	os.Unsetenv("BENTO_TEST_UNSET_VAR")
+	t.Setenv("HOME", "/home/someone")
+
+	p := &policy.Policy{
+		Entrypoint:  "./x",
+		Interpreter: "fakepython",
+		Env:         []string{"HOME", "BENTO_TEST_UNSET_VAR"},
+		Network:     []policy.NetworkRule{{Host: "127.0.0.1", Port: "8080"}, {Host: "example.com", Port: "443"}},
+	}
+	var o policyJSON
+	o.setHostNotes(p)
+	if o.InterpreterOnHost != interp {
+		t.Errorf("interpreter_on_host = %q, want %q", o.InterpreterOnHost, interp)
+	}
+	if o.SandboxHomeFromHost != "/home/someone" || o.HomeNotPassedThrough || o.HomeAllowlistedUnset {
+		t.Errorf("home = %q %v %v, want the host's passed through", o.SandboxHomeFromHost, o.HomeNotPassedThrough, o.HomeAllowlistedUnset)
+	}
+	if !slices.Equal(o.UnsetEnv, []string{"BENTO_TEST_UNSET_VAR"}) {
+		t.Errorf("unset_env = %v, want only the unset name and never HOME", o.UnsetEnv)
+	}
+	if !slices.Equal(o.LoopbackNetworkRules, []string{"127.0.0.1:8080"}) {
+		t.Errorf("loopback_network_rules = %v, want the loopback rule alone", o.LoopbackNetworkRules)
+	}
+
+	os.Unsetenv("HOME")
+	var unset policyJSON
+	unset.setHostNotes(p)
+	if unset.SandboxHomeFromHost != "" || !unset.HomeNotPassedThrough || !unset.HomeAllowlistedUnset {
+		t.Errorf("an allowlisted but unset HOME = %q %v %v, want not passed through and marked unset",
+			unset.SandboxHomeFromHost, unset.HomeNotPassedThrough, unset.HomeAllowlistedUnset)
+	}
+
+	var notListed policyJSON
+	notListed.setHostNotes(&policy.Policy{Entrypoint: "./x"})
+	if !notListed.HomeNotPassedThrough || notListed.HomeAllowlistedUnset {
+		t.Errorf("a manifest not naming HOME = %v %v, want not passed through only", notListed.HomeNotPassedThrough, notListed.HomeAllowlistedUnset)
+	}
+}

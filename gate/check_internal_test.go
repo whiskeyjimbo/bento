@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // A host that cannot anchor its shields still answers the refusals the shield set has no

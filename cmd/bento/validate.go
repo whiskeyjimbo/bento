@@ -71,6 +71,7 @@ func newValidateCmd() *cobra.Command {
 				out.Approval = approvalName(trust.CheckApproval(doc))
 				out.ApprovalNote = stampNote(mt.RealPath, doc)
 				out.setRunnable(run)
+				out.setHostNotes(doc.Policy)
 				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
 				if relocatable {
 					out.setRelocatable(pinned)
@@ -539,6 +540,24 @@ type policyJSON struct {
 	BroadReadGrants          []string `json:"broad_read_grants,omitempty"`
 	BroadWriteGrants         []string `json:"broad_write_grants,omitempty"`
 
+	// The notes validate prints beside env:, interpreter: and network:, carried here because
+	// they are host facts a gate reviewing the manifest cannot derive from the fields above.
+	// InterpreterOnHost is where the interpreter name lands on this host's PATH, absent when
+	// it is already that path or does not resolve.
+	InterpreterOnHost string `json:"interpreter_on_host,omitempty"`
+	// SandboxHomeFromHost is the HOME the manifest passes through from this host.
+	// HomeNotPassedThrough says the sandbox gets its own HOME instead, and
+	// HomeAllowlistedUnset that this is because HOME is allowlisted but unset here.
+	SandboxHomeFromHost  string `json:"sandbox_home_from_host,omitempty"`
+	HomeNotPassedThrough bool   `json:"home_not_passed_through,omitempty"`
+	HomeAllowlistedUnset bool   `json:"home_allowlisted_unset,omitempty"`
+	// UnsetEnv are the allowlisted variables other than HOME this host does not set, under
+	// run's key for the same fact.
+	UnsetEnv []string `json:"unset_env,omitempty"`
+	// LoopbackNetworkRules are the rules for a loopback host, which reach the sandbox's own
+	// loopback rather than the host's, in the network field's spelling.
+	LoopbackNetworkRules []string `json:"loopback_network_rules,omitempty"`
+
 	// Relocatable says whether every path anchors to the manifest's own directory, with
 	// PinnedPaths naming the ones that do not. A pointer because absent is the third
 	// answer, as it is for Runnable: the question is only asked under --relocatable.
@@ -548,6 +567,40 @@ type policyJSON struct {
 
 // setRelocatable folds the verdict into the envelope, so a machine gate reads the same
 // answer the human summary prints rather than inferring it from the exit code.
+// setHostNotes fills the host facts writePolicySummary prints as notes, from the same
+// lookups, so the envelope does not read as a host with nothing to say.
+func (o *policyJSON) setHostNotes(p *policy.Policy) {
+	if p.Interpreter != "" {
+		if path, err := exec.LookPath(p.Interpreter); err == nil && path != p.Interpreter {
+			o.InterpreterOnHost = path
+		}
+	}
+	if slices.Contains(p.Env, "HOME") {
+		if home, ok := os.LookupEnv("HOME"); ok {
+			o.SandboxHomeFromHost = home
+		} else {
+			o.HomeAllowlistedUnset = true
+			o.HomeNotPassedThrough = true
+		}
+	} else {
+		o.HomeNotPassedThrough = true
+	}
+	for _, name := range p.Env {
+		if _, ok := os.LookupEnv(name); !ok && name != "HOME" {
+			o.UnsetEnv = append(o.UnsetEnv, name)
+		}
+	}
+	var loopback []policy.NetworkRule
+	for _, r := range p.Network {
+		if isLoopbackHost(r.Host) {
+			loopback = append(loopback, r)
+		}
+	}
+	if len(loopback) > 0 {
+		o.LoopbackNetworkRules = networkKeys(loopback)
+	}
+}
+
 func (o *policyJSON) setRelocatable(pinned []string) {
 	ok := len(pinned) == 0
 	o.Relocatable = &ok
