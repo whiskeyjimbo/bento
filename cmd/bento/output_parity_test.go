@@ -298,4 +298,3 @@ func parityDoctor(t *testing.T) (string, map[string]any) {
 	}
 	return human.String(), machine
 }
-
