@@ -156,29 +156,42 @@ func FuzzParseManifest(f *testing.F) {
 // the set of scalars the format carries, and its corpus is already tuned to sit on the
 // accept/refuse boundary where a marshalled policy is interesting.
 func FuzzManifestRoundTrip(f *testing.F) {
-	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10)
-	f.Add("", "", "", "", "", "", "", "", "", 0)
-	f.Add("/bin/app", "python3", "LANG", "~/data", "~/out", "api.com", "443", "100M", "50%", 10)
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10, "--x", "", "-u", "bento profile", "2026-07-26T00:00:00Z", "abc", "blocked.example.com:443")
+	f.Add("", "", "", "", "", "", "", "", "", 0, "", "", "", "", "", "", "")
+	f.Add("/bin/app", "python3", "LANG", "~/data", "~/out", "api.com", "443", "100M", "50%", 10, "--x", "-y", "-u", "bento profile", "2026-07-26T00:00:00Z", "abc", "blocked.example.com:443")
 	// Whitespace and a colon are legal in a path and are what a naive serializer emits
 	// unquoted, producing a document that parses back as a different shape.
-	f.Add(" /bin/app ", "python3", "LANG", "/data: x", "/out", "api.com", "443", "100M", "50%", 10)
-	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "*.example.com", "1-1024", "1G", "100%", 1)
+	f.Add(" /bin/app ", "python3", "LANG", "/data: x", "/out", "api.com", "443", "100M", "50%", 10, "--x", "-y", "-u", "bento profile", "2026-07-26T00:00:00Z", "abc", "blocked.example.com:443")
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "*.example.com", "1-1024", "1G", "100%", 1, "--x", "-y", "-u", "bento profile", "2026-07-26T00:00:00Z", "abc", "blocked.example.com:443")
+	// The two encoder gaps the committed seeds pin, moved off entrypoint and interpreter
+	// and into the fields the old tuple never varied. Without them a corpus that still
+	// only carries "..." and "? 0" in the first two scalars says nothing about whether
+	// quoteUnlessItReadsBack reaches an args element or the provenance block, which is
+	// what bv2-zkyyz's instruction to drop the workaround was resting on.
+	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10, "...", "? 0", "...", "? 0", "...", "? 0", "...")
 
-	f.Fuzz(func(t *testing.T, entry, interp, env, read, write, host, port, mem, cpu string, pids int) {
+	f.Fuzz(func(t *testing.T, entry, interp, env, read, write, host, port, mem, cpu string, pids int, arg1, arg2, iarg, genBy, genAt, approves, blockedHost string) {
 		p := &policy.Policy{
 			Entrypoint:  entry,
 			Interpreter: interp,
-			Env:         []string{env},
-			Read:        []string{read},
-			Write:       []string{write},
-			Network:     []policy.NetworkRule{{Host: host, Port: port}},
+			// Two elements, because the guarantee is per-element quoting and order:
+			// a single-element list cannot tell a dropped element from a reordered one.
+			// InterpreterArgs stays one element and needs Interpreter non-empty, or
+			// policy.Validate refuses every case before Marshal writes anything.
+			InterpreterArgs: []string{iarg},
+			Args:            []string{arg1, arg2},
+			Env:             []string{env},
+			Read:            []string{read},
+			Write:           []string{write},
+			Network:         []policy.NetworkRule{{Host: host, Port: port}},
 			// Spelled rather than left zero: an absent exec: key means the deny-subprocesses
 			// default, which toPolicy fills in, so a policy carrying "" would come back
 			// different for a reason that is the format working as designed.
 			Exec:   policy.ExecNone,
 			Limits: policy.Limits{Memory: mem, CPU: cpu, PIDs: pids},
 		}
-		data, err := Marshal(p, Provenance{})
+		prov := Provenance{GeneratedBy: genBy, GeneratedAt: genAt, Approves: approves, BlockedHosts: []string{blockedHost}}
+		data, err := Marshal(p, prov)
 		if err != nil {
 			return // Marshal refuses exactly what Validate refuses; nothing was written
 		}
@@ -188,6 +201,12 @@ func FuzzManifestRoundTrip(f *testing.F) {
 		}
 		if !reflect.DeepEqual(doc.Policy, p) {
 			t.Fatalf("the policy did not survive the round trip:\nbefore %#v\nafter  %#v\nmanifest:\n%s", p, doc.Policy, data)
+		}
+		// The provenance block is written by the same marshaler and screened by the same
+		// function, so it carries the same risk and belongs in the same oracle. It is never
+		// dropped here: BlockedHosts always holds one element, so isZero is never true.
+		if !reflect.DeepEqual(doc.Provenance, prov) {
+			t.Fatalf("the provenance did not survive the round trip:\nbefore %#v\nafter  %#v\nmanifest:\n%s", prov, doc.Provenance, data)
 		}
 	})
 }
