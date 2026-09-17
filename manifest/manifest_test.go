@@ -792,7 +792,19 @@ func TestMarshalRoundTripsEveryShape(t *testing.T) {
 		prov  Provenance
 	}{
 		{name: "everything absent", shape: func(*policy.Policy) {}},
+		// The other normalization named above. The base policy spells the mode out, so
+		// without this row nothing here crosses the "" -> none branch. It passes whether
+		// or not that branch is present, because the fingerprint canonicalizes an omitted
+		// mode either way - which is the claim, not a regression pin: the normalization
+		// moves no grant. The mode rows below are what pin exec being written at all.
+		{name: "exec absent", shape: func(p *policy.Policy) { p.Exec = "" }},
+		{name: "exec none-strict", shape: func(p *policy.Policy) { p.Exec = policy.ExecNoneStrict }},
+		{name: "exec all", shape: func(p *policy.Policy) { p.Exec = policy.ExecAll }},
 
+		// The nil rows below build the same document as "everything absent" - the base
+		// policy already leaves every list nil - and are kept so the grid's cells are
+		// named where a reader looks for them. It is the empty rows that carry a distinct
+		// input, since []T{} reaches Marshal and comes back nil.
 		{name: "args nil", shape: func(p *policy.Policy) { p.Args = nil }},
 		{name: "args empty", shape: func(p *policy.Policy) { p.Args = []string{} }},
 		{name: "args one", shape: func(p *policy.Policy) { p.Args = rep(1, "--flag%d") }},
