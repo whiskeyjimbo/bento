@@ -98,8 +98,8 @@ var parityRows = []parityRow{
 
 	// approve has no --json: its callouts are validate's (Grid A), and the rest is the
 	// interactive review that ends in a stamp.
-	{writers: []string{"writeApprovalCallouts"}, exempt: "Grid A: approve has no --json; validate calls the same writer and its --json carries each callout"},
-	{writers: []string{"writeReapprovalNotice", "writeJournalDiff"}, exempt: "approve has no --json; the approval state reaches validate --json as approval"},
+	{writers: []string{"writeApprovalCallouts"}, exempt: "Grid A: approve has no --json; validate calls the same writer, and its --json carries each callout (unresolvable grants as an absent resolved_read)"},
+	{writers: []string{"writeReapprovalNotice", "writeJournalDiff"}, exempt: "approve has no --json; validate --json carries the approval state and approval_note, but not the changed-field diff, which only this host's journal can produce"},
 
 	// Trust warnings, shared across frontends.
 	{writers: []string{"warnUntrusted"}, exempt: "run carries it as stamp_at_risk; approve has no --json; profile --json lacks it (bv2-uzlc2)"},
@@ -128,8 +128,7 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 		"refusal":   parityRunRefusal,
 		"validate":  parityValidate,
 		"doctor":    parityDoctor,
-		// Rendered after "doctor", whose rows come first: the relocation it sets would
-		// otherwise reach that fixture too.
+		// Its HISTFILE stays set for the fixtures rendered after it; none of them reads it.
 		"doctor-relocated": parityDoctorRelocated,
 		"profile":          parityProfile,
 	}
