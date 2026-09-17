@@ -43,6 +43,9 @@ func populatedResult() enforce.Result {
 		// A directory the run pointed the checkout's hooks at, which it need never have
 		// written in - a different claim from the list above, and named separately.
 		RedirectedHooks: []string{"/repo/\x1b[2Khooks"},
+		// A grant that could not be read whole, which is what tells the two lists above
+		// apart from a clean pair.
+		UnresolvedHooks: []string{"/repo/\x1b[2Kvendor"},
 	}
 }
 
@@ -211,6 +214,7 @@ func TestWriteRunFactsSurfacesShieldAndNetworkFacts(t *testing.T) {
 		`"/home/u/.aws\""`,
 		`"/repo/\x1b[2Kpackage.json"`,
 		`"/repo/\x1b[2Khooks"`,
+		`"/repo/\x1b[2Kvendor"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("run facts are missing %q; on an interrupted or failed run an unprinted fact reads as clean.\ngot:\n%s", want, got)
