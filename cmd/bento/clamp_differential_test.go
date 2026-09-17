@@ -99,3 +99,36 @@ func TestClampReportsAWriteGrantContainingAWriteShield(t *testing.T) {
 		t.Errorf("the clamp keeps %q without reporting it; a degraded run refuses it, so the reviewer approves a manifest that dies at its first step (reported: %v)", grant, got)
 	}
 }
+
+// The corpus through the whole proposal rather than clampShieldedGrants alone. ClampKeeps
+// cases are kept by that first step on purpose and left to withholdRunRefused, so a test
+// that stops at the first step cannot see a proposal the run refuses. Only the refusing
+// direction is asserted: gate.Refusals reads the real host under $HOME, so it may refuse
+// more than the corpus layout alone would, and folding cases are skipped because that
+// host's mount does not fold.
+func TestShieldCorpusProposalWithholdsRunRefusedGrants(t *testing.T) {
+	for _, c := range shieldcorpus.Cases {
+		if c.Folding || c.Verdict == shieldcorpus.Honored || c.Verdict == shieldcorpus.AboveWriteShield {
+			continue
+		}
+		t.Run(c.Name, func(t *testing.T) {
+			home, err := shieldcorpus.Build(t.TempDir(), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			g := c.Path(home)
+			p := &policy.Policy{}
+			if c.Write {
+				p.Write = []string{g}
+			} else {
+				p.Read = []string{g}
+			}
+			clampProposal(p)
+			if slices.Contains(p.Read, g) || slices.Contains(p.Write, g) {
+				t.Errorf("%s\nthe run says %s, and the proposal still holds it (read=%v, write=%v)\nshape: %s",
+					g, c.Verdict, p.Read, p.Write, c.Why)
+			}
+		})
+	}
+}

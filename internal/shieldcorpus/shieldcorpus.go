@@ -269,6 +269,14 @@ var Cases = []Case{
 		ClampKeeps: true,
 	},
 	{
+		Name:       "write containing a symlink-expanded shield below the home",
+		Why:        "write: ~/farm holds the targets ~/.ssh's links expand into; the clamp keeps it on the write-containing reasoning, and unlike a write of the home it is not broad, so only the proposal's run-refusal withholding stands between it and a manifest the run refuses",
+		Grant:      "farm",
+		Write:      true,
+		Verdict:    AboveShield,
+		ClampKeeps: true,
+	},
+	{
 		Name:    "write containing a write shield",
 		Why:     "write: ~/.pyenv over the ~/.pyenv/shims shield, the one refusal only a degraded run raises: there is no bind there to re-shield the interior with and Landlock takes the union of the matching rules, while the full tier's last-wins ro-bind holds and honors the grant - which is why the gate stays silent about it and the clamp keeps the grant and reports it",
 		Grant:   ".pyenv",
