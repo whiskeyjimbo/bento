@@ -287,7 +287,7 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "embed: note: this host could not answer what it makes of the manifest, so nothing below is a clean bill\n")
 	}
 	if r.ShieldsUnknown {
-		fmt.Fprintf(w, "embed: note: this host could not work out where its shields anchor, so the grants below were not checked - everything else stands\n")
+		fmt.Fprintf(w, "embed: note: this host could not work out where its shields anchor, so the grants below were not checked against the shields - everything else stands\n")
 	}
 	for _, p := range r.Problems {
 		fmt.Fprintf(w, "embed: note: this host cannot start what the manifest names: %s\n", p)
