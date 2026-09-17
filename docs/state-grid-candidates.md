@@ -168,3 +168,41 @@ parse/serialize pair in `manifest`.
 | 28 | `policy.Validate` vs `policy/match.go` | Mirror pair named at match.go:7 ("the runtime counterpart to the rule validation in Validate"); 33 fix commits | Validate must never accept a rule the matcher cannot match as written | rule field x spelling | Weak here: two fuzz targets exist, but `FuzzPolicyValidation` only fuzzes Validate and `FuzzPortMatches` only PortMatches, so neither asserts the pair agrees | `fuzz-oracle`: the missing target is a cross-assertion, not a grid |
 | 29 | `internal/credhunt`, `internal/pathresolve` | 8 and 4 fixes, small surfaces | | | Decline: one dimension, linear flow | ordinary review if anything |
 | 30 | `internal/denylist` Deny/Holds | 89 fixes, but `HoldsUnknown` semantics sit under open P1 bv2-h7k3b | | | Decline, unchanged from row 24 | revisit after bv2-h7k3b |
+
+## Fifth outcome, 2026-09-17
+
+Row 27 was gridded (`state-grid-manifest-fields.md`, 44 cells, one UNHANDLED, no WRONG). The three
+routed runs were spent too, each reviewed at 0abf849: `fuzz-oracle-audit.md`,
+`concurrency-audit-observe.md`, `threat-model-launcher.md`.
+
+Correction to row 28: `FuzzPortMatches` already cross-asserts the port half of Validate against the
+matcher. Only the host half is unasserted, and the property holds by construction, so the item is a
+missing assertion rather than a defect.
+
+Correction to row 25 and to this session's brief: `make race` runs `internal/observe` whole under the
+detector (Makefile:137), not `internal/proxy` alone.
+
+Filed: bv2-jql08, bv2-kt3um, bv2-wzvsx (manifest); bv2-ehvnz, bv2-f29et (fuzz targets, plus a note on
+bv2-nul45); bv2-waaqd, bv2-w07fb, bv2-utgv8 (observe concurrency, plus a note on bv2-8updn);
+bv2-v09t5, bv2-b4wdp, bv2-7x1es, bv2-466p5 (launcher threat model). A warning went on bv2-zkyyz: its
+closing instruction cites fuzz seeds that cannot prove the YAML workaround is safe to drop, because
+the target never varies the fields the workaround protects.
+
+What the routed skills reached that a grid could not:
+- The terminal-detachment asymmetry (bv2-b4wdp) is a check on one tier and not its sibling, which the
+  degraded-tier grid had no cell for: nothing branches on `--new-session`, so there was no cell to be
+  wrong in.
+- The unauthenticated applied report (bv2-v09t5) comes from attacker capability, not from a
+  distinction the code makes.
+- The concurrent-opens docstring (bv2-utgv8) is a test that cannot fail the way it claims, which only
+  removing the protection reveals.
+
+Not filed, with reasons:
+- Manifest empty-slice and `Exec: ""` normalizations, list order and duplicates, quoting in the
+  unvaried fields: all checked inverted and holding.
+- `networkRule.UnmarshalYAML`'s scalar branch: unreachable from Marshal output.
+- Observe's `seen`, `drops`, `held`, `lastOp`, `execSpawn`, `tracees`, `res`: single-goroutine.
+- `stopProxy()` before `rec.into()` (profile.go:205-213): an ordering invariant held by comment; a
+  WHEN-axis candidate for a later grid, not a concurrency finding.
+- Fuzz targets for landlock, seccomp, i386, backend and cmd/*: no cheap in-process oracle.
+- Both exec dispatch paths already refuse a relative argv[0] (launcher.go:1040, seccomp_linux.go:157).
