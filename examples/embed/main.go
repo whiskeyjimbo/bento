@@ -250,22 +250,7 @@ func run(manifestPath string, allowUnapproved bool) int {
 		// behind. Without the guard the "the target ran, but" note at the end would assert
 		// a run that did not happen.
 	case err != nil:
-		// res carries a populated Report even here, so name any shortfall the run did
-		// reach before the failure rather than only the error.
-		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
-		for _, d := range res.Report.Degradations() {
-			fmt.Fprintf(os.Stderr, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Disclosure())
-		}
-		// And the auto-exec list, which survives this seam for the reason it is populated
-		// on the cancel path at all: a target killed partway is the one most likely to
-		// have rewritten a package.json, and on this arm nothing else says what the host
-		// now holds.
-		for _, f := range res.ChangedAutoExec {
-			fmt.Fprintf(os.Stderr, "embed: review %q before the next build: it runs on the host without being read\n", f)
-		}
-		for _, d := range res.RedirectedHooks {
-			fmt.Fprintf(os.Stderr, "embed: the run pointed this checkout's hooks at %q: whatever it holds runs at the next commit\n", d)
-		}
+		writeFailure(os.Stderr, err, res)
 		return 125
 	}
 
@@ -331,6 +316,20 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	}
 }
 
+// writeFailure is the failed run's report. res carries a populated Report even here,
+// and the shield and network facts ride out with the error for the reason cmd/bento
+// carries them on its own failed path: a run killed partway is the one most likely to
+// have rewritten a package.json or been handed a shielded path, and on this arm nothing
+// else says so. An empty list left unprinted would read as clean. What stays out is the
+// tail about the exit code, which describes a target that reached its own conclusion.
+func writeFailure(w io.Writer, err error, res enforce.Result) {
+	fmt.Fprintf(w, "embed: %v\n", err)
+	for _, d := range res.Report.Degradations() {
+		fmt.Fprintf(w, "embed: degraded: %s (%s): %s\n", d.Layer, d.State, d.Disclosure())
+	}
+	writeFacts(w, res)
+}
+
 // writeResult prints every honesty field of a Result. A frontend's job is not to
 // summarize the run: it is to say what the run could not guarantee and what it exposed
 // anyway, and any field left unread is a silence an operator reads as "nothing to
@@ -354,6 +353,53 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	if len(res.Shields) > 0 {
 		fmt.Fprintf(w, "embed: sandbox engaged: %d credential/host-service path(s) shielded from the target\n", len(res.Shields))
 	}
+	writeFacts(w, res)
+	// Setup: whether the exit code above is the TARGET's answer or bento's. 125 is
+	// bento's "could not run the target" code and a target may exit it too, so nothing
+	// else in this Result separates the two - an embedder mapping them onto different
+	// codes of its own reads this rather than the Report's human-facing prose.
+	if res.Setup != enforce.SetupAttested {
+		fmt.Fprintf(w, "embed: the sandbox did not reach the target (%s); exit code %d is bento's, not the target's\n",
+			res.Setup, res.ExitCode)
+	}
+	// Signaled: the run ended on a signal, so the exit code below is 128+signal and not
+	// an answer the target chose. An embedder that reported the code alone would present
+	// a limits kill as a target that failed, and every hint after this one is written for
+	// a target that ran to its own conclusion - which is why it returns here rather than
+	// adding a line. It does not say what did the killing: on the degraded tier the
+	// launcher execs into the target, so this is also how the target's own crash arrives.
+	if res.Signaled {
+		fmt.Fprintf(w, "embed: the target did not exit: the run was killed by signal %d (exit %d)", res.Signal, res.ExitCode)
+		if !p.Limits.IsZero() {
+			fmt.Fprint(w, "; the policy declares resource limits, and exceeding one ends a run this way")
+		}
+		fmt.Fprintln(w)
+		return
+	}
+	// EgressConnections, read as a bypass signature. bento intercepts egress
+	// cooperatively through HTTP_PROXY, so a target that ignores proxy settings dials
+	// into the empty network namespace and fails closed; a network run that failed having
+	// reached nothing through the proxy is what that looks like, and a bare "connection
+	// refused" leaves the user with no idea why. It is a heuristic, not proof - a target
+	// can make no connections and fail for its own reasons - so it is worded as a
+	// possibility.
+	//
+	// A gate makes the count meaningful even over a manifest with no network rules,
+	// which is precisely this example's demo: reach.yaml declares none and relies on the
+	// gate, so gating only on the declared rules would skip the hint in the one scenario
+	// the example is built around.
+	// Gated on an attested setup: a stage that died before the target also made no
+	// connection, and the proxy hint there points at a network problem that is not one.
+	if res.Setup == enforce.SetupAttested && (len(p.Network) > 0 || gated) && res.ExitCode != 0 && res.EgressConnections == 0 {
+		fmt.Fprintln(w, "embed: the target exited non-zero having made no connection through the egress proxy;")
+		fmt.Fprintln(w, "embed: if it needs network, note that bento intercepts egress via HTTP_PROXY, so a target")
+		fmt.Fprintln(w, "embed: that ignores proxy settings cannot reach even its allowlisted hosts.")
+	}
+}
+
+// writeFacts is the part of a Result that holds whether or not the run failed: what the
+// network refused or admitted, what the shields let through, and what the host now holds.
+func writeFacts(w io.Writer, res enforce.Result) {
 	// GateAdmitted: hosts the gate let out beyond the manifest. A wrapper would offer to
 	// persist these into the manifest via the normal approve/fingerprint path, turning
 	// ad-hoc runtime approvals back into declared, attested policy. The host is quoted
@@ -443,47 +489,6 @@ func writeResult(w io.Writer, p *policy.Policy, gated bool, res enforce.Result) 
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.
 	for _, s := range res.Exposed {
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
-	}
-	// Setup: whether the exit code above is the TARGET's answer or bento's. 125 is
-	// bento's "could not run the target" code and a target may exit it too, so nothing
-	// else in this Result separates the two - an embedder mapping them onto different
-	// codes of its own reads this rather than the Report's human-facing prose.
-	if res.Setup != enforce.SetupAttested {
-		fmt.Fprintf(w, "embed: the sandbox did not reach the target (%s); exit code %d is bento's, not the target's\n",
-			res.Setup, res.ExitCode)
-	}
-	// Signaled: the run ended on a signal, so the exit code below is 128+signal and not
-	// an answer the target chose. An embedder that reported the code alone would present
-	// a limits kill as a target that failed, and every hint after this one is written for
-	// a target that ran to its own conclusion - which is why it returns here rather than
-	// adding a line. It does not say what did the killing: on the degraded tier the
-	// launcher execs into the target, so this is also how the target's own crash arrives.
-	if res.Signaled {
-		fmt.Fprintf(w, "embed: the target did not exit: the run was killed by signal %d (exit %d)", res.Signal, res.ExitCode)
-		if !p.Limits.IsZero() {
-			fmt.Fprint(w, "; the policy declares resource limits, and exceeding one ends a run this way")
-		}
-		fmt.Fprintln(w)
-		return
-	}
-	// EgressConnections, read as a bypass signature. bento intercepts egress
-	// cooperatively through HTTP_PROXY, so a target that ignores proxy settings dials
-	// into the empty network namespace and fails closed; a network run that failed having
-	// reached nothing through the proxy is what that looks like, and a bare "connection
-	// refused" leaves the user with no idea why. It is a heuristic, not proof - a target
-	// can make no connections and fail for its own reasons - so it is worded as a
-	// possibility.
-	//
-	// A gate makes the count meaningful even over a manifest with no network rules,
-	// which is precisely this example's demo: reach.yaml declares none and relies on the
-	// gate, so gating only on the declared rules would skip the hint in the one scenario
-	// the example is built around.
-	// Gated on an attested setup: a stage that died before the target also made no
-	// connection, and the proxy hint there points at a network problem that is not one.
-	if res.Setup == enforce.SetupAttested && (len(p.Network) > 0 || gated) && res.ExitCode != 0 && res.EgressConnections == 0 {
-		fmt.Fprintln(w, "embed: the target exited non-zero having made no connection through the egress proxy;")
-		fmt.Fprintln(w, "embed: if it needs network, note that bento intercepts egress via HTTP_PROXY, so a target")
-		fmt.Fprintln(w, "embed: that ignores proxy settings cannot reach even its allowlisted hosts.")
 	}
 }
 

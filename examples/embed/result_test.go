@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"strconv"
 	"strings"
@@ -46,6 +47,9 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		// A directory the run pointed the checkout's hooks at, which it need never have
 		// written in - a different claim from the list above, and named separately.
 		RedirectedHooks: []string{"/repo/\x1b[2Khooks"},
+		// A grant that could not be read whole, which is what tells the two lists above
+		// apart from a clean pair.
+		UnresolvedHooks: []string{"/repo/\x1b[2Kvendor"},
 	}
 	return res, &policy.Policy{Network: []policy.NetworkRule{{Host: "ok.example", Port: "443"}}}
 }
@@ -257,5 +261,38 @@ func TestWriteResultReportsSetupFailure(t *testing.T) {
 				t.Errorf("the bypass hint fired for a run that never reached the target; got:\n%s", got)
 			}
 		})
+	}
+}
+
+// A failed run still carries what it was handed and what it was refused, and embed is the
+// template an embedder copies: a fact dropped from this arm is one every copy is silent
+// about on the run that most needs explaining.
+func TestWriteFailureSurfacesShieldAndNetworkFacts(t *testing.T) {
+	res, _ := populatedResult()
+	var out strings.Builder
+	writeFailure(&out, errors.New("sandbox wait: interrupted"), res)
+	got := out.String()
+
+	for _, want := range []string{
+		"sandbox wait: interrupted",
+		"the egress proxy stopped accepting mid-run",
+		`"ads.example\x1b[2K"`,
+		`"internal.example\x1b[2K"`,
+		`"api.githb.example\x1b[2K"`,
+		`"plain.example\x1b[2K"`,
+		`"declined.example\x1b[2K"`,
+		`"/home/u/.ssh"`,
+		"second name for the shielded credential",
+		`"/home/u/.aws\""`,
+		`"/repo/\x1b[2Kpackage.json"`,
+		`"/repo/\x1b[2Khooks"`,
+		`"/repo/\x1b[2Kvendor"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("failure output is missing %q; on a failed run an unprinted fact reads as clean.\ngot:\n%s", want, got)
+		}
+	}
+	if strings.ContainsRune(got, '\x1b') {
+		t.Errorf("an escape byte reached the terminal unquoted: %q", got)
 	}
 }
