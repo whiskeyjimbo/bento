@@ -70,7 +70,7 @@ Total 43 cells.
 |---|---|---|---|
 | A1.exit | pre-dispatch | F-exit | HANDLED: zero with non-nil err; every consumer branches on err first (run.go:423, embed main.go:250, supervise main.go:302) |
 | A1.setup | pre-dispatch | F-setup | HANDLED: SetupSilent zero, documented "read the error first" (enforce.go:347-351) |
-| A1.report | pre-dispatch | F-report | **WRONG** (forbidden). Backend returns a zero Report; run.go:239 replaces it with the pre-run probe, so the returned report claims every required layer Enforced for a run whose stage never existed. Finding 1 |
+| A1.report | pre-dispatch | F-report | FIXED in ed7ead3/b88ee14 (was **WRONG**, forbidden). Backend returns a zero Report; run.go:239 replaces it with the pre-run probe, so the returned report claims every required layer Enforced for a run whose stage never existed. Finding 1 |
 | A1.rec | pre-dispatch | F-rec | HANDLED: nil, and no consumer err arm reads it (Grid B), so nil is never rendered as "unasked" |
 | A1.net | pre-dispatch | F-net | HANDLED: nothing dialed, no proxy started |
 | A1.shield | pre-dispatch | F-shield | HANDLED: nothing mounted or exposed, target never started |
@@ -104,20 +104,20 @@ Only cells where the backend arm can carry a non-empty value (A2, A5, A6, A9).
 |---|---|---|---|
 | B1 | cmd/bento failed | F-hooks | HANDLED: human run.go:442-443 (UnresolvedHooks inside writeRedirectedHooksNotice, render.go:1634), JSON run.go:379 |
 | B2 | cmd/bento failed | F-shield | HANDLED: human run.go:437-439, JSON run.go:379; Shields JSON only, deliberately (run.go:436) |
-| B3 | cmd/bento failed | F-report | WRONG via A1.report (JSON reports `fully_enforced: true`). Finding 1 |
-| B4 | cmd/bento failed | Denied, GuardBlocked, Untunneled, EgressConnections | **UNHANDLED**. Dropped in both modes. Finding 2 |
-| B5 | cmd/bento failed | ExecRecord | **UNHANDLED**. Dropped in both modes. Finding 2 |
+| B3 | cmd/bento failed | F-report | FIXED in ed7ead3/b88ee14 (was WRONG via A1.report (JSON reports `fully_enforced: true`)). Finding 1 |
+| B4 | cmd/bento failed | Denied, GuardBlocked, Untunneled, EgressConnections | FIXED in 0eacfd5 (was **UNHANDLED**: dropped in both modes). Finding 2 |
+| B5 | cmd/bento failed | ExecRecord | FIXED in 0eacfd5 (was **UNHANDLED**: dropped in both modes). Finding 2 |
 | B6 | cmd/bento failed | GateAdmitted, GateDenied | IMPOSSIBLE non-empty: cmd/bento passes no NetworkGate (no `NetworkGate` anywhere in cmd/bento) |
 | B7 | embed error | ChangedAutoExec, RedirectedHooks | HANDLED: main.go:263-268 |
-| B8 | embed error | UnresolvedHooks | **WRONG** (forbidden). Not read, so an empty hook list on an unanswered grant reads like the clean one. Finding 3 |
-| B9 | embed error | Exposed, ShieldedGrants, AcceptedAliases | **WRONG** (forbidden). Not read; embed sets no DenyPaths, so the degraded tier is reachable and A6/A9 carry Exposed. Finding 3 |
-| B10 | embed error | F-net | **UNHANDLED**. Not read. Finding 3 |
+| B8 | embed error | UnresolvedHooks | FIXED in 6731896 (was **WRONG**, forbidden: not read, so an empty hook list on an unanswered grant reads like the clean one). Finding 3 |
+| B9 | embed error | Exposed, ShieldedGrants, AcceptedAliases | FIXED in 6731896 (was **WRONG**, forbidden: not read; embed sets no DenyPaths, so the degraded tier is reachable and A6/A9 carry Exposed). Finding 3 |
+| B10 | embed error | F-net | FIXED in 6731896 (was **UNHANDLED**: not read). Finding 3 |
 | B11 | embed error | F-report | HANDLED for degradations (main.go:256); inherits A1.report |
 | B12 | supervise interrupt/error | F-hooks | HANDLED: main.go:298-306, UnresolvedHooks inside writeRedirectedHooks (main.go:498) |
 | B13 | supervise interrupt/error | Exposed | IMPOSSIBLE: DenyPaths set (main.go:294), so the degraded tier is refused (run.go:193) |
 | B14 | supervise interrupt/error | AcceptedAliases | IMPOSSIBLE: Options carries no AcceptAliasesUnder (main.go:294) |
-| B15 | supervise interrupt/error | ShieldedGrants | **UNHANDLED**. Not read; an approved manifest granting ~/.ssh reaches A2/A5. Finding 4 |
-| B16 | supervise interrupt/error | F-net | **UNHANDLED**. GateAdmitted is carried on cancel precisely for a supervised run that timed out (linux.go:283-288) and supervise does not read it. Finding 4 |
+| B15 | supervise interrupt/error | ShieldedGrants | FIXED in 638befc/15dae72 (was **UNHANDLED**: not read; an approved manifest granting ~/.ssh reaches A2/A5). Finding 4 |
+| B16 | supervise interrupt/error | F-net | FIXED in 638befc/15dae72 (was **UNHANDLED**: GateAdmitted is carried on cancel precisely for a supervised run that timed out (linux.go:283-288) and supervise does not read it). Finding 4 |
 
 Adversarial re-check of HANDLED cells: A2-5.hooks re-read (computed before the cancel branch,
 so every arm sees it). A7.shield re-read: `ProcessState == nil` is only Start failing, and a
@@ -127,7 +127,7 @@ by grep that cmd/bento never sets a gate. No cell left without a verdict.
 
 ## Findings, forbidden direction first
 
-1. **A1.report / B3: a backend setup error before any stage returns a fully Enforced report.**
+1. **FIXED in ed7ead3/b88ee14. A1.report / B3: a backend setup error before any stage returns a fully Enforced report.**
    The Linux backend's pre-dispatch arms return `enforce.Result{}`. `enforce.Run` then sets
    `res.Report = required` unconditionally (run.go:239), which is the probe's claim of what the
    host CAN enforce, and returns it beside the error. The backend's own post-dispatch arms
@@ -144,7 +144,7 @@ by grep that cmd/bento never sets a gate. No cell left without a verdict.
    pre-dispatch arms (newSandbox, preflightGrants, bridge pipe), which return the same zero
    Result; their reachability on a probe-Enforced host is VERIFIED BY READING.
 
-2. **B4/B5: `bento run` drops the network refusal lists and the exec record on the failed path.**
+2. **FIXED in 0eacfd5. B4/B5: `bento run` drops the network refusal lists and the exec record on the failed path.**
    A run cancelled by Ctrl-C (main.go:66 NotifyContext) or dying in teardown carries Denied,
    GuardBlocked, Untunneled, EgressConnections and ExecRecord out of the backend (linux.go:297,
    368), and neither the human path (run.go:435-446) nor `streamRefusalJSON` (run.go:329) has
@@ -155,7 +155,7 @@ by grep that cmd/bento never sets a gate. No cell left without a verdict.
    VERIFIED BY SPIKE: `writeRunResult` with all four populated and a cancel error, both modes;
    none of the hosts nor the exec marker reached stdout or stderr.
 
-3. **B8/B9/B10: examples/embed error arm reads four fields of the ones it reads on success.**
+3. **FIXED in 6731896. B8/B9/B10: examples/embed error arm reads four fields of the ones it reads on success.**
    main.go:250-270 prints the error, degradations, ChangedAutoExec and RedirectedHooks. It drops
    UnresolvedHooks (forbidden: enforce.go:557 says only this separates an empty hook report from
    an unanswered one), Exposed/ShieldedGrants/AcceptedAliases (forbidden: embed runs with no
@@ -167,7 +167,7 @@ by grep that cmd/bento never sets a gate. No cell left without a verdict.
    a real backend; settling it needs the arm extracted into a writer, or a sandbox run with an
    injected backend wait error reachable from outside the linux package.
 
-4. **B15/B16: examples/supervise interrupt and error arms drop ShieldedGrants and the network lists.**
+4. **FIXED in 638befc/15dae72. B15/B16: examples/supervise interrupt and error arms drop ShieldedGrants and the network lists.**
    main.go:295-308 read only the hook group. The backend's cancel arm carries GateAdmitted for "a
    supervised run timed out after a human admitted a host" (linux.go:283-288), and supervise is
    that consumer. Allowed direction on balance: the human is told the run was interrupted or
@@ -222,9 +222,9 @@ Prior grid (2026-08-13) mapped onto these cells:
 
 | Prior site / fix | Cell here | Carried to the grid B consumers? |
 |---|---|---|
-| linux.go 292 cancel, shield set (83f212e) | A2.shield, A2.net | cmd/bento: shield set yes (B2), egress set no (B4). embed: no (B9, B10). supervise: shield set no (B15; Exposed and AcceptedAliases are impossible there), egress set no (B16) |
-| linux.go 321 default-err, shield and egress sets | A5.shield, A5.net | Same as the row above: B2 yes; B4, B9, B10, B15, B16 no |
-| degraded.go 238 cancel, ShieldedGrants/Exposed/AcceptedAliases | A6.shield | cmd/bento yes (B2). embed no (B9). supervise: Exposed impossible (B13), ShieldedGrants no (B15) |
+| linux.go 292 cancel, shield set (83f212e) | A2.shield, A2.net | cmd/bento: shield set yes (B2), egress set yes since 0eacfd5 (B4). embed: yes since 6731896 (B9, B10). supervise: shield and egress sets yes since 638befc (B15, B16; Exposed and AcceptedAliases are impossible there) |
+| linux.go 321 default-err, shield and egress sets | A5.shield, A5.net | Same as the row above: B2 yes; B4, B9, B10, B15, B16 yes since their fixes |
+| degraded.go 238 cancel, ShieldedGrants/Exposed/AcceptedAliases | A6.shield | cmd/bento yes (B2). embed yes since 6731896 (B9). supervise: Exposed impossible (B13), ShieldedGrants yes since 638befc (B15) |
 | degraded.go 255 default-err, same fields | A9.shield | Same as the row above |
 | bv2-h9g6 degraded cancel reconcile (closed) | A6.setup/report | HANDLED here, and the Report reaches every consumer |
 | linux.go 303 exit0 / 317 exited, degraded.go 243 / 250 | A3, A4, A7, A8 | Success paths read every field (C1, and the success writers in C3 and C4) |
