@@ -37,7 +37,13 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	if err != nil {
 		skipMissingDep(t, "bwrap is not installed, so there is no sandbox to run the stage in: %v", err)
 	}
-	args := []string{bwrap, "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"}
+	args := []string{bwrap, "--ro-bind", "/", "/", "--proc", "/proc"}
+	// Leaving --dev out lets the host's own /dev show through the recursive ro-bind above,
+	// which is what a shim filtering that flag out of argv leaves behind. Every other
+	// weaken arm keeps it, so no two refusals shadow each other.
+	if weaken != "dev" {
+		args = append(args, "--dev", "/dev")
+	}
 	// The host's own /tmp in place of the fresh one, which is what a shim filtering
 	// --tmpfs out of argv leaves behind - and it keeps /tmp writable, so the binary bind
 	// below still has somewhere to land.

@@ -95,6 +95,71 @@ func foreignPids(names []string, self int) []string {
 	return extra
 }
 
+// sandboxDev is the device directory bwrap mounts fresh into the sandbox (--dev /dev, see
+// internal/linux's pseudoFSFlags). Like /tmp it is in sandboxWritableMounts, so the
+// Landlock ruleset grants writes to whatever is mounted there.
+const sandboxDev = "/dev"
+
+// bwrapDevNodes is every top-level name bwrap's --dev creates: the six device nodes, the
+// three stdio symlinks, fd and core, the ptmx symlink, and the pts and shm submounts.
+// console is included because bwrap binds the invoking terminal there when the run has
+// one; bento passes --new-session, which suppresses it, so it is breadth against a bwrap
+// that behaves otherwise rather than a name observed here.
+//
+// This is an allowlist, not the denylist of specific dangerous nodes that would be the
+// wrong shape here: the question is whether every name present is one bwrap put there,
+// which is the same question verifyPidNamespace asks of /proc. The set is closed because
+// bwrap builds this directory from nothing, so a host /dev shows up as roughly two
+// hundred names outside it rather than as one borderline entry - the margin is what makes
+// an allowlist cheaper than reasoning about which nodes matter.
+var bwrapDevNodes = map[string]bool{
+	"null": true, "zero": true, "full": true, "random": true, "urandom": true, "tty": true,
+	"stdin": true, "stdout": true, "stderr": true,
+	"fd": true, "core": true, "ptmx": true,
+	"pts": true, "shm": true, "console": true,
+}
+
+// verifyDevMount is the launcher's own check that /dev is the minimal device directory
+// bwrap builds, for verifyFreshTmp's reason and with the same consequence: /dev is a
+// granted write, so a host /dev left in place hands the target the machine's device nodes
+// under a report saying the filesystem layer was enforced.
+//
+// statfs cannot answer this one. The host's /dev is a devtmpfs, which reports
+// TMPFS_MAGIC, so verifyFreshTmp's single syscall accepts the host's directory as
+// readily as bwrap's. The directory listing is the evidence that does distinguish them.
+func verifyDevMount() error {
+	entries, err := os.ReadDir(sandboxDev)
+	if err != nil {
+		return fmt.Errorf("launcher: reading %s to verify the sandbox's device mount: %w", sandboxDev, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if extra := foreignDevNodes(names); len(extra) > 0 {
+		// Named and capped for verifyPidNamespace's reason: a host /dev holds hundreds, and
+		// an operator needs enough to tell a shimmed bwrap from a bento bug.
+		return fmt.Errorf("launcher: %s is not the device directory bwrap builds; it holds %d name(s) bwrap did not create, including %s, so the target holds a granted write over the host's device nodes",
+			sandboxDev, len(extra), strings.Join(extra[:min(len(extra), 8)], ", "))
+	}
+	return nil
+}
+
+// foreignDevNodes names every entry in a /dev listing that bwrap's --dev does not create.
+// Kept separate from foreignPids rather than sharing a filter: the two lists answer
+// different questions, and verifyPidNamespace is one of two legs holding the pid-namespace
+// claim up (see internal/linux's sessionProof).
+func foreignDevNodes(names []string) []string {
+	var extra []string
+	for _, name := range names {
+		if bwrapDevNodes[name] {
+			continue
+		}
+		extra = append(extra, name)
+	}
+	return extra
+}
+
 // procSelfStatus carries the caller's capability sets, among much else. It is read from
 // inside the sandbox for verifyEmptyNetns' reason: the kernel's own answer is the one leg
 // that is not the suspect bwrap's word.

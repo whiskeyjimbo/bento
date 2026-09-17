@@ -107,6 +107,44 @@ func TestRunRefusesTheHostsPidNamespace(t *testing.T) {
 	}
 }
 
+// A sandbox's /dev holds only what bwrap put there. The host's holds the machine's
+// device nodes, which is what a bwrap whose --dev was filtered out of argv leaves
+// showing through a recursive bind - and /dev is a granted write, so those nodes are
+// writable too. The names are real entries from an ordinary host's /dev.
+func TestForeignDevNodesNamesNodesBwrapDidNotCreate(t *testing.T) {
+	host := []string{"null", "zero", "kvm", "pts", "mem", "shm", "sda", "tty", "net"}
+	if got := foreignDevNodes(host); !slices.Equal(got, []string{"kvm", "mem", "sda", "net"}) {
+		t.Fatalf("foreignDevNodes = %v, want the host's own nodes; a stripped --dev would go unnoticed", got)
+	}
+	bwrapDev := []string{"core", "fd", "full", "null", "ptmx", "pts", "random", "shm", "stderr", "stdin", "stdout", "tty", "urandom", "zero"}
+	if got := foreignDevNodes(bwrapDev); len(got) != 0 {
+		t.Errorf("foreignDevNodes = %v, want none: this is exactly what bwrap's --dev builds", got)
+	}
+}
+
+// The check is worth nothing if Run stops calling it. Same shape as the /tmp refusal: a
+// real sandbox weakened in exactly one place, here by leaving --dev out so the host's
+// device directory shows through the ro-bind of /.
+func TestRunRefusesTheHostsDev(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "dev")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded on the host's /dev:\n%s", out)
+	}
+	if !strings.Contains(string(out), "is not the device directory bwrap builds") {
+		t.Errorf("Run failed without the device-mount refusal: %q", out)
+	}
+}
+
 // The bounding set is what stops a target from remounting bento's read-only shields
 // read-write, so the parse has to read a held capability as one. The masks are real: the
 // first is what an ordinary host process holds, the second what a sandboxed one does.

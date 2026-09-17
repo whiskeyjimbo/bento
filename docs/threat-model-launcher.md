@@ -205,9 +205,14 @@ default-deny with narrow grants there is no broader grant for a dropped shield t
 uncover, so this row's effect is conditional on the run carrying a broad read
 grant - the case `docs/threat-model.md` section 4.2 exists for.
 
-### F4. `/dev` is unverified, and unlike `/tmp` it is not cheaply verifiable
+### F4. `/dev` was unverified, and statfs could not settle it - FIXED
 
-`VERIFIED BY SPIKE` (the negative result).
+`VERIFIED BY SPIKE` (the negative result), then closed by `verifyDevMount`
+(`verify.go:130`), which reads the directory listing instead of the filesystem
+type. Two spikes under bento's own `baseFlags`, with and without a controlling
+terminal, put bwrap's `/dev` at 15 entries against this host's 216; `--new-session`
+is what suppresses `/dev/console` in both. The paragraphs below record why the
+obvious single-syscall fix does not work, since that is the reusable part.
 
 `internal/linux/args.go:513` asks for `--proc /proc`, `--dev /dev` and
 `--tmpfs /tmp` as one list that the probe and the real run must exercise
@@ -220,7 +225,8 @@ consequence:
   `/proc/net/dev` would then describe the host stack and fail
   `verifyEmptyNetns` (`netns.go:29`). `internal/launcher/netns_test.go` and
   `verify_test.go` both drive those refusals.
-- `/dev` is confirmed by nothing.
+- `/dev` is confirmed by `verifyDevMount` (`verify.go:130`), by listing rather
+  than by statfs - see below.
 
 The obvious fix does not work, which is what the spike bought over reading. On
 this host `statfs("/dev")` reports `0x1021994`, which *is* `TMPFS_MAGIC` - the
@@ -342,7 +348,7 @@ planted fixture, `spiked` attempted against the real thing.
 | `run-launcher/state-mutated-pidns` | same-uid, as the shim | `ENFORCED` | the host process table and its `/proc` are refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:59`; `verify_test.go:90` |
 | `run-launcher/state-mutated-capbound` | same-uid, as the shim | `ENFORCED` | a non-empty bounding set, which would let the read-only binds be remounted rw, is refused | `LOGGED-ONLY` | read | `internal/launcher/verify.go:114`; `verify_test.go:131` |
 | `run-launcher/state-mutated-terminal` | same-uid | `ENFORCED` | a bwrap that did not put the sandbox in a session of its own refuses the run | `LOGGED-ONLY` | evidenced | fatal in the degraded tier at `degraded.go:120,226`; the bwrap tier now probes it from the shared `args.go:528` (`sessionFlags`) and proves it from inside at `internal/linux/probe.go:607` (`sessionProof`, a nonzero session id in the namespace-local procfs). The probe's reading is namespace-local, so it is vacuous against a host `/proc`; what refuses that shape is `internal/launcher/verify.go` (`verifyPidNamespace`) seeing the host process table at launch, so the two legs together are the fence. Tests: `newsession_test.go` end to end over a real pty, and `TestTheNamespaceProbeProvesTheNewSessionTook` on every host |
-| `run-launcher/state-mutated-dev` | same-uid | `UNENFORCED` | host device nodes, gated by group membership rather than by bento | `SILENT` | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `args.go:514` |
+| `run-launcher/state-mutated-dev` | same-uid | `ENFORCED` | host device nodes, gated by group membership rather than by bento | `REFUSED` | evidenced | `statfs("/dev")` is `TMPFS_MAGIC` on this host, so the `/tmp` trick does not transfer; `verifyDevMount` (`verify.go:130`) lists `/dev` against the closed set bwrap's `--dev` creates; `verify_test.go`'s `TestRunRefusesTheHostsDev` |
 | `run-launcher/state-mutated-shields` | same-uid | `UNENFORCED` (conditional) | nothing, unless the run carries a broad read grant that the shield was covering; then that credential store for the run's length. A narrow-grant run has nothing for a dropped shield to uncover, and a broad grant already warns | `SILENT` | read | `args.go:318`; no in-sandbox check, and `landlock_linux.go:102` read-grants `/` |
 | `run-launcher/privilege-inherited` | same-uid (bento's embedder) | `ENFORCED` | every leaked descriptor is CLOEXEC-marked before the bridge or the target | `SILENT` | read | `internal/launcher/launcher.go:189` (`dropInheritedFDs`); `launcher_test.go:230` |
 | `run-launcher/internal-disclosed` | same-uid (the target) | `ENFORCED` | `/proc/<launcher>/fd` would reopen dropped fds by path and disclose host paths | `SILENT` | read | `PR_SET_DUMPABLE` at `internal/launcher/launcher.go:224`, and its comment on why bwrap alone is not the guarantee |

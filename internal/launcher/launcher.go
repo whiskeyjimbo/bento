@@ -155,6 +155,11 @@ func Run(cfg Config) (int, error) {
 	if err := verifyFreshTmp(); err != nil {
 		return 0, err
 	}
+	// The other half of the filesystem assumption, and the one statfs cannot settle
+	// because a host devtmpfs answers TMPFS_MAGIC too. See verifyDevMount.
+	if err := verifyDevMount(); err != nil {
+		return 0, err
+	}
 	// And the process half, which nothing backstops at all: Landlock has no
 	// pid-namespace analogue. See verifyPidNamespace.
 	if err := verifyPidNamespace(); err != nil {
@@ -300,6 +305,18 @@ func applyLayers(cfg Config, applied *appliedReport) error {
 	// than aborting the run - failing here would make bwrap's confinement
 	// contingent on the backstop, inverting the relationship. (An absent Landlock
 	// is a silent no-op inside Restrict, not an error.)
+	//
+	// Unlike the four fences above, this one is not verified from inside, and it cannot
+	// be: every path the ruleset would deny with EACCES is already EROFS under bwrap's
+	// read-only binds, so no write the launcher can attempt distinguishes a ruleset that
+	// landed from one that did not. A probe of the sandbox root returns EROFS with or
+	// without it. The report is therefore the whole of the disclosure - AppliedNo carries
+	// the failure, AppliedAbsent the kernel that has no Landlock - and that is why this
+	// records rather than asserts.
+	//
+	// The ruleset also covers writes only: Restrict read-grants "/", so none of the
+	// read fences (the credential shields) has a backstop here. Fencing reads would need
+	// this run's read-grant set, which Config does not carry.
 	if err := landlockRestrict(cfg.Writable); err != nil {
 		fmt.Fprintf(os.Stderr, "[bento] warning: the Landlock filesystem backstop could not be applied (%v); bwrap confinement still holds\n", err)
 		applied.record(AppliedLandlock, AppliedNo, err)
