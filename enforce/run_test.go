@@ -192,6 +192,23 @@ func TestRunPropagatesEnforcerError(t *testing.T) {
 	}
 }
 
+// A backend that fails before its stage attests anything applied no layer, so the
+// run's report must not carry the probe's Enforced verdicts as if they held.
+func TestRunEnforcerErrorBeforeSetupReportsNothing(t *testing.T) {
+	wantErr := errors.New("bwrap: failed to start")
+	f := &fakeEnforcer{probe: fullyEnforced(), err: wantErr, silentStage: true}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want the backend error propagated", err)
+	}
+	if res.Setup != SetupSilent {
+		t.Errorf("setup = %v, want silent", res.Setup)
+	}
+	if len(res.Report.Layers) != 0 {
+		t.Errorf("report = %+v, want no layers for a stage that applied none", res.Report.Layers)
+	}
+}
+
 // A manifest that requests a cpu limit requires the cpu-limits layer, which needs
 // the cpu controller delegated. systemd-run silently ignores an undelegated
 // CPUQuota, so an undelegated host must REFUSE the run by default (like an

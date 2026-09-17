@@ -257,6 +257,14 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	}
 	res.Report = required
 	if err != nil {
+		// A stage that attested nothing and failed applied no layer, so the probe's
+		// verdict is not this run's report: handing it back would read as fully enforced
+		// for a target that most likely never started. The empty report is the answer,
+		// and there is no posture to hold a Shortfall against.
+		if res.Setup == SetupSilent {
+			res.Report = Report{}
+			return res, err
+		}
 		// The posture bar below applies to this arm too: the overlay has already run, so the
 		// report handed back here can carry a core layer the backend downgraded mid-run -
 		// the exact state admission refuses - and the error beside it is the backend's own

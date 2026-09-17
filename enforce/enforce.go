@@ -350,6 +350,10 @@ type Result struct {
 	// admission turned away), and the zero value reads as SetupSilent there without a
 	// stage having died: read the error first, this second.
 	//
+	// On a backend error it also says whether the Report means anything: a silent stage
+	// that failed applied no layer, so Run returns an empty Report beside it rather than
+	// the probe's verdicts.
+	//
 	// It lives on Result rather than in Report because Report is overlaid after the
 	// backend returns; see SetupState for what the states do and do not attest.
 	Setup SetupState
