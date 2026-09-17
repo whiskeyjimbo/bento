@@ -165,6 +165,26 @@ func TestRequireApprovableLocation(t *testing.T) {
 		}
 	})
 
+	// Each fatal flaw is its own chmod to fix, so naming only the first sends the user
+	// round the refuse-fix-retry loop once per flaw.
+	t.Run("names every fatal flaw", func(t *testing.T) {
+		outer := t.TempDir()
+		inner := filepath.Join(outer, "proj")
+		if err := os.Mkdir(inner, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := manifestIn(t, inner)
+		for _, d := range []string{inner, outer} {
+			if err := os.Chmod(d, 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := approvable(t, path)
+		if err == nil || !strings.Contains(err.Error(), "the directory holding it") || !strings.Contains(err.Error(), "a directory on the path to it") {
+			t.Fatalf("the refusal must name both the directory and the ancestor; got %v", err)
+		}
+	})
+
 	// A private directory under a world-writable one is no safer: renaming the parent
 	// aside substitutes the whole tree, so the check cannot stop at the first level.
 	t.Run("refuses a world-writable ancestor", func(t *testing.T) {

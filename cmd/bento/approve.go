@@ -409,16 +409,25 @@ func readApprovalAnswer(ctx context.Context, lines <-chan string, w io.Writer) e
 // whether on the manifest or on the directory it can be renamed within, gives away for
 // free. Only what approve cannot fix and what is unambiguously shared is fatal; see
 // trust.Manifest.Flaws for which is which.
+//
+// Every fatal flaw is named, not the first: each is its own fix, and stopping at one sends
+// the user through a refusal per flaw.
 func requireApprovableLocation(path string, mt trust.Manifest) error {
+	var fatal []string
 	for _, flaw := range mt.Flaws(uint32(os.Geteuid())) {
-		if flaw.Fatal {
-			if flaw.Hint != "" {
-				return fmt.Errorf("refusing to approve %s: %s; %s", path, flaw.Reason, flaw.Hint)
-			}
-			return fmt.Errorf("refusing to approve %s: %s", path, flaw.Reason)
+		if !flaw.Fatal {
+			continue
+		}
+		if flaw.Hint != "" {
+			fatal = append(fatal, flaw.Reason+"; "+flaw.Hint)
+		} else {
+			fatal = append(fatal, flaw.Reason)
 		}
 	}
-	return nil
+	if len(fatal) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to approve %s: %s", path, strings.Join(fatal, "\n"))
 }
 
 // writeManifestAtomically replaces the manifest through a temporary file in its own
