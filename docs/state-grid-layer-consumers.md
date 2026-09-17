@@ -100,3 +100,8 @@ Rows are the filesystem layer state on a zero-network-rule manifest, split by wh
 
 - Profile's use of writeRefusal was treated as identical to run's and not traced separately.
 - JSON has no legend counterpart, so 2c has no JSON cells.
+
+## Status, 2026-09-17
+
+Row D fixed: the seccomp egress legend line is keyed on enforce.Result.Degraded, set in
+enforce.Run, not on zero rules plus filesystem Degraded (0085cec).

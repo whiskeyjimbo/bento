@@ -73,3 +73,11 @@ cannot restrict.
   cell 1's Reason wording under landlocktsync.
 - Open bd: bv2-z69p3 (SetTierPreset's hybrid is asserted nowhere) is a test-seam item and changes
   no cell.
+
+## Status, 2026-09-17
+
+Cell 6 fixed: truncate below ABI 3 is disclosed for files outside every grant (686226d).
+Cell 10 fixed: the ABI 4+ net clause names passed connected descriptors and MPTCP, including a
+passed unconnected MPTCP socket (686226d, f21e1bd); seccomp refuses MPTCP at socket(2), pinned
+by bv2-zmay1. Cell 21 fixed by an unconditional disclosure of rights past ABI 9 (686226d),
+over-stating on older kernels.
