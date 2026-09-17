@@ -1192,7 +1192,7 @@ func TestAnUnreadableLandlockReasonIsStillAFailure(t *testing.T) {
 func TestADuplicateExecRecorderLineCannotClaimTheRunWasWatched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "applied")
 	written := "exec-filter none\nlandlock yes\nAPPLIED\n" +
-		"exec-recorder no \"attach refused\"\nexec-recorder yes\nEXEC-RECORD\n"
+		"exec-recorder absent \"attach refused\"\nexec-recorder yes\nEXEC-RECORD\n"
 	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1202,7 +1202,7 @@ func TestADuplicateExecRecorderLineCannotClaimTheRunWasWatched(t *testing.T) {
 	}
 	rec := a.execRecord(true)
 	if rec.Watched {
-		t.Error("a run whose recorder reported an attach failure was reported as watched")
+		t.Error("a run whose recorder reported no recorder was reported as watched")
 	}
 	if rec.Reason != "attach refused" {
 		t.Errorf("reason = %q, want the failure the stage reported first", rec.Reason)
@@ -1252,6 +1252,23 @@ func TestAFailedRecorderIsNotComplete(t *testing.T) {
 	}
 	if rec := a.execRecord(true); rec.Watched || rec.Complete {
 		t.Errorf("a recorder that lost its trace was reported as %+v, want neither watched nor complete", rec)
+	}
+}
+
+// Only a section the launcher never writes reaches this, but the JSON envelope omits an empty
+// runs list, so a complete answer would be byte-identical to a clean record.
+func TestAWatchedRecordWithNoRunsIsNotComplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "applied")
+	section := launcher.AppliedExecRecorder + " " + launcher.AppliedYes + "\n" + launcher.AppliedExecRecordMarker + "\n"
+	if err := os.WriteFile(path, []byte("exec-filter none\nlandlock yes\nAPPLIED\n"+section), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := parseApplied(openReport(t, path))
+	if !a.complete {
+		t.Fatalf("the layer facts did not survive: %+v", a)
+	}
+	if rec := a.execRecord(true); !rec.Watched || rec.Complete {
+		t.Errorf("a watched record that lost even the target's entry was reported as %+v, want watched and not complete", rec)
 	}
 }
 

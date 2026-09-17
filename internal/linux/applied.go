@@ -213,9 +213,10 @@ func parseApplied(f *os.File) applied {
 				// than on recorderSeen because a bare "exec-recorder" line names no recorder
 				// either, and execRecord would report {watched:false, complete:true} for it.
 				//
-				// A recorder that reports "no" is not whole either, though its section is: the
-				// trace lost its target, and the marker only says the list that follows is the
-				// list the launcher held, not every exec the run made. "absent" stays whole
+				// A recorder that reports "no" is not whole either, though its section is: an
+				// attach refused, a target that died first or a trace that lost it all leave
+				// execs unrecorded, and the marker only says the list that follows is the list
+				// the launcher held, not every exec the run made. "absent" stays whole
 				// because nothing could ever watch, so nothing was lost, which is how the
 				// degraded tier reports the same fact.
 				a.execRecordComplete = !garbled && a.execRecorder != "" && a.execRecorder != launcher.AppliedNo
@@ -372,6 +373,11 @@ func (a applied) execRecord(asked bool) *enforce.ExecRecord {
 	switch a.execRecorder {
 	case launcher.AppliedYes:
 		rec.Watched = true
+		// The launcher seeds the target before watching, so a watched record with no runs
+		// lost at least that entry. Left complete, JSON would read as a clean run.
+		if len(a.execRuns) == 0 {
+			rec.Complete = false
+		}
 	case "":
 		rec.Reason = "the sandboxed launcher reported nothing about the exec recorder"
 	default:
