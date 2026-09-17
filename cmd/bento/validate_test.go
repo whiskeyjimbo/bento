@@ -20,6 +20,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 // validate must surface resource limits in both the human summary and --json, so a
@@ -1372,5 +1373,64 @@ func TestValidateResolvesTheInterpreter(t *testing.T) {
 	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "nosuchinterp"}, nil, nil, true)
 	if out := buf.String(); strings.Contains(out, "on this host: ") {
 		t.Errorf("an unresolvable interpreter must not be given a landing place; got:\n%s", out)
+	}
+}
+
+// "current" reads the same for a stamp this host never recorded as for its own, so the
+// note the human output carries under it is a field too, and absent once recorded.
+func TestValidateJSONCarriesTheUnrecordedStampNote(t *testing.T) {
+	stateHome(t)
+	p := &policy.Policy{Entrypoint: "./x"}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+
+	got := validateJSON(t, path)
+	if got.Approval != "current" || got.ApprovalNote != unrecordedStamp {
+		t.Errorf("approval = %q, approval_note = %q; want current with the unrecorded-stamp note", got.Approval, got.ApprovalNote)
+	}
+
+	writeApprovalRecord(path, p, true, io.Discard)
+	if got := validateJSON(t, path); got.ApprovalNote != "" {
+		t.Errorf("a stamp this host recorded must carry no note; approval_note = %q", got.ApprovalNote)
+	}
+}
+
+// A journal directory others can write is no evidence either way, and the envelope must
+// say so rather than read like a clean record.
+func TestValidateJSONCarriesTheSharedJournalNote(t *testing.T) {
+	dir := filepath.Join(stateHome(t), "bento", "approvals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	p := &policy.Policy{Entrypoint: "./x"}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+
+	if got := validateJSON(t, path); got.ApprovalNote != sharedJournal {
+		t.Errorf("approval_note = %q, want the shared-journal note", got.ApprovalNote)
+	}
+}
+
+func validateJSON(t *testing.T, path string) policyJSON {
+	t.Helper()
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", "--strict", path)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	var got policyJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
+	}
+	return got
+}
+
+// No fourth state exists, so this calls the printer directly with one out of range:
+// without --strict nothing else fails, and printing no approval line must not exit 0.
+func TestAnUnknownApprovalStateFailsLoudly(t *testing.T) {
+	var buf strings.Builder
+	if err := writeApprovalLine(&buf, trust.ApprovalState(99), ""); err == nil {
+		t.Errorf("an unknown approval state must be an error; printed:\n%s", buf.String())
 	}
 }

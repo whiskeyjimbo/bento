@@ -69,6 +69,7 @@ func newValidateCmd() *cobra.Command {
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(trust.CheckApproval(doc))
+				out.ApprovalNote = stampNote(mt.RealPath, doc)
 				out.setRunnable(run)
 				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
 				if relocatable {
@@ -193,10 +194,20 @@ func fileExists(path string) bool {
 // not current - the CI signal that a manifest's permissions changed without
 // re-approval.
 func reportApproval(w io.Writer, realPath string, doc *manifest.Document, strict bool) error {
-	switch trust.CheckApproval(doc) {
+	if err := writeApprovalLine(w, trust.CheckApproval(doc), stampNote(realPath, doc)); err != nil {
+		return err
+	}
+	return strictApprovalError(doc, strict)
+}
+
+// writeApprovalLine prints one state's line. A state the switch does not name is an
+// error rather than no line at all: without --strict nothing else would fail, so a value
+// added to trust.ApprovalState would print no verdict and exit 0.
+func writeApprovalLine(w io.Writer, state trust.ApprovalState, note string) error {
+	switch state {
 	case trust.ApprovalCurrent:
 		fmt.Fprintf(w, "\napproval:     current (approved for these permissions)\n")
-		if note := stampNote(realPath, doc); note != "" {
+		if note != "" {
 			for _, line := range wrapText(note, textWidth-len("              ")) {
 				fmt.Fprintf(w, "              %s\n", line)
 			}
@@ -207,8 +218,10 @@ func reportApproval(w io.Writer, realPath string, doc *manifest.Document, strict
 		fmt.Fprintf(w, "\napproval:     STALE - the permissions changed since this manifest was approved\n")
 		fmt.Fprintf(w, "              %s,\n", noStampDiff)
 		fmt.Fprintf(w, "              so re-review the whole manifest above and re-stamp it there\n")
+	default:
+		return fmt.Errorf("unknown approval state %d", state)
 	}
-	return strictApprovalError(doc, strict)
+	return nil
 }
 
 // noStampDiff is why the manifest alone cannot show what changed, and where the delta can
@@ -461,6 +474,12 @@ type policyJSON struct {
 	// summary prints, so a machine gate can read the outcome as a field rather than
 	// inferring it from the exit code.
 	Approval string `json:"approval,omitempty"`
+	// ApprovalNote is the note the human output puts under a current stamp: this host
+	// holds no record of approving it, or its approval journal is not private enough to
+	// say. A note, not a verdict - --strict does not fail on it - and absent otherwise.
+	// "current" alone reads the same for a stamp shipped from elsewhere as for this
+	// host's own, so a gate has nothing else to tell them apart.
+	ApprovalNote string `json:"approval_note,omitempty"`
 	// Runnable says whether this host can start what the manifest names, with
 	// RunnableProblems carrying run's own wording for why not. A pointer because absent
 	// is a third answer - the host could not resolve the paths at all - and the same pair

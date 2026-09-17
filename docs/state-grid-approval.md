@@ -61,7 +61,7 @@ the enum.
 | F | run --allow-unapproved | HANDLED | same note, proceeds | EXECUTION |
 | F | validate | HANDLED | "current" plus the unrecorded note under it (validate.go:194 reportApproval) | EXECUTION |
 | F | validate --strict | HANDLED (by design) | exit 0; stampNote documents a note never a refusal (journal.go unrecordedStamp comment) | EXECUTION |
-| F | validate --json | **WRONG** | `"approval":"current"` and nothing else: no field and no stderr line for the unrecorded stamp. Human validate, run, and approve all say it. Also true on docs/state-grids tip (stampNote is only called from reportApproval, validate.go:199 there) | EXECUTION (main), READING (branch) |
+| F | validate --json | HANDLED | `"approval":"current"` with `approval_note` carrying the unrecorded note (TestValidateJSONCarriesTheUnrecordedStampNote) | EXECUTION |
 | F | --json --strict | HANDLED (by design) | exit 0, as human strict; same missing field as above | EXECUTION |
 | F | approve | HANDLED | shortcut declined, re-review with "cannot confirm it was stamped here" (approve.go:154) | EXECUTION |
 | F | approve --yes | HANDLED | same notice, stamps, records journal | EXECUTION |
@@ -69,7 +69,7 @@ the enum.
 | J | run --allow-unapproved | HANDLED | same | READING |
 | J | validate | HANDLED | note under "current" | READING |
 | J | validate --strict | HANDLED (by design) | exit 0 | READING |
-| J | validate --json | **WRONG** | same gap as F: sharedJournal note has no json carrier | READING |
+| J | validate --json | HANDLED | `approval_note` carries the sharedJournal note (TestValidateJSONCarriesTheSharedJournalNote) | EXECUTION |
 | J | --json --strict | HANDLED (by design) | exit 0 | READING |
 | J | approve | HANDLED | readApprovalRecord -> untrusted, shortcut declined, writeJournalDiff names it | READING |
 | J | approve --yes | HANDLED | same | READING |
