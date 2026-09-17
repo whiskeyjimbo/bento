@@ -1725,14 +1725,16 @@ func writeExecRecord(w io.Writer, res enforce.Result) {
 			fmt.Fprintln(w, "[bento]     (arguments cut - the command line was longer than the record holds)")
 		}
 	}
-	switch len(rec.Runs) {
-	case 0:
+	switch {
+	case len(rec.Runs) == 0:
 		// Not reachable through a healthy recorder, which seeds the target before the run
 		// starts - so this is a record that lost even that, and the one thing it must not
 		// do is read as a run that executed nothing.
 		fmt.Fprintln(w, "[bento] the exec record came back without even the target's own entry, so nothing")
 		fmt.Fprintln(w, "[bento] about what ran can be read out of it.")
-	case 1:
+	case len(rec.Runs) == 1 && rec.Complete:
+		// Only a whole record can say nothing else ran; a partial one holding just the
+		// target says only that nothing else was seen, which the lead-in below does.
 		fmt.Fprintln(w, "[bento] the run executed nothing beyond the target itself:")
 		writeRun(rec.Runs[0])
 	default:

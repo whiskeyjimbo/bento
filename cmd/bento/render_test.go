@@ -1726,6 +1726,9 @@ func TestWriteExecRecordSeparatesItsFiveStates(t *testing.T) {
 	}
 
 	partial := render(&enforce.ExecRecord{Watched: true, Runs: []enforce.ExecRun{{Exe: "/bin/sh"}}})
+	if strings.Contains(partial, "nothing beyond the target") {
+		t.Errorf("a record cut short cannot say nothing else ran; got:\n%s", partial)
+	}
 	if !strings.Contains(partial, "ends") {
 		t.Errorf("a record that never reached its end marker must say so; got:\n%s", partial)
 	}
