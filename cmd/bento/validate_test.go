@@ -1050,6 +1050,20 @@ func assertApproveRefuses(t *testing.T, path string) {
 	}
 }
 
+// A host that could not resolve the manifest's paths checked no grant against the shields,
+// so the footer must not promise they hold over the grants above it.
+func TestValidateUnresolvedFooterClaimsNoShield(t *testing.T) {
+	var buf strings.Builder
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Read: []string{"~"}}, nil, nil, true)
+	out := buf.String()
+	if strings.Contains(out, "shielded even if a path above would otherwise expose them") {
+		t.Errorf("an unresolved summary claimed the shields hold; got:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing above was checked against the shields") {
+		t.Errorf("an unresolved summary must say the grants went unchecked; got:\n%s", out)
+	}
+}
+
 // A host that cannot work out where its shields anchor answers half the question: the
 // grants are unknown, but whether the entrypoint resolves is a fact about the filesystem
 // that the shield set has no part in. Both halves must reach the report - the older shape
@@ -1064,7 +1078,7 @@ func TestValidateReportsWhatAnUnanchoredHostStillKnows(t *testing.T) {
 
 	var out strings.Builder
 	writeRunnability(&out, r)
-	for _, want := range []string{"runnable:     NO", `entrypoint "/nope/missing.py"`, "grants:       unknown", "names nothing on this host"} {
+	for _, want := range []string{"runnable:     NO", `entrypoint "/nope/missing.py"`, "grants:       unknown", "credential was looked for", "names nothing on this host"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("summary missing %q; got:\n%s", want, out.String())
 		}

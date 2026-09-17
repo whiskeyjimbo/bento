@@ -289,7 +289,8 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
 	case r.ShieldsUnknown:
 		fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
-		fmt.Fprintf(w, "              so the grants above were not checked against them\n")
+		fmt.Fprintf(w, "              so the grants above were not checked against them and no second\n")
+		fmt.Fprintf(w, "              name for a credential was looked for\n")
 	case len(r.Refusals) > 0:
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
@@ -853,6 +854,13 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "\nEverything not listed above is denied, but bento could not work out where the\n")
 		fmt.Fprintf(w, "shields anchor on this host (%v), so nothing above was\n", shieldErr)
 		fmt.Fprintf(w, "checked against them - and a run here is refused for the same reason.\n")
+		return
+	}
+	// explicitShieldGrants answers nil without error for a host that resolved nothing, so
+	// an empty list here is a question never asked, not a clean one.
+	if resolved == nil {
+		fmt.Fprintf(w, "\nEverything not listed above is denied, but this host could not resolve the\n")
+		fmt.Fprintf(w, "manifest's paths, so nothing above was checked against the shields.\n")
 		return
 	}
 	if len(shieldGrants) > 0 {
