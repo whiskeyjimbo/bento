@@ -75,20 +75,20 @@ same class as run's pre-run notes, not counted as a cell.
 | D8 | no usable passwd home, $HOME is the only anchor | no_usable_passwd_home | HANDLED, fixed in c973708 (was UNHANDLED: the caller-steerable half of D7) | READING (same writer, branch not constructed) |
 | D9 | XDG_RUNTIME_DIR unshieldable | unshieldable_runtime_dir | HANDLED, fixed in c973708 (was UNHANDLED; validate carries it, doctor did not) | SPIKE |
 | D10 | libc NSS caveat (writeNSSCaveat) | libc_nss_passwd_lookup | HANDLED, fixed in c973708 (was UNHANDLED) | SPIKE |
-| D11 | nested anchors (writeNestedAnchors) | none | UNHANDLED | READING |
+| D11 | nested anchors (writeNestedAnchors) | none | UNHANDLED, open in bv2-39fgx; exempt row in the guard | READING |
 | D12 | dropped relocations, store NOT shielded (writeDroppedRelocations) | unshieldable_relocations | HANDLED, fixed in c973708 (was UNHANDLED; validate carried unshieldable_relocations and doctor did not) | SPIKE |
-| D13 | relocated shields, variable -> path (writeRelocatedShields) | none | UNHANDLED | READING |
+| D13 | relocated shields, variable -> path (writeRelocatedShields) | none | UNHANDLED, open in bv2-39fgx; exempt row in the guard | READING |
 
 ## Grid R - run result: human fact x --json event (26 cells)
 
 | # | Human fact (writer) | JSON field | Verdict | Stamp |
 |---|---|---|---|---|
 | R1 | refusal reason + short layers (writeRefusal) | refusal.reason, refusal.report | HANDLED | READING |
-| R2 | limits remedy: --allow-degraded would admit this run, or drop limits (writeLimitsRemedy on Refusal.Waivable) | none | UNHANDLED: Waivable is not in streamRefusalJSON and is not derivable (depends on --strict and the rest of Short) | SPIKE |
+| R2 | limits remedy: --allow-degraded would admit this run, or drop limits (writeLimitsRemedy on Refusal.Waivable) | allow_degraded_would_admit | HANDLED, fixed in 0eacfd5 (was UNHANDLED: Waivable was not in streamRefusalJSON and is not derivable) | TEST |
 | R3 | "run bento doctor" consequences pointer | report.layers[].consequences | HANDLED | READING |
 | R4 | shield summary counts by kind (writeShieldSummary) | shields[] | HANDLED | READING |
 | R5 | shields that followed an env var | shields[].source | HANDLED | READING |
-| R6 | WARNING: $VAR relocation NOT shielded in this run (writeShieldSummary) | none on verdict | UNHANDLED | SPIKE |
+| R6 | WARNING: $VAR relocation NOT shielded in this run (writeShieldSummary) | unshieldable_relocations | HANDLED, fixed in 0eacfd5 (was UNHANDLED) | TEST |
 | R7 | shielded grant warning | shielded_grants | HANDLED (verdict and failed) | READING |
 | R8 | accepted alias warning | accepted_aliases | HANDLED (verdict and failed) | READING |
 | R9 | exposed warning | exposed | HANDLED (verdict and failed) | READING |
@@ -96,7 +96,7 @@ same class as run's pre-run notes, not counted as a cell.
 | R11 | degradations, host-only vs policy (writeDegradations) | report.layers[] | HANDLED | READING |
 | R12 | changed auto-exec / redirected hooks / unresolved hooks | changed_auto_exec, redirected_hooks, unresolved_hooks | HANDLED (verdict and failed) | READING |
 | R13 | guard blocked / egress denied / gate denied / untunneled | guard_blocked, egress_denied, gate_denied, untunneled | HANDLED | READING |
-| R14 | target unreached: exit N is bento's, the script never ran (writeTargetUnreached) | none; exit_code alone | UNHANDLED: a consumer reads exit_code as the script's | SPIKE |
+| R14 | target unreached: exit N is bento's, the script never ran (writeTargetUnreached) | target_never_ran | HANDLED, fixed in 0eacfd5 (was UNHANDLED: a consumer read exit_code as the script's) | TEST |
 | R15 | signal notice, certain | signal | HANDLED | READING |
 | R16 | signal notice, hedged 128+n inference | none | HANDLED by design (run.go verdict comment on Signal) | READING |
 | R17 | exec hint / egress hint / profile hint / HOME miss / PATH miss | none | HANDLED (derivable): heuristics over exit_code, policy and fields present; remedies, not outcome facts. Flagged for a human call | READING |
@@ -105,9 +105,9 @@ same class as run's pre-run notes, not counted as a cell.
 | R20 | posture shortfall line | posture_shortfall | HANDLED | READING |
 | R21 | failure path error text | failed.reason | HANDLED, failJSON | READING |
 | R22 | pre-run missing read grants | missing_read_grants (verdict only) | HANDLED | READING |
-| R23 | pre-run unrecorded / shared-journal stamp note (run.go:91) | none | UNHANDLED tier 2 (stderr in both modes; validate carries approval_note) | READING |
-| R24 | pre-run unset env notes | none | UNHANDLED tier 2 | READING |
-| R25 | pre-run blocked-host notes, runtime dir note | none | UNHANDLED tier 2 (validate carries both) | READING |
+| R23 | pre-run unrecorded / shared-journal stamp note (run.go:91) | stamp_at_risk, approval_note | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
+| R24 | pre-run unset env notes | unset_env | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
+| R25 | pre-run blocked-host notes, runtime dir note | network_blocked, network_blocked_unreadable, unshieldable_runtime_dir | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
 | R26 | pre-run file-ish write notes | none | HANDLED by design (writeFileishWriteNotes comment: stderr only, on purpose) | READING |
 
 ## Grid A - approve callouts x validate --json (5 cells)
@@ -134,7 +134,7 @@ Blast-radius order.
    anchor, the runtime dir and GNUPGHOME; envelope was
    `{"layers":[],"fully_enforced":false,"ready":true,"platform":"linux/amd64","platform_verified":true}`).
    D8 VERIFIED BY READING.
-2. **R6 - run verdict drops "store NOT shielded in this run".** Same fact as D12, on the run
+2. **FIXED in 0eacfd5. R6 - run verdict drops "store NOT shielded in this run".** Same fact as D12, on the run
    that hands the store out. VERIFIED BY SPIKE (writeRunResult in both modes with one shield
    and GNUPGHOME=$HOME; verdict had shields[] and no relocation).
 3. **FIXED in 9451ea4. V7 - validate --json drops shield-independent refusals when shields are unknown.** Human
@@ -142,17 +142,17 @@ Blast-radius order.
    them, so refused_grants is absent. The gate learns the host refuses but loses which manifest
    defects to fix. WRONG at the time; 9451ea4 made gate.ShieldSet swappable and pins the fix
    with TestCheckStillRefusesUnshieldedClassesWithoutAnchors.
-4. **R14 - run verdict does not say the target never ran.** VERIFIED BY SPIKE
+4. **FIXED in 0eacfd5. R14 - run verdict does not say the target never ran.** VERIFIED BY SPIKE
    (Setup=SetupTargetUnreached, ExitCode 127: human said "never ran ... exit 127 is bento's",
    verdict was `{"event":"verdict","exit_code":127,...}`).
-5. **R2 - refusal event drops Waivable.** Human tells the reader --allow-degraded admits this
+5. **FIXED in 0eacfd5. R2 - refusal event drops Waivable.** Human tells the reader --allow-degraded admits this
    run; JSON cannot say that. VERIFIED BY SPIKE.
 6. **FIXED in 66c8850. V8, V9, V12 - validate --json drops the HOME, unset-env and loopback notes.** VERIFIED BY
    SPIKE (all three printed human, envelope carried only env and network lists).
 7. **D10, D11, D13, V3** - NSS caveat, nested anchors, relocated shields, resolved interpreter.
    D10 fixed in c973708 and V3 fixed in 66c8850; D11 and D13 stay open.
    D10 VERIFIED BY SPIKE; D11, D13, V3 VERIFIED BY READING (writers with no JSON counterpart).
-8. **Tier 2: R23, R24, R25, warnStampAtRisk** - stderr in both modes, absent from the envelope.
+8. **FIXED in 0eacfd5. Tier 2: R23, R24, R25, warnStampAtRisk** - stderr in both modes, absent from the envelope.
    VERIFIED BY READING (run.go pre-run block writes os.Stderr unconditionally; the verdict
    struct has no field for them).
 
@@ -173,6 +173,16 @@ direction and not counted.
   V22 rests on an existing test, not re-run.
 
 ## Guard test design
+
+Landed as cmd/bento/output_parity_test.go: parityRows is the table (writers, fixture, human
+marker, json key, or exempt reason), rendered once per fixture (run verdict, run target
+unreached, run refusal, validate via the command, doctor), and TestEveryHumanWriterHasAParityRow
+is the go/ast pass. A sibling of 5c3676f rather than an extension: that guard ranges over
+gate.Runnability's fields, and these facts are prose with no struct to range over. Exempt rows:
+R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), D11/D13 (bv2-39fgx), writeJSON, and
+run's pre-run note writers, whose runNotesJSON fields are filled beside the write in newRunCmd.
+
+The original design, for reference:
 
 One table-driven test in cmd/bento, one row per fact:
 `{name, setup func(t), humanMarker string, jsonKey string, exempt string}`. Per row: run the
