@@ -347,12 +347,10 @@ type Result struct {
 	// It is meaningful only when Run returned nil or a *Shortfall - the cases where a
 	// target was actually launched. Every other error means the run was refused or
 	// failed before any stage existed (a nil enforcer, an invalid policy, a host that
-	// admission turned away), and the zero value reads as SetupSilent there without a
-	// stage having died: read the error first, this second.
-	//
-	// On a backend error it also says whether the Report means anything: a silent stage
-	// that failed applied no layer, so Run returns an empty Report beside it rather than
-	// the probe's verdicts.
+	// admission turned away, a backend that could not start), and the zero value reads
+	// as SetupSilent there without a stage having died: read the error first, this
+	// second. A backend that failed before producing any report of its own gets an empty
+	// Report back, not the probe's verdicts, so no layer reads as enforced for it.
 	//
 	// It lives on Result rather than in Report because Report is overlaid after the
 	// backend returns; see SetupState for what the states do and do not attest.

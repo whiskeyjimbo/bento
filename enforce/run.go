@@ -255,13 +255,15 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 			required.SetStatus(l)
 		}
 	}
+	// A backend that failed silent with no report of its own never reached a stage to
+	// judge any layer; one that did reconcile a silent stage carries its own verdicts.
+	neverStarted := res.Setup == SetupSilent && len(res.Report.Layers) == 0
 	res.Report = required
 	if err != nil {
-		// A stage that attested nothing and failed applied no layer, so the probe's
-		// verdict is not this run's report: handing it back would read as fully enforced
-		// for a target that most likely never started. The empty report is the answer,
-		// and there is no posture to hold a Shortfall against.
-		if res.Setup == SetupSilent {
+		// The probe's verdict is not the report of a run that never started: handing it
+		// back would read as fully enforced for a target that never ran. The empty report
+		// is the answer, and there is no posture to hold a Shortfall against.
+		if neverStarted {
 			res.Report = Report{}
 			return res, err
 		}
