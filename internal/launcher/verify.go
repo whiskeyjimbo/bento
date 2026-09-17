@@ -33,7 +33,7 @@ func verifyFreshTmp() error {
 		// inspect is the one it was asked to vouch for.
 		return fmt.Errorf("launcher: statfs of %s to verify the sandbox's scratch mount: %w", sandboxTmp, err)
 	}
-	if !isTmpfs(st.Type) {
+	if !isTmpfs(int64(st.Type)) {
 		return fmt.Errorf("launcher: %s is not the fresh tmpfs this run was admitted on; it is filesystem type %#x, so the target holds a granted write over the host's scratch directory", sandboxTmp, st.Type)
 	}
 	return nil
