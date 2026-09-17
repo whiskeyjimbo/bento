@@ -300,10 +300,12 @@ type ExecRecord struct {
 	// "nothing was watching" are different answers.
 	Watched bool
 	Reason  string
-	// Complete is whether the record reached its own end marker. The recorder is
-	// deliberately not allowed to kill the run it observes, so a recorder that died
-	// leaves a record that ends where it ended - and a partial record that read as whole
-	// would be worse than none, because it would read as complete.
+	// Complete is whether no exec can have gone unrecorded, not whether the record reached
+	// its end marker: a recorder that lost or never attached to its target still writes
+	// the marker, and a watched record with no runs lost at least the target itself. The
+	// recorder is deliberately not allowed to kill the run it observes, so a partial
+	// record that read as whole would be worse than none. A mode that could never watch
+	// is complete, because nothing was there to lose; Watched is what says so.
 	Complete bool
 	// Runs is every exec observed, in the order observed, led by the target itself.
 	Runs []ExecRun
