@@ -59,7 +59,8 @@ Scope notes, decided from the code:
 | V24 | approval line + stamp note | approval, approval_note | HANDLED; unnamed state: human errors (writeApprovalLine default), JSON "unapproved" | READING |
 
 warnStampAtRisk writes stderr in both modes (validate.go:65, before the mode split): tier 2,
-same class as run's pre-run notes, not counted as a cell.
+same class as run's pre-run notes, not counted as a cell. --json carries it as stamp_at_risk,
+the key run uses.
 
 ## Grid D - doctor: human fact x --json (13 cells)
 
@@ -183,9 +184,10 @@ gate.Runnability's fields, and these facts are prose with no struct to range ove
 R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), writeJSON, run's pre-run note
 writers (whose runNotesJSON fields are filled beside the write in newRunCmd), Grid A and
 approve's review (approve has no --json), and the file writers and dispatcher. The ast pass
-scans every non-test file in cmd/bento for write* and warn* functions. Two trust warnings
-are exempt as open gaps: warnStampAtRisk has no validate --json field (bv2-ati60), and
-warnUntrusted has no profile --json field (bv2-uzlc2).
+scans every non-test file in cmd/bento for write* and warn* functions. The two trust warnings
+are keyed rows: warnStampAtRisk as validate's stamp_at_risk (a stamped fixture in a
+world-writable directory, which the ordinary validate fixture is not), and warnUntrusted as
+profile's location_flaws.
 
 The original design, for reference:
 

@@ -295,7 +295,8 @@ func newProfileCmd() *cobra.Command {
 					return refuse(err)
 				}
 			}
-			warnUntrusted(os.Stderr, mt.LocationFlaws(uint32(os.Geteuid())))
+			locationFlaws := mt.LocationFlaws(uint32(os.Geteuid()))
+			warnUntrusted(os.Stderr, locationFlaws)
 			// The merge unions in whatever the file at --out granted, whether or not it is
 			// approved, so a grant the user declined this session would come back through
 			// it. Drop it: a refusal at the prompt has to hold in the artifact, not only in
@@ -341,7 +342,7 @@ func newProfileCmd() *cobra.Command {
 
 			reason := incompleteReason(status, stop)
 			if asJSON {
-				if err := writeJSON(os.Stdout, profileResultJSON(out, proposed, written, doc, status, merge, reason)); err != nil {
+				if err := writeJSON(os.Stdout, profileResultJSON(out, proposed, written, doc, status, merge, locationFlaws, reason)); err != nil {
 					// The manifest is on disk and the stderr account above stands, so this
 					// says what failed rather than claiming the profiling did. But the exit
 					// code cannot stay 0: Encode marshals and writes once, so a stdout that
@@ -377,7 +378,7 @@ func newProfileCmd() *cobra.Command {
 // points at a grant the file holds, so it is respelled to match - a consumer told to
 // review `/home/u/work` cannot find it in a policy that says `.`. A withheld note is
 // not a grant, has no spelling in the file, and stays the host path profiling saw.
-func profileResultJSON(path string, proposed, written *policy.Policy, doc manifest.Provenance, status roundStatus, merge mergeOutcome, incomplete string) profileJSON {
+func profileResultJSON(path string, proposed, written *policy.Policy, doc manifest.Provenance, status roundStatus, merge mergeOutcome, locationFlaws []trust.Flaw, incomplete string) profileJSON {
 	spelling := manifestSpelling(proposed, written)
 	env := profileJSON{
 		Manifest:         path,
@@ -391,6 +392,9 @@ func profileResultJSON(path string, proposed, written *policy.Policy, doc manife
 		Withheld:     status.withheld,
 		Flagged:      respell(status.flagged, spelling),
 		BlockedHosts: doc.BlockedHosts,
+	}
+	for _, f := range locationFlaws {
+		env.LocationFlaws = append(env.LocationFlaws, f.Reason)
 	}
 	if merge.widened {
 		env.Merged = &mergeJSON{

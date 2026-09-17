@@ -205,7 +205,7 @@ type profileJSON struct {
 	// paths profiling observed - so a consumer comparing it against the file agrees. It
 	// is validate's own shape, so a harness reads a manifest the same way whether it was
 	// just proposed or is being re-checked; the fields validate answers about a stamped
-	// file (approval, runnable) are absent here, where nothing has stamped it.
+	// file (approval, runnable, stamp_at_risk) are absent here, where nothing has stamped it.
 	Policy policyJSON `json:"policy"`
 	// Withheld are the accesses the run observed and did not propose; Flagged are grants
 	// the written manifest carries that want a reviewer's attention. A flagged grant can
@@ -219,6 +219,9 @@ type profileJSON struct {
 	// Merged is present only when there was a manifest at --out to widen, and says which
 	// half of the result came from the file rather than from this run.
 	Merged *mergeJSON `json:"merged,omitempty"`
+	// LocationFlaws are why someone besides this user can change the manifest where it was
+	// written: whatever approve later stamps there attests only what they leave in place.
+	LocationFlaws []string `json:"location_flaws,omitempty"`
 }
 
 // mergeJSON says what folding this run's proposal into an existing manifest changed. A

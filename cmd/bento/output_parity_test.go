@@ -16,6 +16,7 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 // parityRow is one cell of docs/state-grid-output-parity.md: a fact a human writer prints,
@@ -95,6 +96,7 @@ var parityRows = []parityRow{
 
 	// profile.
 	{writers: []string{"writeMergeNotice"}, fixture: "profile", marker: "kept from the existing manifest", key: "merged"},
+	{writers: []string{"warnUntrusted"}, fixture: "profile", marker: "attests only what whoever can write it leaves there", key: "location_flaws"},
 
 	// approve has no --json: its callouts are validate's (Grid A), and the rest is the
 	// interactive review that ends in a stamp.
@@ -102,8 +104,8 @@ var parityRows = []parityRow{
 	{writers: []string{"writeReapprovalNotice", "writeJournalDiff"}, exempt: "approve has no --json; validate --json carries the approval state and approval_note, but not the changed-field diff, which only this host's journal can produce"},
 
 	// Trust warnings, shared across frontends.
-	{writers: []string{"warnUntrusted"}, exempt: "run carries it as stamp_at_risk; approve has no --json; profile --json lacks it (bv2-uzlc2)"},
-	{writers: []string{"warnStampAtRisk"}, exempt: "validate --json lacks it (bv2-ati60)"},
+	{writers: []string{"warnUntrusted"}, exempt: "run carries it as stamp_at_risk and validate through warnStampAtRisk; approve has no --json"},
+	{writers: []string{"warnStampAtRisk"}, fixture: "validate-stamped", marker: "attests only what whoever can write it leaves there", key: "stamp_at_risk"},
 
 	{writers: []string{"writeJSON"}, exempt: "the encoder every --json path writes through, not a human writer"},
 	{writers: []string{"writeRunResult"}, exempt: "the dispatcher that picks the human or --json rendering; its writers have rows of their own"},
@@ -123,11 +125,12 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 	pureLookup(t, false)
 
 	fixtures := map[string]func(t *testing.T) (string, map[string]any){
-		"verdict":   parityRunVerdict,
-		"unreached": parityRunUnreached,
-		"refusal":   parityRunRefusal,
-		"validate":  parityValidate,
-		"doctor":    parityDoctor,
+		"verdict":          parityRunVerdict,
+		"unreached":        parityRunUnreached,
+		"refusal":          parityRunRefusal,
+		"validate":         parityValidate,
+		"validate-stamped": parityValidateStamped,
+		"doctor":           parityDoctor,
 		// Its HISTFILE stays set for the fixtures rendered after it; none of them reads it.
 		"doctor-relocated": parityDoctorRelocated,
 		"profile":          parityProfile,
@@ -322,6 +325,28 @@ func parityValidate(t *testing.T) (string, map[string]any) {
 	return human, machine
 }
 
+// parityValidateStamped is the manifest the ordinary validate fixture cannot be: stamped, in
+// a directory anyone can write, which is the only state warnStampAtRisk speaks about.
+func parityValidateStamped(t *testing.T) (string, map[string]any) {
+	p := &policy.Policy{Entrypoint: "./x", Exec: "none"}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	doc, mt, err := loadDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var human bytes.Buffer
+	warnStampAtRisk(&human, doc, mt)
+	out, _ := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	var machine map[string]any
+	if err := json.Unmarshal([]byte(out), &machine); err != nil {
+		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
+	}
+	return human.String(), machine
+}
+
 // parityDoctorRelocated is the host the ordinary doctor fixture cannot be: a $HOME inside
 // the passwd home, which the test cannot arrange, is passed as anchors directly, and a
 // variable moves a shield somewhere no home contains.
@@ -345,9 +370,11 @@ func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
 func parityProfile(t *testing.T) (string, map[string]any) {
 	p := &policy.Policy{Entrypoint: "main.py", Exec: "none", Read: []string{"./old"}}
 	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, policy: p}
+	flaws := []trust.Flaw{{Reason: "the directory holding it is writable by others"}}
 	var human bytes.Buffer
 	writeMergeNotice(&human, "m.yaml", merge)
-	encoded, err := json.Marshal(profileResultJSON("m.yaml", p, p, manifest.Provenance{}, roundStatus{}, merge, ""))
+	warnUntrusted(&human, flaws)
+	encoded, err := json.Marshal(profileResultJSON("m.yaml", p, p, manifest.Provenance{}, roundStatus{}, merge, flaws, ""))
 	if err != nil {
 		t.Fatal(err)
 	}

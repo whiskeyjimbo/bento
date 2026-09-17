@@ -1381,7 +1381,7 @@ func TestProfileResultJSON(t *testing.T) {
 		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}},
 	}
 
-	env := profileResultJSON("s.py.manifest.yaml", proposed, written, doc, status, merge, "the profiled run did not finish")
+	env := profileResultJSON("s.py.manifest.yaml", proposed, written, doc, status, merge, nil, "the profiled run did not finish")
 
 	if env.Complete || env.IncompleteReason == "" {
 		t.Errorf("complete=%v reason=%q, want an incomplete result that says why", env.Complete, env.IncompleteReason)
@@ -1404,7 +1404,7 @@ func TestProfileResultJSON(t *testing.T) {
 
 	// No manifest to widen: the consumer is told nothing came from a file, rather than
 	// reading an empty merge block as "merged, and it kept nothing".
-	if got := profileResultJSON("m.yaml", proposed, written, doc, roundStatus{}, mergeOutcome{}, ""); got.Merged != nil || !got.Complete {
+	if got := profileResultJSON("m.yaml", proposed, written, doc, roundStatus{}, mergeOutcome{}, nil, ""); got.Merged != nil || !got.Complete {
 		t.Errorf("first-run envelope = %+v, want complete and unmerged", got)
 	}
 }
@@ -1450,7 +1450,7 @@ func TestProfileResultJSONRespellsFlaggedGrants(t *testing.T) {
 		withheld: []accessNoteJSON{{Kind: "read", Path: "/home/u/.ssh", Reason: "read-shielded", Holds: "credentials"}},
 	}
 
-	env := profileResultJSON("m.yaml", proposed, written, manifest.Provenance{}, status, mergeOutcome{}, "")
+	env := profileResultJSON("m.yaml", proposed, written, manifest.Provenance{}, status, mergeOutcome{}, nil, "")
 
 	for _, n := range env.Flagged {
 		if !slices.Contains(env.Policy.Read, n.Path) && !slices.Contains(env.Policy.Write, n.Path) {
