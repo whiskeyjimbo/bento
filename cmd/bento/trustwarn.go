@@ -19,10 +19,15 @@ import (
 // layer. approve does not go through here: there a human is establishing the trust, so
 // the state of the location is the decision being made.
 func warnStampAtRisk(w io.Writer, doc *manifest.Document, mt trust.Manifest) {
+	warnUntrusted(w, stampFlaws(doc, mt))
+}
+
+// stampFlaws is what warnStampAtRisk reports, for run, which also carries it in --json.
+func stampFlaws(doc *manifest.Document, mt trust.Manifest) []trust.Flaw {
 	if doc.Provenance.Approves == "" {
-		return
+		return nil
 	}
-	warnUntrusted(w, mt.Flaws(uint32(os.Geteuid())))
+	return mt.Flaws(uint32(os.Geteuid()))
 }
 
 // warnUntrusted reports every flaw as advisory. The read commands do not refuse on one:

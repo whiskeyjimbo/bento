@@ -84,12 +84,20 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return refuse(err)
 			}
-			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
+			// The notes said on stderr before the target starts are carried into whichever
+			// object ends the --json stream too, so a gate reading stdout alone sees them.
+			var notes runNotesJSON
+			atRisk := stampFlaws(doc, mt)
+			warnUntrusted(cmd.ErrOrStderr(), atRisk)
+			for _, f := range atRisk {
+				notes.StampAtRisk = append(notes.StampAtRisk, f.Reason)
+			}
 			// After the at-risk warning and before the refusal: both are about how much the
 			// stamp is worth, and this one is inapplicable to the manifest the refusal below
 			// turns away.
-			if note := stampNote(mt.RealPath, doc); note != "" {
-				fmt.Fprintf(cmd.ErrOrStderr(), "[bento] %s\n", note)
+			notes.ApprovalNote = stampNote(mt.RealPath, doc)
+			if notes.ApprovalNote != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[bento] %s\n", notes.ApprovalNote)
 			}
 			if err := requireApproval(doc, allowUnapproved); err != nil {
 				return refuse(err)
@@ -107,16 +115,24 @@ func newRunCmd() *cobra.Command {
 			for _, name := range unset {
 				fmt.Fprintf(os.Stderr, "[bento] note: "+unsetEnvNote+"\n", name, name)
 			}
+			notes.UnsetEnv = unset
 
 			// Statted before the script runs, and carried through to the envelope, so
 			// what --json reports is the same verdict the note above gave: a grant the
 			// script itself then created was still missing when the run started. The
 			// file-ish write note beside it stays on stderr - see writeFileishWriteNotes.
-			missingReads := gate.MissingReads(p.Read)
-			writeMissingReadNotes(os.Stderr, missingReads)
+			notes.MissingReadGrants = gate.MissingReads(p.Read)
+			writeMissingReadNotes(os.Stderr, notes.MissingReadGrants)
 			writeFileishWriteNotes(os.Stderr, gate.FileishWrites(p.Write))
 			writeBlockedHostNotes(os.Stderr, p, doc.Provenance.BlockedHosts)
+			// In validate's spelling, which is where a gate already reads these.
+			covering, unreadable := rulesCoveringBlockedHost(p, doc.Provenance.BlockedHosts)
+			if len(covering) > 0 {
+				notes.NetworkBlocked = networkKeys(covering)
+			}
+			notes.NetworkBlockedUnreadable = unreadable
 			writeRuntimeDirNote(os.Stderr)
+			notes.UnshieldableRuntimeDir = unshieldableRuntimeDir()
 
 			e, err := backend.New()
 			if err != nil {
@@ -146,7 +162,7 @@ func newRunCmd() *cobra.Command {
 				RunID:              runID,
 				RecordExec:         recordExec,
 			})
-			return writeRunResult(os.Stderr, asJSON, p, env, res, missingReads, stream, err)
+			return writeRunResult(os.Stderr, asJSON, p, env, res, &notes, stream, err)
 		},
 	}
 
@@ -330,6 +346,14 @@ type streamRefusalJSON struct {
 	Event  string     `json:"event"`
 	Reason string     `json:"reason"`
 	Report reportJSON `json:"report"`
+	// AllowDegradedWouldAdmit is the refusal event's alone: --allow-degraded would admit
+	// this exact run (enforce.Refusal.Waivable). A gate cannot derive it from the report,
+	// because whether the flag admits a run turns on which layers fell short and why.
+	AllowDegradedWouldAdmit bool `json:"allow_degraded_would_admit,omitempty"`
+	// TargetNeverRan is the failed event's: the backend failed before any stage judged a
+	// layer, so the target never started. Absent, the failed event claims nothing about
+	// where the target got to.
+	TargetNeverRan bool `json:"target_never_ran,omitempty"`
 	// ChangedAutoExec is the failed event's alone - a refusal is a run that never began,
 	// so it has nothing to have changed. It is the same field the verdict carries, under
 	// the same name, because a consumer gating a merge on review has to find it in the
@@ -353,6 +377,39 @@ type streamRefusalJSON struct {
 	// the same way: a run that died for another reason still ran whatever the box
 	// resolved, and the wrong toolchain is a candidate explanation for the failure.
 	ShadowedPathDirs []string `json:"shadowed_path_dirs,omitempty"`
+	// The network record and the exec record ride the failed event under the verdict's
+	// names: a run hung retrying a denied host and then interrupted is the one the denial
+	// explains, and --record-exec asked for a record whether or not the run finished.
+	EgressConnections int             `json:"egress_connections,omitempty"`
+	GuardBlocked      []hostPortJSON  `json:"guard_blocked,omitempty"`
+	EgressDenied      []hostPortJSON  `json:"egress_denied,omitempty"`
+	Untunneled        []hostPortJSON  `json:"untunneled,omitempty"`
+	ExecRecord        *execRecordJSON `json:"exec_record,omitempty"`
+	*runNotesJSON
+}
+
+// runNotesJSON are the notes run writes to stderr before the target starts, carried on
+// whichever object ends the stream so --json does not answer with less than the terminal.
+// Each is a note, not a verdict, and each is spelled as validate spells it where validate
+// has the same fact.
+type runNotesJSON struct {
+	// StampAtRisk is why someone besides this user can change the stamped manifest.
+	StampAtRisk []string `json:"stamp_at_risk,omitempty"`
+	// ApprovalNote says this host holds no record of approving the current stamp, or that
+	// its approval journal is not private enough to say.
+	ApprovalNote string `json:"approval_note,omitempty"`
+	// UnsetEnv are the allowlisted variables this host does not set, so the sandbox gets none.
+	UnsetEnv []string `json:"unset_env,omitempty"`
+	// MissingReadGrants are the read grants that named nothing on this host when the run
+	// started. It is the field that connects a script dying on a file it could not open to
+	// the manifest grant that no longer resolves.
+	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
+	// NetworkBlocked are the rules covering a destination profiling found the egress guard
+	// refusing, and NetworkBlockedUnreadable the recorded keys matching no rule shape.
+	NetworkBlocked           []string `json:"network_blocked,omitempty"`
+	NetworkBlockedUnreadable []string `json:"network_blocked_unreadable,omitempty"`
+	// UnshieldableRuntimeDir is XDG_RUNTIME_DIR when no shield can follow it there.
+	UnshieldableRuntimeDir string `json:"unshieldable_runtime_dir,omitempty"`
 }
 
 // failJSON ends the stream for a run that neither refused nor completed - an error from
@@ -362,21 +419,24 @@ type streamRefusalJSON struct {
 // untouched and main renders it, exactly as refuseJSON leaves the human path alone.
 //
 // Deliberately not the refusal event. The target may already have started, and refusal
-// would say bento declined a run it in fact began. It cannot say which happened either:
-// Result.Setup answers that only when Run returned nil or a Shortfall, and on this path
-// its zero value reads as a silent stage without one having died. So it reports what is
-// known - the reason, and the report of what was enforced around the run - and claims
-// nothing about where the target got to. Whatever the target printed before it went
+// would say bento declined a run it in fact began. Result.Setup alone cannot say which
+// happened: on this path its zero value reads as a silent stage without one having died.
+// A silent stage with no layers is the one answer Run gives for a backend that never
+// started, and target_never_ran says so; otherwise the event claims nothing about where
+// the target got to. Whatever the target printed before it went
 // wrong is already on the stream above, which is what the buffered envelope could not
 // do: it dropped the captured streams on this path entirely.
-func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Result, shadowed []string, runErr error) error {
+func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Result, shadowed []string, notes *runNotesJSON, runErr error) error {
 	if !asJSON {
 		return runErr
 	}
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toRunReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: res.UnresolvedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed})
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toRunReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: res.UnresolvedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed,
+		TargetNeverRan:    res.Setup == enforce.SetupSilent && len(res.Report.Layers) == 0,
+		EgressConnections: res.EgressConnections, GuardBlocked: toHostPortsJSON(res.GuardBlocked), EgressDenied: toHostPortsJSON(res.Denied),
+		Untunneled: toHostPortsJSON(res.Untunneled), ExecRecord: toExecRecordJSON(res.ExecRecord), runNotesJSON: notes})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
 
@@ -404,13 +464,14 @@ func reportStreamed(stderr io.Writer, stream *eventStream, code int) error {
 // script) becomes exitError{bentoFailed}, distinct from the target's own code, which is
 // passed through untouched via exitError{res.ExitCode}. stream is the event stream the
 // target's output already went out on, set only in --json mode (nil otherwise, where it
-// went straight to the real streams); the verdict is the last object on it. missingReads is the pre-run verdict on the read grants,
-// not re-taken here: a grant the script created during the run was still missing when it
-// started, which is what the note on the way in said and what validate answers. env is
+// went straight to the real streams); the terminal object is the last on it. notes are the
+// pre-run notes, not re-taken here: a read grant the script created during the run was
+// still missing when it started, which is what the note on the way in said and what
+// validate answers. nil where there were none. env is
 // what the sandbox was actually given, not what the manifest allowed: a name the host
 // never set never reaches the box, so the notes that turn on a variable's absence have to
 // read the resolved map rather than p.Env.
-func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, missingReads []string, stream *eventStream, runErr error) error {
+func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, notes *runNotesJSON, stream *eventStream, runErr error) error {
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
@@ -418,7 +479,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 	switch {
 	case errors.As(runErr, &refusal):
 		if asJSON {
-			stream.emitTerminal(streamRefusalJSON{Event: "refusal", Reason: refusal.Reason, Report: toReportJSON(refusal.Report)})
+			stream.emitTerminal(streamRefusalJSON{Event: "refusal", Reason: refusal.Reason, Report: toReportJSON(refusal.Report), AllowDegradedWouldAdmit: refusal.Waivable, runNotesJSON: notes})
 			return reportStreamed(stderr, stream, bentoFailed)
 		}
 		// Rendered here rather than returned to main's generic printer: the shortfall
@@ -451,6 +512,12 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			writeSandboxPathShadow(stderr, p, env)
 			writeChangedAutoExecNotice(stderr, res)
 			writeRedirectedHooksNotice(stderr, res)
+			// The network half and the exec record, in the clean path's order: a run hung
+			// on a denied host and then interrupted is the one the denial explains.
+			writeGuardBlockedWarning(stderr, res)
+			writeDeniedWarning(stderr, p, res)
+			writeUntunneledWarning(stderr, res)
+			writeExecRecord(stderr, res)
 			// The layers a shortfall named are rendered here, wrapped, for the reason the
 			// refusal above is rendered rather than returned: the error main prints goes out
 			// through one unwrapped Fprintf, and the degraded tier's disclosure is a
@@ -465,7 +532,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		if shortfall != nil {
 			runErr = shortfall.Err
 		}
-		return failJSON(stderr, stream, asJSON, res, shadowedPathDirs(p, env), runErr)
+		return failJSON(stderr, stream, asJSON, res, shadowedPathDirs(p, env), notes, runErr)
 	}
 
 	if asJSON {
@@ -538,12 +605,6 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// Without it a machine consumer reading the envelope alone would see an ordinary
 			// completed run.
 			PostureShortfall bool `json:"posture_shortfall,omitempty"`
-			// MissingReadGrants are the read grants that named nothing on this host when the
-			// run started, spelled as validate spells them. A note, not a verdict - the run
-			// proceeds - but it is the field that connects a script dying on a file it could
-			// not open to the manifest grant that no longer resolves, which is otherwise only
-			// prose on stderr and unreadable to the gate --help sends here.
-			MissingReadGrants []string `json:"missing_read_grants,omitempty"`
 			// ShadowedPathDirs are the PATH directories nothing carried into the box, so a
 			// bare command name resolved to whatever the box had instead. A note beside
 			// missing_read_grants and read the same way: the run proceeds, and this is what
@@ -551,7 +612,14 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// rather than the operator's - to the read grant that would have fixed it. On
 			// stderr it is prose; a lane harness can only gate on it here.
 			ShadowedPathDirs []string `json:"shadowed_path_dirs,omitempty"`
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, missingReads, shadowedPathDirs(p, env)})
+			// TargetNeverRan says the sandbox came up and could not start the target, so
+			// exit_code is bento's and not the script's.
+			TargetNeverRan bool `json:"target_never_ran,omitempty"`
+			// UnshieldableRelocations are the relocation variables that moved a store where
+			// no shield can follow, which the shield summary warns about.
+			UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
+			*runNotesJSON
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, shadowedPathDirs(p, env), res.Setup == enforce.SetupTargetUnreached, verdictRelocations(res), notes})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)

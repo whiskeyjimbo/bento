@@ -515,15 +515,10 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 	// all, so it cannot appear in the loop above and the count this line reports is the one
 	// an untouched host would print. Said on the run rather than only in doctor because it
 	// is the run that hands out the store.
-	// The error arm is empty because it cannot be reached with shields in hand: a run
-	// without anchors is refused before it enforces anything, and this function returns
-	// early on an empty shield set.
-	if anchors, err := denylist.HomeAnchors(); err == nil {
-		dropped := denylist.UnshieldableRelocations(anchors)
-		for _, env := range slices.Sorted(maps.Keys(dropped)) {
-			fmt.Fprintf(w, "[bento] WARNING: $%s -> %q names a path the shields cannot reach, so the store it\n", env, dropped[env])
-			fmt.Fprintln(w, "[bento] names is NOT shielded in this run - point it outside every home")
-		}
+	dropped := verdictRelocations(res)
+	for _, env := range slices.Sorted(maps.Keys(dropped)) {
+		fmt.Fprintf(w, "[bento] WARNING: $%s -> %q names a path the shields cannot reach, so the store it\n", env, dropped[env])
+		fmt.Fprintln(w, "[bento] names is NOT shielded in this run - point it outside every home")
 	}
 
 	if len(paths) == 0 {
@@ -1412,6 +1407,16 @@ func unshieldableRelocations() map[string]string {
 		return nil
 	}
 	return denylist.UnshieldableRelocations(anchors)
+}
+
+// verdictRelocations is the unshielded-relocation warning writeShieldSummary prints, for
+// both output modes. Only for a run that shielded something: a run without anchors is
+// refused before it enforces anything, so an empty shield set has nothing to compare with.
+func verdictRelocations(res enforce.Result) map[string]string {
+	if len(res.Shields) == 0 {
+		return nil
+	}
+	return unshieldableRelocations()
 }
 
 // writeRuntimeDirNote says on the way in what doctor says when asked: this host's runtime

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -552,7 +553,7 @@ func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
 // missing_read_grants, and the envelope has to agree with that spelling.
 func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, []string{"/data/gone"}, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, &runNotesJSON{MissingReadGrants: []string{"/data/gone"}}, newEventStream(&stdout), nil)
 	var env struct {
 		MissingReadGrants []string `json:"missing_read_grants"`
 	}
@@ -1214,5 +1215,158 @@ func TestAFailedRefusalEnvelopeIsReported(t *testing.T) {
 				t.Errorf("an envelope that could not be written must be reported, with the write's own error; stderr:\n%s", stderr.String())
 			}
 		})
+	}
+}
+
+// A relocation no shield can follow is warned about under the shield summary, and a gate
+// reading --json alone must see the same store left unshielded.
+func TestWriteRunResultVerdictNamesAnUnshieldedRelocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, env := range denylist.RelocationVars() {
+		t.Setenv(env, "")
+		os.Unsetenv(env)
+	}
+	t.Setenv("GNUPGHOME", home)
+	res := enforce.Result{Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
+
+	var human, stdout, stderr bytes.Buffer
+	_ = writeRunResult(&human, false, validPolicy(), nil, res, nil, nil, nil)
+	if !strings.Contains(human.String(), "$GNUPGHOME") {
+		t.Fatalf("precondition: the human warning must fire; got:\n%s", human.String())
+	}
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	var env struct {
+		UnshieldableRelocations map[string]string `json:"unshieldable_relocations"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, stdout.String())
+	}
+	if env.UnshieldableRelocations["GNUPGHOME"] != home {
+		t.Errorf("unshieldable_relocations = %v, want GNUPGHOME -> %q", env.UnshieldableRelocations, home)
+	}
+}
+
+// A run interrupted or dying in teardown still tried the destinations it tried and ran
+// what it ran; the failure path must not drop either record in either mode.
+func TestWriteRunResultFailureCarriesTheNetworkAndExecRecords(t *testing.T) {
+	res := enforce.Result{
+		EgressConnections: 3,
+		Denied:            []enforce.HostPort{{Host: "denied.example", Port: "443"}},
+		GuardBlocked:      []enforce.HostPort{{Host: "guarded.example", Port: "443"}},
+		Untunneled:        []enforce.HostPort{{Host: "plain.example", Port: "80"}},
+		ExecRecord:        &enforce.ExecRecord{Reason: "ptrace refused"},
+	}
+	runErr := errors.New("the run was cancelled before the target finished")
+
+	var human bytes.Buffer
+	_ = writeRunResult(&human, false, validPolicy(), nil, res, nil, nil, runErr)
+	for _, want := range []string{"denied.example", "guarded.example", "plain.example", "ptrace refused"} {
+		if !strings.Contains(human.String(), want) {
+			t.Errorf("human failure output missing %q; got:\n%s", want, human.String())
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	var env struct {
+		EgressConnections int            `json:"egress_connections"`
+		EgressDenied      []hostPortJSON `json:"egress_denied"`
+		GuardBlocked      []hostPortJSON `json:"guard_blocked"`
+		Untunneled        []hostPortJSON `json:"untunneled"`
+		ExecRecord        *struct {
+			Reason string `json:"reason"`
+		} `json:"exec_record"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, stdout.String())
+	}
+	if env.EgressConnections != 3 || len(env.EgressDenied) != 1 || len(env.GuardBlocked) != 1 || len(env.Untunneled) != 1 {
+		t.Errorf("failed event network record = %+v, want every list and the count", env)
+	}
+	if env.ExecRecord == nil || env.ExecRecord.Reason != "ptrace refused" {
+		t.Errorf("failed event exec_record = %+v, want the record", env.ExecRecord)
+	}
+}
+
+// exit_code alone reads as the script's. Where the target never ran, the terminal object
+// has to say so: on the verdict for a stage that could not start it, and on the failed
+// event for a backend that failed before any stage judged a layer.
+func TestWriteRunResultSaysTheTargetNeverRan(t *testing.T) {
+	neverRan := func(t *testing.T, res enforce.Result, runErr error) bool {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+		var env struct {
+			TargetNeverRan bool `json:"target_never_ran"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, stdout.String())
+		}
+		return env.TargetNeverRan
+	}
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	backendErr := errors.New("bwrap: failed to start")
+
+	if !neverRan(t, enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached, Report: report}, nil) {
+		t.Error("verdict for an unreached target must set target_never_ran")
+	}
+	if neverRan(t, enforce.Result{ExitCode: 1, Setup: enforce.SetupAttested, Report: report}, nil) {
+		t.Error("verdict for a target that ran must not set target_never_ran")
+	}
+	if !neverRan(t, enforce.Result{Setup: enforce.SetupSilent}, backendErr) {
+		t.Error("failed event for a backend that never started must set target_never_ran")
+	}
+	if neverRan(t, enforce.Result{Setup: enforce.SetupAttested, Report: report}, backendErr) {
+		t.Error("failed event for a run that got as far as a report must claim nothing")
+	}
+}
+
+// The limits refusal tells a human --allow-degraded would admit the run; a gate reading
+// the refusal event must be able to tell that from a refusal the flag would not lift.
+func TestWriteRunResultRefusalSaysAllowDegradedWouldAdmit(t *testing.T) {
+	for _, waivable := range []bool{true, false} {
+		var stdout, stderr bytes.Buffer
+		refusal := &enforce.Refusal{Reason: "limits", Waivable: waivable}
+		_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{}, nil, newEventStream(&stdout), refusal)
+		var env struct {
+			AllowDegradedWouldAdmit bool `json:"allow_degraded_would_admit"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, stdout.String())
+		}
+		if env.AllowDegradedWouldAdmit != waivable {
+			t.Errorf("waivable %v: allow_degraded_would_admit = %v", waivable, env.AllowDegradedWouldAdmit)
+		}
+	}
+}
+
+// The notes run writes to stderr before the target starts reach every object that can end
+// the stream, since the one a gate reads is whichever came last.
+func TestWriteRunResultCarriesThePreRunNotes(t *testing.T) {
+	notes := &runNotesJSON{
+		StampAtRisk:              []string{"group-writable"},
+		ApprovalNote:             unrecordedStamp,
+		UnsetEnv:                 []string{"TOKEN"},
+		MissingReadGrants:        []string{"/data/gone"},
+		NetworkBlocked:           []string{"internal.example:443"},
+		NetworkBlockedUnreadable: []string{"garbage"},
+		UnshieldableRuntimeDir:   "run",
+	}
+	for name, runErr := range map[string]error{
+		"verdict": nil,
+		"failed":  errors.New("teardown died"),
+		"refusal": &enforce.Refusal{Reason: "short"},
+	} {
+		var stdout, stderr bytes.Buffer
+		_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{}, notes, newEventStream(&stdout), runErr)
+		var got runNotesJSON
+		if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+			t.Fatalf("%s: not JSON: %v\n%s", name, err, stdout.String())
+		}
+		if fmt.Sprint(got) != fmt.Sprint(*notes) {
+			t.Errorf("%s event notes = %+v, want %+v", name, got, *notes)
+		}
 	}
 }
