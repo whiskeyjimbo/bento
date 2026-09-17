@@ -310,7 +310,9 @@ func applyLayers(cfg Config, applied *appliedReport) error {
 	// be: every path the ruleset would deny with EACCES is already EROFS under bwrap's
 	// read-only binds, so no write the launcher can attempt distinguishes a ruleset that
 	// landed from one that did not. A probe of the sandbox root returns EROFS with or
-	// without it. The report is therefore the whole of the disclosure - AppliedNo carries
+	// without it, and that holds by construction rather than by luck: RestrictTo requires
+	// the writable set to be assembled from the same source as the bwrap binds, so the two
+	// sets match and neither layer permits what the other denies. The report is therefore the whole of the disclosure - AppliedNo carries
 	// the failure, AppliedAbsent the kernel that has no Landlock - and that is why this
 	// records rather than asserts.
 	//

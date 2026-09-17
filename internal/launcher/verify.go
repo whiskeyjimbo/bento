@@ -102,9 +102,10 @@ const sandboxDev = "/dev"
 
 // bwrapDevNodes is every top-level name bwrap's --dev creates: the six device nodes, the
 // three stdio symlinks, fd and core, the ptmx symlink, and the pts and shm submounts.
-// console is included because bwrap binds the invoking terminal there when the run has
-// one; bento passes --new-session, which suppresses it, so it is breadth against a bwrap
-// that behaves otherwise rather than a name observed here.
+// console is included unconditionally because bwrap binds it from the INVOKING process's
+// controlling terminal, so it is present for a run started from a terminal and absent
+// otherwise. --new-session does not change that: it setsid()s the child, which is after
+// bwrap has already chosen what to bind.
 //
 // This is an allowlist, not the denylist of specific dangerous nodes that would be the
 // wrong shape here: the question is whether every name present is one bwrap put there,
@@ -174,9 +175,9 @@ func foreignDevNodes(names []string, ownMount func(string) bool) []string {
 // whole root, and the grant binds after baseFlags, so bwrap carves the mount point into
 // the sandbox's own /dev - which means a policy reading /dev/dri or /dev/net/tun puts a
 // name there that bwrap's --dev never creates. Config carries the write grants but not the
-// read ones (see bv2-775q3), so the set cannot be assembled from configuration; the kernel
-// answers it instead, and a mount is exactly what bento's argv can add and what a host
-// device node is not.
+// read ones, so the set cannot be assembled from configuration; the kernel answers it
+// instead, and a mount is exactly what bento's argv can add and what a host device node
+// is not.
 //
 // It costs the fence almost nothing. A leaked host /dev shows its own submounts - mqueue
 // and hugepages - as mounts too, so those pass, but every plain device node it carries
