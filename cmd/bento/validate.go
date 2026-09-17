@@ -286,7 +286,7 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	switch {
 	case r.ShieldsUnknown:
 		fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
-		fmt.Fprintf(w, "              so the grants above were not checked\n")
+		fmt.Fprintf(w, "              so the grants above were not checked against them\n")
 	case len(r.Refusals) > 0:
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
@@ -350,7 +350,7 @@ func strictRunnableError(r gate.Runnability, strict bool) error {
 	// reason writeRunnability prints both halves: the entrypoint verdict still stands, and
 	// a reader who fixes only what the harder failure named is left with the other one.
 	if r.ShieldsUnknown {
-		blocking = append(blocking, "this host could not work out where its shields anchor, so it refuses every run and the grants were not checked")
+		blocking = append(blocking, "this host could not work out where its shields anchor, so it refuses every run and the grants were not checked against the shields")
 	}
 	if !strict || len(blocking) == 0 {
 		return nil
@@ -565,8 +565,6 @@ type policyJSON struct {
 	PinnedPaths []string `json:"pinned_paths,omitempty"`
 }
 
-// setRelocatable folds the verdict into the envelope, so a machine gate reads the same
-// answer the human summary prints rather than inferring it from the exit code.
 // setHostNotes fills the host facts writePolicySummary prints as notes, from the same
 // lookups, so the envelope does not read as a host with nothing to say.
 func (o *policyJSON) setHostNotes(p *policy.Policy) {
@@ -601,6 +599,8 @@ func (o *policyJSON) setHostNotes(p *policy.Policy) {
 	}
 }
 
+// setRelocatable folds the verdict into the envelope, so a machine gate reads the same
+// answer the human summary prints rather than inferring it from the exit code.
 func (o *policyJSON) setRelocatable(pinned []string) {
 	ok := len(pinned) == 0
 	o.Relocatable = &ok
