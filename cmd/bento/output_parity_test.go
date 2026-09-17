@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,7 +93,22 @@ var parityRows = []parityRow{
 	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
 	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
 
+	// profile.
+	{writers: []string{"writeMergeNotice"}, fixture: "profile", marker: "kept from the existing manifest", key: "merged"},
+
+	// approve has no --json: its callouts are validate's (Grid A), and the rest is the
+	// interactive review that ends in a stamp.
+	{writers: []string{"writeApprovalCallouts"}, exempt: "Grid A: approve has no --json; validate calls the same writer and its --json carries each callout"},
+	{writers: []string{"writeReapprovalNotice", "writeJournalDiff"}, exempt: "approve has no --json; the approval state reaches validate --json as approval"},
+
+	// Trust warnings, shared across frontends.
+	{writers: []string{"warnUntrusted"}, exempt: "run carries it as stamp_at_risk; approve has no --json; profile --json lacks it (bv2-uzlc2)"},
+	{writers: []string{"warnStampAtRisk"}, exempt: "validate --json lacks it (bv2-ati60)"},
+
 	{writers: []string{"writeJSON"}, exempt: "the encoder every --json path writes through, not a human writer"},
+	{writers: []string{"writeRunResult"}, exempt: "the dispatcher that picks the human or --json rendering; its writers have rows of their own"},
+	{writers: []string{"writeManifestAtomically", "writeApprovalRecord", "writeJournalEntry"}, exempt: "write files, not human output; their failures reach the user as errors"},
+	{writers: []string{"writeUsageHint"}, exempt: "the hint under a command-line mistake, which the error above it already names"},
 }
 
 func TestEveryHumanFactReachesJSON(t *testing.T) {
@@ -115,6 +131,7 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 		// Rendered after "doctor", whose rows come first: the relocation it sets would
 		// otherwise reach that fixture too.
 		"doctor-relocated": parityDoctorRelocated,
+		"profile":          parityProfile,
 	}
 	type rendered struct {
 		human   string
@@ -151,14 +168,21 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 // A human writer added with no parity decision is the gap this table exists to close, so
 // the table has to know every writer by name.
 func TestEveryHumanWriterHasAParityRow(t *testing.T) {
-	for _, name := range unrowedWriters(t, "render.go", "validate.go", "doctor.go") {
+	for _, name := range unrowedWriters(t, ".") {
 		t.Errorf("%s writes human output and has no row in parityRows: name the --json key that carries "+
 			"its fact, or the reason it has none", name)
 	}
 }
 
-func unrowedWriters(t *testing.T, files ...string) []string {
+// unrowedWriters names every write* or warn* function in dir's non-test files that no
+// row names. The whole package rather than a list of files, because a list is a second
+// place a new file has to be remembered, and the writer it forgets is the one it passes.
+func unrowedWriters(t *testing.T, dir string) []string {
 	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	rowed := map[string]bool{}
 	for _, row := range parityRows {
 		for _, w := range row.writers {
@@ -167,13 +191,19 @@ func unrowedWriters(t *testing.T, files ...string) []string {
 	}
 	var missing []string
 	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
 		f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "write") && !rowed[fn.Name.Name] {
+			if !ok || fn.Recv != nil || rowed[fn.Name.Name] {
+				continue
+			}
+			if strings.HasPrefix(fn.Name.Name, "write") || strings.HasPrefix(fn.Name.Name, "warn") {
 				missing = append(missing, fn.Name.Name)
 			}
 		}
@@ -184,13 +214,19 @@ func unrowedWriters(t *testing.T, files ...string) []string {
 // The guard above is only as good as its file walk: a writer it cannot see is a writer
 // it passes.
 func TestUnrowedWritersSeesANewWriter(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "new.go")
-	src := "package main\n\nimport \"io\"\n\nfunc writeUnrowedFact(w io.Writer) {}\n\nfunc writeShieldSummary(w io.Writer) {}\n"
-	if err := os.WriteFile(file, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
+	dir := t.TempDir()
+	for name, src := range map[string]string{
+		"new.go":      "package main\n\nimport \"io\"\n\nfunc writeUnrowedFact(w io.Writer) {}\n\nfunc writeShieldSummary(w io.Writer) {}\n",
+		"warn.go":     "package main\n\nimport \"io\"\n\nfunc warnUnrowedFact(w io.Writer) {}\n",
+		"new_test.go": "package main\n\nimport \"io\"\n\nfunc writeTestHelper(w io.Writer) {}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got := unrowedWriters(t, file); len(got) != 1 || got[0] != "writeUnrowedFact" {
-		t.Errorf("unrowedWriters = %v, want only the writer with no row", got)
+	got := unrowedWriters(t, dir)
+	if !slices.Equal(got, []string{"writeUnrowedFact", "warnUnrowedFact"}) {
+		t.Errorf("unrowedWriters = %v, want the write* and warn* writers with no row from every non-test file", got)
 	}
 }
 
@@ -297,6 +333,22 @@ func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
 	writeNestedAnchors(&human, anchors)
 	writeRelocatedShields(&human)
 	encoded, err := json.Marshal(toDoctorJSON(enforce.Report{}, anchors, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var machine map[string]any
+	if err := json.Unmarshal(encoded, &machine); err != nil {
+		t.Fatal(err)
+	}
+	return human.String(), machine
+}
+
+func parityProfile(t *testing.T) (string, map[string]any) {
+	p := &policy.Policy{Entrypoint: "main.py", Exec: "none", Read: []string{"./old"}}
+	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, policy: p}
+	var human bytes.Buffer
+	writeMergeNotice(&human, "m.yaml", merge)
+	encoded, err := json.Marshal(profileResultJSON("m.yaml", p, p, manifest.Provenance{}, roundStatus{}, merge, ""))
 	if err != nil {
 		t.Fatal(err)
 	}

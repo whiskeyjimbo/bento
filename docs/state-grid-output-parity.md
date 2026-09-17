@@ -176,13 +176,16 @@ direction and not counted.
 
 Landed as cmd/bento/output_parity_test.go: parityRows is the table (writers, fixture, human
 marker, json key, or exempt reason), rendered once per fixture (run verdict, run target
-unreached, run refusal, validate via the command, doctor), and TestEveryHumanWriterHasAParityRow
+unreached, run refusal, validate via the command, doctor, doctor with nested anchors and a
+relocated shield, profile merge), and TestEveryHumanWriterHasAParityRow
 is the go/ast pass. A sibling of 5c3676f rather than an extension: that guard ranges over
 gate.Runnability's fields, and these facts are prose with no struct to range over. Exempt rows:
-R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), writeJSON, and
-run's pre-run note writers, whose runNotesJSON fields are filled beside the write in newRunCmd.
-The ast pass scans render.go, validate.go and doctor.go only: approve.go, journal.go, profile.go
-and root.go writers, Grid A, and non-write* writers such as warnStampAtRisk are outside it.
+R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), writeJSON, run's pre-run note
+writers (whose runNotesJSON fields are filled beside the write in newRunCmd), Grid A and
+approve's review (approve has no --json), and the file writers and dispatcher. The ast pass
+scans every non-test file in cmd/bento for write* and warn* functions. Two trust warnings
+are exempt as open gaps: warnStampAtRisk has no validate --json field (bv2-ati60), and
+warnUntrusted has no profile --json field (bv2-uzlc2).
 
 The original design, for reference:
 
