@@ -735,3 +735,22 @@ func TestNonAnchoringInvertsResolveAgainst(t *testing.T) {
 		}
 	}
 }
+
+// Parse refuses an input over maxManifestBytes, so Marshal must refuse to write one.
+// The reachable path is approve, which rewrites the manifest in place: it adds a
+// provenance block and quoting can lengthen scalars, so a file just under the cap can
+// marshal to one over it and land atomically over the original - leaving a manifest
+// bento cannot read and no copy of the one it replaced.
+func TestMarshalRefusesAnOversizeDocument(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "/app/run.py"}
+	for len(p.Read) < 300 {
+		p.Read = append(p.Read, "/data/"+strings.Repeat("a", 4096))
+	}
+	b, err := Marshal(p, Provenance{})
+	if err == nil {
+		t.Fatalf("Marshal wrote %d bytes, which is over the %d Parse accepts", len(b), maxManifestBytes)
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("the refusal must name the size, so an operator knows it is not a bad grant: %v", err)
+	}
+}

@@ -483,7 +483,19 @@ func Marshal(p *policy.Policy, prov Provenance) ([]byte, error) {
 	if !prov.isZero() {
 		m.Provenance = &prov
 	}
-	return yaml.MarshalWithOptions(&m, yaml.CustomMarshaler[string](quoteUnlessItReadsBack))
+	b, err := yaml.MarshalWithOptions(&m, yaml.CustomMarshaler[string](quoteUnlessItReadsBack))
+	if err != nil {
+		return nil, err
+	}
+	// The last of Parse's gates to reach this side, and it has to be measured on the
+	// rendered bytes rather than the policy: quoting lengthens scalars, so approve can
+	// turn a manifest just under the cap into one over it, and approve writes the result
+	// over the original. Same operator and same constant as Parse, so there is no band
+	// Marshal writes and Parse refuses.
+	if len(b) > maxManifestBytes {
+		return nil, fmt.Errorf("manifest: the policy renders to %d bytes, larger than the %d a manifest may be; bento could not read back what it wrote", len(b), maxManifestBytes)
+	}
+	return b, nil
 }
 
 // quoteUnlessItReadsBack writes a string scalar the way goccy would, unless goccy's
