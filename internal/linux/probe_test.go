@@ -429,13 +429,14 @@ func TestDegradedConsequencesDiscloseEveryResidualRight(t *testing.T) {
 // Two residuals no ABI this build knows closes, so every cell of the grid above has to
 // name them. Landlock's net hooks sit on bind(2) and connect(2) for TCP only, so a
 // descriptor handed to the target that needs neither (one already connected, or a UDP,
-// raw or packet socket) is past both the net domain and the creation-only egress filter.
+// raw or packet socket), or an MPTCP one the TCP-only hooks skip, is past both the net
+// domain and the creation-only egress filter.
 // And the handled sets are pinned, so a right a kernel past ABI 9 adds is not restricted.
 func TestDegradedConsequencesDiscloseResidualsNoABICloses(t *testing.T) {
 	for cell := 0; cell < 1<<5; cell++ {
 		b := func(i int) bool { return cell&(1<<i) != 0 }
 		l := filesystemLayer(namespacesBlocked, "userns blocked here", true, b(0), b(1), b(2), b(3), b(4), true)
-		for _, want := range []string{"already connected", "UDP, raw or packet socket", "past Landlock ABI 9"} {
+		for _, want := range []string{"already connected", "UDP, raw or packet socket", "MPTCP", "past Landlock ABI 9"} {
 			if !strings.Contains(l.Consequences, want) {
 				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
 			}

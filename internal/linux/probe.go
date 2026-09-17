@@ -350,19 +350,21 @@ func ioctlDevResidual(ioctlDevRestricted bool) string {
 //
 // Even from ABI 4 the domain is partial, and the restricted arm says so: its hooks are
 // TCP bind(2) and connect(2), so a passed descriptor that needs neither - one already
-// connected, or a UDP, raw or packet socket - is past both fences. MPTCP is not named
-// because it is not open here: the filter allowlists socket(2) by domain alone, so an
-// AF_INET MPTCP socket is refused at creation, and a passed one is the passed-descriptor
-// case already disclosed.
+// connected, or a UDP, raw or packet socket - is past both fences, and so is a passed
+// MPTCP socket even unconnected, since the hooks check for TCP. The target cannot create
+// one itself: the filter allowlists socket(2) by domain alone and refuses AF_INET
+// whatever the protocol, so the MPTCP gap is only ever a passed descriptor.
 func netFenceClause(netTCPRestricted bool) string {
 	if netTCPRestricted {
 		return "seccomp blocks IP egress and Landlock denies TCP connect on a descriptor the filter " +
 			"cannot revoke, though not use of a passed descriptor that needs no connect - one already " +
-			"connected, or a UDP, raw or packet socket. Neither reaches netlink interface enumeration, nor "
+			"connected, or a UDP, raw or packet socket - nor connect on a passed MPTCP socket, which the TCP-only " +
+			"hooks do not see. Neither reaches netlink interface enumeration, nor "
 	}
 	return "seccomp blocks IP egress, but this kernel's Landlock ABI is below 4 and cannot restrict TCP " +
 		"connect, so an AF_INET descriptor passed to the target over SCM_RIGHTS stays usable, whether " +
-		"unconnected, already connected, or a UDP, raw or packet socket - the filter governs socket creation, not use, and has nothing behind it here. Nor does " +
+		"unconnected, already connected, or a UDP, raw or packet socket or MPTCP one - the filter governs " +
+		"socket creation, not use, and has nothing behind it here. Nor does " +
 		"it reach netlink interface enumeration, or "
 }
 
@@ -425,7 +427,7 @@ func resolveUnixResidual(resolveUnixRestricted bool) string {
 
 // unknownRightsResidual discloses what the pinned handled sets leave out on a kernel
 // newer than this build. Landlock restricts only the rights a ruleset handles, and the
-// degraded sets stop at ABI 9 on purpose (internal/landlock's handledFS explains why), so
+// degraded sets stop at ABI 9 on purpose (internal/landlock's handledFS and degradedFS explain why), so
 // a right a later ABI adds is unrestricted. It is unconditional rather than keyed on the
 // raw ABI: on a kernel at or below 9 it is vacuous, which over-states nothing that
 // matters, while a missed newer kernel would stay silent about a real gap.

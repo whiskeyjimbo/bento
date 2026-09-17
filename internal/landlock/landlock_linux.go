@@ -445,8 +445,9 @@ func RestrictDegraded(read, write, exec []string) error {
 	// Partial, like every other backstop here. An already-CONNECTED passed fd needs no
 	// further connect and is not fenced; Landlock's net hooks are TCP-only, so UDP, raw and
 	// AF_PACKET rest on the egress filter killing them at socket(2), so a passed one is
-	// open. MPTCP escapes the hooks too, but it is not a further residual: the filter
-	// allowlists socket(2) by domain alone and refuses an AF_INET MPTCP socket at creation.
+	// open. MPTCP escapes the hooks entirely, so a passed MPTCP socket can connect even
+	// unconnected; the filter allowlists socket(2) by domain alone, so the target cannot
+	// create one itself.
 	if err := netTCP.BestEffort().RestrictNet(); err != nil {
 		return fmt.Errorf("landlock: applying degraded network confinement: %w", err)
 	}
