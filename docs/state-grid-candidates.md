@@ -90,3 +90,26 @@ against the shared corpus that drives its differential tests, and fix scopes sin
 | 6 | `gate/` vs backend `checkNotShielded` re-open | Carried; 21 gate commits since the 2026-08-13 grid | as row 6 | re-open pass | Overlaps 18 heavily | fold into 18 |
 | 16 | Human vs JSON parity | Carried | as row 16 | | Medium | a reflection guard test, not a grid |
 | 19 | `examples/embed` mirroring the backend's shield and grant sets (main.go:296, :442) | Mirror prose in library-consumer example | The example never claims a fence the backend does not apply | small | Weak: example code, `make examples` verifies it | ordinary review |
+
+## Third outcome, 2026-09-17
+
+Rows 13, 15, 16 and 18 were gridded: `state-grid-platform-stubs.md`, `state-grid-result-arms.md`,
+`state-grid-output-parity.md`, `state-grid-shield-verdict.md`. Reviewer worktrees started on
+924e291; each re-checked its cites against 5a98897 in a re-open pass.
+
+Filed: bv2-5v0pf, bv2-xzkku, bv2-dkdwd, bv2-i73jf (result arms); bv2-9rus4, bv2-097pd, bv2-hqqlp,
+bv2-9xt55, bv2-2eirs, bv2-9jlzo, bv2-qmlok, bv2-4cy9j (output parity, several cells per bead where
+one fix covers the row); bv2-2pbxh, bv2-whloj, bv2-9rqim (platform stubs); bv2-kdp1e (shield verdict).
+
+The result-arms re-open pass found the recurring defect moved up a layer: every prior fix closed
+the backend arm, none carried the fields into a consumer's error path.
+
+Not filed, with reasons:
+- Shield verdict F1, clamp keeping an AboveWriteShield grant the degraded tier refuses: profile A8,
+  already rejected on 2026-09-16.
+- Shield verdict F2, clamp skipping the gitdir scan: fixed at 21dc076, read on a stale base.
+- Shield verdict F3, checkout-derived write shields writable on the degraded tier: disclosed in
+  Exposed, degraded-tier grid F4 x A1.
+- Run's hedged signal inference (R16) and file-ish write note on stderr (R26): documented choices.
+- Run's hints and denial legend absent from JSON (R17/R18): rebuildable from JSON fields.
+- `seccomp_other.go` lacking `TerminalInjectionSupported`: a compile failure, the safe direction.
