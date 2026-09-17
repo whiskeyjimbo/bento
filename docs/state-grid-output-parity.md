@@ -105,9 +105,9 @@ same class as run's pre-run notes, not counted as a cell.
 | R20 | posture shortfall line | posture_shortfall | HANDLED | READING |
 | R21 | failure path error text | failed.reason | HANDLED, failJSON | READING |
 | R22 | pre-run missing read grants | missing_read_grants (verdict only) | HANDLED | READING |
-| R23 | pre-run unrecorded / shared-journal stamp note (run.go:91) | stamp_at_risk, approval_note | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
-| R24 | pre-run unset env notes | unset_env | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
-| R25 | pre-run blocked-host notes, runtime dir note | network_blocked, network_blocked_unreadable, unshieldable_runtime_dir | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | READING |
+| R23 | pre-run unrecorded / shared-journal stamp note (run.go:91) | stamp_at_risk, approval_note | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | TEST |
+| R24 | pre-run unset env notes | unset_env | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | TEST |
+| R25 | pre-run blocked-host notes, runtime dir note | network_blocked, network_blocked_unreadable, unshieldable_runtime_dir | HANDLED, fixed in 0eacfd5 (was UNHANDLED tier 2) | TEST |
 | R26 | pre-run file-ish write notes | none | HANDLED by design (writeFileishWriteNotes comment: stderr only, on purpose) | READING |
 
 ## Grid A - approve callouts x validate --json (5 cells)
@@ -181,6 +181,8 @@ is the go/ast pass. A sibling of 5c3676f rather than an extension: that guard ra
 gate.Runnability's fields, and these facts are prose with no struct to range over. Exempt rows:
 R16, R17/R18, R26, V13, D6, D8 (unconstructible branch), D11/D13 (bv2-39fgx), writeJSON, and
 run's pre-run note writers, whose runNotesJSON fields are filled beside the write in newRunCmd.
+The ast pass scans render.go, validate.go and doctor.go only: approve.go, journal.go, profile.go
+and root.go writers, Grid A, and non-write* writers such as warnStampAtRisk are outside it.
 
 The original design, for reference:
 

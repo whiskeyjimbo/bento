@@ -37,7 +37,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeAcceptedAliasWarning"}, fixture: "verdict", marker: "you acknowledged the tree", key: "accepted_aliases"},
 	{writers: []string{"writeExposedWarning"}, fixture: "verdict", marker: "were left exposed", key: "exposed"},
 	{writers: []string{"writeSandboxPathShadow"}, fixture: "verdict", marker: "the box does not carry", key: "shadowed_path_dirs"},
-	{writers: []string{"writeDegradations"}, fixture: "verdict", marker: "does not enforce everything", key: "report"},
+	{writers: []string{"writeDegradations"}, fixture: "verdict", marker: "does not enforce everything", key: "report.layers"},
 	{writers: []string{"writeChangedAutoExecNotice"}, fixture: "verdict", marker: "the run changed these files", key: "changed_auto_exec"},
 	{writers: []string{"writeRedirectedHooksNotice"}, fixture: "verdict", marker: "pointed this checkout's hooks", key: "redirected_hooks"},
 	{writers: []string{"writeRedirectedHooksNotice"}, fixture: "verdict", marker: "could not read these grants whole", key: "unresolved_hooks"},
@@ -131,7 +131,14 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 			t.Errorf("%v (%s): the human output no longer says %q, so this row guards nothing; fix the fixture or the row.\ngot:\n%s",
 				row.writers, row.fixture, row.marker, r.human)
 		}
-		if isZeroJSON(r.machine[row.key]) {
+		// Dotted keys reach inside an object whose own key is never empty, as the run
+		// report's is, so the row checks the field that carries the fact.
+		var v any = r.machine
+		for _, part := range strings.Split(row.key, ".") {
+			m, _ := v.(map[string]any)
+			v = m[part]
+		}
+		if isZeroJSON(v) {
 			t.Errorf("%v (%s): the human output says %q but --json carries no %q.\ngot: %v",
 				row.writers, row.fixture, row.marker, row.key, r.machine)
 		}
