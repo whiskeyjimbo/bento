@@ -113,3 +113,20 @@ Not filed, with reasons:
 - Run's hedged signal inference (R16) and file-ish write note on stderr (R26): documented choices.
 - Run's hints and denial legend absent from JSON (R17/R18): rebuildable from JSON fields.
 - `seccomp_other.go` lacking `TerminalInjectionSupported`: a compile failure, the safe direction.
+
+## Fourth sweep, 2026-09-17
+
+Signals added: degradation flags counted by consuming file (`ShieldsUnknown` 31 uses,
+`CredentialAliasesPartial` 21, `ArgvTruncated` 15, `HoldsUnknown` 11, `ErrLocationUnknown` 7),
+the remaining iota enums against the grids already done, and the gaps the output parity guard
+exposed when widened (bv2-ati60, bv2-uzlc2).
+
+| # | Candidate | Signals | Invariant | Grid shape | Fit | Route |
+|---|-----------|---------|-----------|------------|-----|-------|
+| 20 | Gate's "could not tell" flags (`gate.Check`: `ShieldsUnknown`, `CredentialAliasesPartial`, and the answers they qualify) x consumers (validate human, validate --json, examples/embed) | Degradation flags in 4 files each; bv2-hqqlp was this shape (refusals dropped under `ShieldsUnknown`); `alias_other.go` vs `alias_unix.go` platform split | A consumer never presents an answer computed under an unknown or partial flag as complete: empty-because-unasked is always distinguishable from empty-because-clean | flag (2-4) x qualified answer (refusals, aliases, shielded grants, runnability) x consumer (3), collapse unrelated pairs, ~25 | Strong | grid |
+| 21 | Manifest trust flaws x frontend (`trust.LocationFlaws`, `stampFlaws`, `ErrLocationUnknown` x run, validate, approve, profile x human, --json x linux, other) | Two gaps filed from one guard widening (bv2-ati60, bv2-uzlc2); `trust_other.go` returns `ErrLocationUnknown`; four frontends each call the flaw functions differently | Every frontend that acts on or stamps a manifest surfaces every flaw it computes in each output form, and none reads `ErrLocationUnknown` as no flaws | flaw source (3) x frontend (4) x form (2), platform only for the unknown row, ~24 | Good | grid |
+| 22 | Exec record states (`ArgvTruncated`, marked vs unmarked, absent, partial) x consumers (render human and --json, applied in both tiers, embed, supervise) | ADR 0011; `ArgvTruncated` in 4 files; render_test pins five record states for render only | No consumer reads a truncated, partial or absent record as a complete one | state (5) x consumer (5) ~25 | Medium: render is already table-tested, the yield is the example consumers | grid, small |
+| 23 | `enforce.SetupState` x consumers | 3 states in 5 files | | | Weak: walked as a field in the result-arms grid | skip |
+| 24 | `denylist.Holds` (`HoldsUnknown`) x shield rules x clamp | 11 uses; open P1 bv2-h7k3b disputes what Holds decides | | | Decline: the semantics are under an open decision | revisit after bv2-h7k3b |
+| 25 | `internal/observe` | 66 fixes; this session saw an uncommitted change time it out | | | Bad for a grid | `concurrency-audit` |
+| 26 | Open board, 47 beads | Several beads this session were stale on arrival (cites moved, fixed on another base) | | | Not a grid | `bead-groom` |
