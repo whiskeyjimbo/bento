@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -722,13 +723,17 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 // which is the right channel for a CLI and the wrong one for an embedder that passed no
 // terminal at all. recordResidue writes it to enforce.Result.Residue as well, for that
 // caller; the two are one account on two channels, not two facts.
+//
+// Quoted, for the reason enforce.Result.Residue's doc gives its own consumers: a residue
+// path can carry bytes a prior run chose - a shield mount point sits under a git submodule
+// directory whose name came from the checkout - and this writes to a terminal.
 func warnResidue(w io.Writer, what string, paths []string) {
 	if w == nil || len(paths) == 0 {
 		return
 	}
 	fmt.Fprintf(w, "bento: %s:\n", what)
 	for _, p := range paths {
-		fmt.Fprintf(w, "  %s\n", p)
+		fmt.Fprintf(w, "  %s\n", strconv.Quote(p))
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -157,7 +158,7 @@ func TestSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
 	}
 	// The exact line, not a substring of stderr: every shield mount point under the
 	// grant has this path as its prefix, so a loose match would pass on their names.
-	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+	if !strings.Contains(stderr.String(), "\n  "+strconv.Quote(out)+"\n") {
 		t.Errorf("a setup failure must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
 	}
 	// Nothing ran, so bwrap created no mount point and the reclaim has nothing to report.
@@ -194,7 +195,7 @@ func TestCancelBeforeLaunchNamesTheWriteDirItCreated(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+	if !strings.Contains(stderr.String(), "\n  "+strconv.Quote(out)+"\n") {
 		t.Errorf("a run cancelled before the wrapper started must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
 	}
 }
@@ -225,7 +226,7 @@ func TestPreflightFailureNamesTheWriteDirItAlreadyCreated(t *testing.T) {
 	if _, err := os.Stat(made); err != nil {
 		t.Skipf("the refusal landed before the first grant was created, so there is no residue to report: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "\n  "+made+"\n") {
+	if !strings.Contains(stderr.String(), "\n  "+strconv.Quote(made)+"\n") {
 		t.Errorf("a preflight refusal must name the directory it already created; stderr was %q, want a line naming %s", stderr.String(), made)
 	}
 }
@@ -255,7 +256,7 @@ func TestDegradedSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+	if !strings.Contains(stderr.String(), "\n  "+strconv.Quote(out)+"\n") {
 		t.Errorf("a degraded setup failure must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
 	}
 }
@@ -286,7 +287,7 @@ func TestProfileSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+	if !strings.Contains(stderr.String(), "\n  "+strconv.Quote(out)+"\n") {
 		t.Errorf("a profiling setup failure must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
 	}
 }
