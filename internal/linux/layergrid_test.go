@@ -145,3 +145,19 @@ func TestEveryLayerIsAnsweredForByTheInRunCorrections(t *testing.T) {
 		}
 	}
 }
+
+// A note onto a report that carries no network layer at all must land. StateOf reads an
+// absent layer as Unavailable, which would make every note an upgrade and discard it -
+// the fault the run saw would then be in no channel anywhere. Unreachable while the
+// probe adds the layer unconditionally, which is exactly why the coupling is pinned
+// here rather than left to that one line in another file.
+func TestWorsenNetworkRecordsOntoAnAbsentLayer(t *testing.T) {
+	var r enforce.Report
+	worsenNetwork(&r, enforce.Degraded, "the egress bridge stopped serving mid-run")
+	if got := r.StateOf(enforce.LayerNetwork); got != enforce.Degraded {
+		t.Errorf("a note onto a report with no network layer must record it; StateOf = %v, want %v", got, enforce.Degraded)
+	}
+	if len(r.Layers) != 1 || r.Layers[0].Reason == "" {
+		t.Errorf("the note's reason must survive; layers were %+v", r.Layers)
+	}
+}

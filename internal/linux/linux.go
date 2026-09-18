@@ -592,29 +592,37 @@ func noteDeadBridge(r *enforce.Report, died bool) {
 // its only consumer, so a listener that degraded the layer first erased the number of
 // connections whose handlers never ran to an outcome from the run record entirely.
 func worsenNetwork(r *enforce.Report, state enforce.State, reason string) {
-	current := r.StateOf(enforce.LayerNetwork)
-	if state < current {
+	current, prior, probed := networkState(r)
+	// An ABSENT layer is not a worse one. StateOf folds "the probe said nothing" into
+	// Unavailable, which is the right fail-safe for a layer the run requires and the
+	// wrong answer here: read that way, a note onto a report with no network layer is
+	// discarded as an upgrade of a layer nobody ever asserted, and the run's only account
+	// of the fault disappears. Nothing reaches here that way today - every note-firing
+	// path seeds from a probe, and the probe adds the layer unconditionally - so this is
+	// the coupling held straight rather than a live fix. enforce.Report.probedState draws
+	// the same distinction for callers inside that package.
+	if probed && state < current {
 		return
 	}
-	if state == current {
-		if prior := networkReason(r); prior != "" {
-			reason = joinReason(prior, reason)
-		}
+	if probed && state == current && prior != "" {
+		reason = joinReason(prior, reason)
 	}
 	r.Set(enforce.LayerNetwork, state, reason)
 }
 
-// networkReason returns what the report currently says about the network layer, so a
-// second note can extend it rather than replace it. Duplicate entries are read the way
-// StateOf reads them - the most severe wins - since that is the one admission governs on.
-func networkReason(r *enforce.Report) string {
+// networkState returns what the report currently says about the network layer - its
+// state, its reason so a second note can extend rather than replace it, and whether the
+// report says anything about it at all. Duplicate entries are read the way StateOf and
+// probedState read them, the most severe winning, since that is the one admission
+// governs on.
+func networkState(r *enforce.Report) (enforce.State, string, bool) {
 	worst, reason, found := enforce.Enforced, "", false
 	for _, l := range r.Layers {
 		if l.Layer == enforce.LayerNetwork && (!found || l.State > worst) {
 			worst, reason, found = l.State, l.Reason, true
 		}
 	}
-	return reason
+	return worst, reason, found
 }
 
 func isExitError(err error) bool {
