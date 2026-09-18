@@ -48,6 +48,11 @@ func newValidateCmd() *cobra.Command {
 			"and a single absolute or ~ path ends that. It is opt-in because plenty of manifests\n" +
 			"are meant for one machine; asking for it is the failure, so it does not need\n" +
 			"--strict. --json reports it as `relocatable` and `pinned_paths`.\n\n" +
+			"Its refusal carries bento's ordinary failure status, the same one a manifest that\n" +
+			"cannot be read returns, so the exit code alone does not tell \"this manifest pins\n" +
+			"paths\" from \"there was no manifest to check\". A gate that needs the difference reads\n" +
+			"--json rather than the status: a manifest that parsed carries `pinned_paths`, and one\n" +
+			"that could not be read produces no envelope at all.\n\n" +
 			"A deliberate pin is still a pin: a credential-shield opt-in names one user's home,\n" +
 			"and a toolchain outside the checkout names one install. Both are correct manifests\n" +
 			"and neither is relocatable, so a gate that wants \"portable apart from these\" reads\n" +

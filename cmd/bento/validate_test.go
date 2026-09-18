@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -991,6 +992,41 @@ func TestValidateRelocatable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A CI gate cannot read the exit status: --relocatable's refusal and a manifest that
+// could not be read both return bento's ordinary failure code, so "this manifest pins
+// paths" and "there was no manifest" are the same answer. The help has to say so and
+// point at the channel that does distinguish them - and this pins the claim to the
+// behaviour, so a later change that DOES separate the two fails here instead of leaving
+// the help describing a bento that no longer exists.
+func TestValidateRelocatableExitStatusAmbiguityIsDocumented(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/corpus"}}
+	pinnedOut, pinnedErr := runCapturingStdout(t, newValidateCmd(), "--relocatable", writeManifest(t, p, manifest.Provenance{}))
+	if pinnedErr == nil {
+		t.Fatalf("--relocatable must fail on a pinned path; got:\n%s", pinnedOut)
+	}
+	_, missingErr := runCapturingStdout(t, newValidateCmd(), "--relocatable", filepath.Join(t.TempDir(), "absent.yaml"))
+	if missingErr == nil {
+		t.Fatal("a missing manifest must fail")
+	}
+	// Neither carries a code of its own, so both reach main's bentoFailed. If one grows
+	// an exitError the statuses have parted and the help below is wrong.
+	var ee *exitError
+	if errors.As(pinnedErr, &ee) != errors.As(missingErr, &ee) {
+		t.Fatalf("the two refusals no longer share an exit status; the help must be updated: pinned=%v missing=%v", pinnedErr, missingErr)
+	}
+
+	long := newValidateCmd().Long
+	for _, want := range []string{
+		"the exit code alone does not tell",
+		"reads\n--json rather than the status",
+		"`pinned_paths`",
+	} {
+		if !strings.Contains(long, want) {
+			t.Errorf("validate --help must say %q, or a gate has no way to learn the status is ambiguous;\ngot:\n%s", want, long)
+		}
 	}
 }
 
