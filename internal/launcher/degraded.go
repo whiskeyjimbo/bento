@@ -111,6 +111,80 @@ var (
 	restrictDegraded       = landlock.RestrictDegraded
 )
 
+// The kernel facts restrictCapabilityBound decides on, seamed for the reason the fences
+// above are: on an ordinary unprivileged host the drop always fails and the caller never
+// holds a capability, so the refusal below is unreachable and a regression removing it
+// would look identical.
+var (
+	capBoundingNow = readCapBounding
+	dropCapBound   = dropCapBoundingSet
+	effectiveCaps  = heldEffectiveCaps
+)
+
+// restrictCapabilityBound is the degraded tier's counterpart to the bwrap tier's
+// --cap-drop ALL and verifyEmptyCapBound. It empties the capability bounding set where
+// the kernel permits it and refuses the run where it does not and the residual is live.
+//
+// PR_CAPBSET_DROP needs CAP_SETPCAP in the caller's user namespace, and this tier is
+// entered precisely because a user namespace could not be created - so on an ordinary
+// unprivileged host the drop is structurally unavailable. That residual is inert rather
+// than dropped: this runs after the seccomp installs, every one of which sets
+// PR_SET_NO_NEW_PRIVS, and a bounding set can only be spent through a setuid or
+// file-capability exec, which no-new-privs already refuses. The case that is NOT inert
+// is a caller that holds capabilities now, where the bounding set bounds what its own
+// children keep - and that is the root-started run F2 in the launcher state grid
+// records as the one nothing refuses. It is refused here.
+//
+// The drop is never assumed: the bounding set is re-read from the kernel afterwards, so
+// what this reports applied is what the kernel says applied.
+func restrictCapabilityBound() error {
+	held, err := capBoundingNow()
+	if err != nil {
+		return fmt.Errorf("launcher: %w", err)
+	}
+	if held == 0 {
+		return nil
+	}
+	dropCapBound(held)
+	if held, err = capBoundingNow(); err != nil {
+		return fmt.Errorf("launcher: %w", err)
+	}
+	if held == 0 {
+		return nil
+	}
+	eff, err := effectiveCaps()
+	if err != nil {
+		return fmt.Errorf("launcher: %w", err)
+	}
+	if eff != 0 {
+		return fmt.Errorf("launcher: refusing to run - the degraded tier could not empty the capability bounding set (%016x left) and this run holds capabilities %016x, so the target would inherit a bound the bwrap tier's --cap-drop ALL removes", held, eff)
+	}
+	return nil
+}
+
+// dropCapBoundingSet asks the kernel to drop every capability in held. Individual
+// failures are not reported: the caller re-reads the bounding set and decides on what
+// the kernel actually did, which is the only answer worth acting on.
+func dropCapBoundingSet(held uint64) {
+	for cap := 0; cap < 64; cap++ {
+		if held&(1<<uint(cap)) != 0 {
+			unix.Syscall(unix.SYS_PRCTL, unix.PR_CAPBSET_DROP, uintptr(cap), 0)
+		}
+	}
+}
+
+// heldEffectiveCaps is the caller's effective capability set - what it can exercise
+// right now, as opposed to the bounding set, which is only a ceiling on what an exec
+// could gain.
+func heldEffectiveCaps() (uint64, error) {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return 0, fmt.Errorf("reading the effective capability set: %w", err)
+	}
+	return uint64(data[0].Effective) | uint64(data[1].Effective)<<32, nil
+}
+
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot
 // supply. Each fence is the ONLY one of its kind in this tier - there is no mount
 // namespace behind Landlock, no netns behind the egress block, and no --new-session
@@ -225,6 +299,12 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	// sides of that line and the block cannot rest on Landlock.
 	if err := blockTerminalInjection(); err != nil {
 		return 0, fmt.Errorf("launcher: refusing to run - could not install the terminal-injection block: %w", err)
+	}
+	// After the seccomp installs, not before: they are what set PR_SET_NO_NEW_PRIVS, and
+	// no-new-privs is what makes an undroppable bounding set inert rather than a silent
+	// drop of the bwrap tier's --cap-drop ALL. See restrictCapabilityBound.
+	if err := restrictCapabilityBound(); err != nil {
+		return 0, err
 	}
 
 	// Landlock last, so the setup above (which does not touch confined paths) is not

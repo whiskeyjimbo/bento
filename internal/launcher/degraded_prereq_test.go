@@ -207,3 +207,81 @@ func runDegradedChild(fence string) {
 		os.Stdout.WriteString("REFUSED: " + err.Error() + "\n")
 	}
 }
+
+// The capability bounding set is the one bwrap-tier restriction with no structural
+// counterpart here: PR_CAPBSET_DROP needs CAP_SETPCAP in the caller's user namespace,
+// and this tier exists because a user namespace could not be created. So the question
+// the fence has to get right is not "did the drop work" but "does the residual matter",
+// and that turns on whether the caller holds capabilities of its own.
+//
+// Seamed because on an ordinary unprivileged host the drop always fails and the caller
+// always holds nothing, so the refusal is the one arm a live run cannot reach.
+func TestRestrictCapabilityBound(t *testing.T) {
+	const someCaps = uint64(0x0000003fffffffff)
+	for _, tc := range []struct {
+		name string
+		// bounding is what the kernel reports before and after the drop attempt.
+		bounding []uint64
+		eff      uint64
+		wantHas  string
+	}{
+		{"already empty, nothing to drop", []uint64{0}, 0, ""},
+		{"the drop worked", []uint64{someCaps, 0}, 0, ""},
+		{"the drop worked, and the caller was privileged", []uint64{someCaps, 0}, someCaps, ""},
+		{"undroppable but the caller holds nothing", []uint64{someCaps, someCaps}, 0, ""},
+		{"undroppable and the caller holds capabilities", []uint64{someCaps, someCaps}, someCaps,
+			"could not empty the capability bounding set"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := tc.bounding
+			defer swapCapSeams(&reads, tc.eff)()
+			err := restrictCapabilityBound()
+			switch {
+			case tc.wantHas == "" && err != nil:
+				t.Fatalf("restrictCapabilityBound() = %v, want nil", err)
+			case tc.wantHas != "" && err == nil:
+				t.Fatalf("restrictCapabilityBound() = nil, want an error mentioning %q", tc.wantHas)
+			case tc.wantHas != "" && !strings.Contains(err.Error(), tc.wantHas):
+				t.Errorf("restrictCapabilityBound() = %v, want an error mentioning %q", err, tc.wantHas)
+			}
+			if len(reads) != 0 {
+				t.Errorf("%d bounding-set reads went unused, so the decision was made on fewer facts than the case supplies", len(reads))
+			}
+		})
+	}
+}
+
+// swapCapSeams points the three kernel facts at a script: each call to capBoundingNow
+// consumes the next value from reads, the drop is a no-op, and the effective set is
+// fixed. It returns the restore.
+func swapCapSeams(reads *[]uint64, eff uint64) func() {
+	oldRead, oldDrop, oldEff := capBoundingNow, dropCapBound, effectiveCaps
+	capBoundingNow = func() (uint64, error) {
+		if len(*reads) == 0 {
+			return 0, fmt.Errorf("the test script ran out of bounding-set reads")
+		}
+		v := (*reads)[0]
+		*reads = (*reads)[1:]
+		return v, nil
+	}
+	dropCapBound = func(uint64) {}
+	effectiveCaps = func() (uint64, error) { return eff, nil }
+	return func() { capBoundingNow, dropCapBound, effectiveCaps = oldRead, oldDrop, oldEff }
+}
+
+// The live counterpart: on whatever host this runs, the fence must reach a verdict from
+// the real kernel rather than erroring out reading it, and an ordinary unprivileged test
+// process must not be refused. This is what would catch a Capget or a /proc/self/status
+// read that stopped working - the seamed test above cannot, by construction.
+func TestRestrictCapabilityBoundAdmitsAnUnprivilegedHost(t *testing.T) {
+	eff, err := heldEffectiveCaps()
+	if err != nil {
+		t.Fatalf("reading the effective capability set: %v", err)
+	}
+	if eff != 0 {
+		t.Skipf("this test process holds capabilities %016x, which is the arm the seamed test covers", eff)
+	}
+	if err := restrictCapabilityBound(); err != nil {
+		t.Errorf("restrictCapabilityBound() refused an unprivileged run: %v", err)
+	}
+}
