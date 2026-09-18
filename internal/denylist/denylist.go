@@ -732,6 +732,11 @@ func Home(home string) []Rule {
 		"postponed",  // mutt default postponed-message mbox at ~/postponed
 		"sent",       // mutt sent-mail mbox at ~/sent
 		".signature", // outgoing-mail signature
+
+		// linphone's pair at the top of the home. Files, not the store directory
+		// ~/.local/share/linphone that sits in bulkStoreDirs beside them.
+		".linphonerc",          // SIP account auth password
+		".linphone-history.db", // call history alongside it
 	}
 
 	// zuluCrypt's IPC control socket, a channel to the daemon that manages encrypted
@@ -2543,8 +2548,6 @@ var bulkStoreDirs = []string{
 	".local/share/telepathy",   // accounts.cfg holds the connection-manager passwords
 	".cache/telepathy",         //
 	".nicotine",                // Soulseek client: the account password in its config
-	".linphonerc",              // SIP account auth password
-	".linphone-history.db",     // call history alongside it
 	".local/share/linphone",    // call history and account state
 	".local/share/Mumble",      // Mumble's data store beside the certificate config
 	".local/share/data/Mumble", // legacy Qt location for the same

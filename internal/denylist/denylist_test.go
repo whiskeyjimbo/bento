@@ -2097,6 +2097,31 @@ func TestDenyAllRulesAreClassified(t *testing.T) {
 	}
 }
 
+// Dir is what a reader of the rule table takes as ground truth about a path's shape, and
+// Covers extends a Dir rule over everything under it. linphone's account config and its
+// call-history database are single files at the top of the home, so a Dir rule on either
+// claims a tree that cannot exist.
+func TestSingleFileStoresAreNotDirRules(t *testing.T) {
+	rules := allRules("/home/u")
+	byPath := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		byPath[r.Path] = r
+	}
+	for _, p := range []string{
+		"/home/u/.linphonerc",
+		"/home/u/.linphone-history.db",
+	} {
+		r, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s lost its shield", p)
+			continue
+		}
+		if r.Dir {
+			t.Errorf("%s is a file, emitted as %+v", p, r)
+		}
+	}
+}
+
 // The buckets exist so a callout can name what it exposes. A history store described as
 // a credential store is the drain this classification exists to stop, so the examples
 // that motivated it are pinned.
