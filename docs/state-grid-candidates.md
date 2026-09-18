@@ -240,3 +240,72 @@ Declined this sweep, with reasons:
   (`docs/failure-modes/`); bv2-khpb1 is the open cell.
 - `namespaceProbe` (probe.go, 25 of 27 references): the consuming half is what
   `state-grid-layer-consumers.md` already walked.
+
+## Sixth outcome, 2026-09-18
+
+Rows 31, 32, 33 and 34 were all gridded: `state-grid-teardown.md` (35 cells),
+`state-grid-limits-probe.md` (30, reshaped into two grids), `state-grid-launcher-order.md`
+(52 restriction cells plus 8 ordering cells), `state-grid-group-reach.md` (18). Every cell
+in all four got a verdict; no reviewer returned an unwalked cell.
+
+**The reviewer worktrees were based on `main` (924e291), 89 commits behind this branch.**
+Earlier sweeps hit the same thing and noted it in passing; this round it produced a false
+finding that two reviewers independently "confirmed", so it is worth stating as a rule. Each
+reviewer was sent back for a base correction against 0a45ddb after its re-open pass, and each
+appended one to its grid. Dispatch a future round from the working branch, or budget the
+correction pass from the start.
+
+Filed: bv2-t41ij, bv2-obrnf, bv2-tws9i (teardown); bv2-tdwfx, bv2-3ka8n, bv2-wq8zh (limits
+probe); bv2-xwz5v, bv2-7nv8y, bv2-lpuue, bv2-tkbsx (launcher); bv2-2duoj, bv2-5c02s (group
+reach). Appended rather than filed: bv2-ntncf, bv2-dyz92, bv2-2dpgj, bv2-76tn4 (teardown
+cells the board already held), bv2-d8vkd (worse on the degraded tier than it records).
+Closed as discharged: bv2-03sfk (row 32's nomination), bv2-76t24 (row 33's).
+
+Withdrawn during the base correction: the degraded tier failing to attest its scope limits.
+Both the limits reviewer and the launcher reviewer found it independently, from the probe side
+and the restriction-parity side, and it was already fixed at 3cc71f9 - `runDegraded` calls
+`noteScopeLimits` at degraded.go:247 ahead of all four return arms, pinned by
+`TestDegradedRunReconcilesTheLimitsLayersItGot`. Two reviewers agreeing meant less than it
+looked, because the agreement was about a tree neither was looking at. The limits reviewer's
+own phrasing is the lesson worth keeping: a stamp certifies the method, not the tree.
+
+One dismissal retracted on a re-open pass: the group-reach grid reported "no `--json` surface
+for trust flaws at all", stamped VERIFIED BY EXECUTION. There are three, all through one
+converter. It surfaced only because the re-open brief carried a closed decision (f2d50d2,
+ef9e36a) that contradicted it - the false-dismissal case the skill exists to catch.
+
+The recurring defect this round, found independently by all four reviewers: **a true statement
+scoped to one cell, written where a reader takes it as a verdict on the whole mechanism.**
+Three instances in the launcher alone (launcher.go:728, args.go:518-528, applied.go:23-28),
+one in a test (`TestCreatedShieldsExcludesPreexistingPaths`, right about a user's own
+`.git/config`, silent about a leftover bento created), one in a comment claiming a disclosure
+the report does not make (degraded.go:421-424), and two in the tracker's own text (bv2-ntncf's
+option (1), bv2-76tn4's "that cleanup is correct"). Prose, mostly, which is why none of it
+fails a test.
+
+Not filed, with reasons:
+- `trust.Flaw` has three fields and `flawJSON` two, so a `--json` consumer cannot distinguish an
+  advisory flaw from one `approve` would refuse over: the tolerated direction, any consumer
+  treating every entry as a problem over-warns. Recorded on bv2-5c02s.
+- ef9e36a's hint fix carried to all three JSON call sites, structurally - it went into the shared
+  converter, so it could not be half-applied. The "one frontend fixed, a sibling left behind"
+  hypothesis was wrong here, and the rejection is recorded rather than dropped.
+- The `/dev` fence run (4cca01a, fa39384, f8801b3) carried structurally: the degraded tier mounts
+  no `/dev` and Landlock denies every ungranted name, so there is no counterpart to add.
+- Teardown F5, a discarded scratch write reported as applied: all eight terminal arms read, none
+  carries a field describing scratch or tmpfs content. Dismissal verified inverted.
+- `PR_SET_DUMPABLE` ordering asymmetry between the tiers (launcher F5): the exploit is a race,
+  out of scope for a grid. Recorded in the doc.
+- `reapUntil`'s Wait4(-1) dropping the bridge's status (bv2-73e4c): a distinct artifact class
+  from leaking a process tree, declared not-walked rather than omitted.
+
+Grid gaps recorded for a later session to inherit, rather than left implicit: the during-run
+window (bv2-76tn4's cell, folded away by the teardown grid's dimensions), in-sandbox tmpfs
+`/tmp` and `/dev/shm` as a discarded-write class with no row, and `reapUntil`'s wait target.
+Plus one unverified follow-on worth a cell: a leftover empty `.git` may change where the next
+run's workspace shields anchor, because `checkoutRoot` (shields.go:179) anchors by name.
+
+Correction to row 34's own text: `internal/linux/scopeattest.go` and `internal/linux/limits.go`
+are NOT consumers of `trust.groupReach`. Every "group" in them is a cgroup. The enum is
+unexported and confined to package `trust`; the reviewer reshaped the grid around producers
+instead, which is where the defect was.
