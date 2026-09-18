@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -500,5 +501,59 @@ func TestRecordedEgressDropsADestinationTheDialNeverReached(t *testing.T) {
 	}
 	if obs.DroppedConnections != 0 || obs.UnproposableHosts != nil {
 		t.Errorf("DroppedConnections = %d, UnproposableHosts = %v, want none - an unreachable host is not a connection the proposal is short, it is one with nothing to propose", obs.DroppedConnections, obs.UnproposableHosts)
+	}
+}
+
+// The recording proxy calls observe from a goroutine per connection, and the three tests
+// above drive it serially, where the race detector sees nothing. This is the concurrent
+// half, the counterpart of TestEgressCollectorKeepsVerdictsApartUnderConcurrency: under
+// -race it settles the mutex, and the assertions settle the property -race cannot see,
+// that a connection's decision lands in its own set and never in another's, and that the
+// count of the ones naming nothing to propose loses none.
+func TestRecordedEgressKeepsVerdictsApartUnderConcurrency(t *testing.T) {
+	const conns = 204 // divisible by the four decisions that record something
+	var rec recordedEgress
+	var wg sync.WaitGroup
+	// One host per connection out of a single namespace: a prefix per decision would make
+	// the set-membership assertions below true no matter where a verdict landed. Every
+	// refusal carries a host, so the unproposable list is as contended as the rest.
+	decision := func(i int) proxy.Decision {
+		return [...]proxy.Decision{proxy.Denied, proxy.GuardBlocked, proxy.Untunneled, proxy.Refused}[i%4]
+	}
+	for i := range conns {
+		wg.Go(func() {
+			rec.observe(decision(i), fmt.Sprintf("h%d.example", i), "443")
+		})
+	}
+	wg.Wait()
+
+	var obs profile.Observation
+	rec.into(&obs)
+	if obs.DroppedConnections != conns/4 {
+		t.Errorf("DroppedConnections = %d, want %d: every refusal is counted exactly once", obs.DroppedConnections, conns/4)
+	}
+	for _, set := range []struct {
+		name string
+		want []proxy.Decision
+		got  []profile.HostPort
+	}{
+		// Hosts carries both proposable verdicts; the other three sets carry one each.
+		{"Hosts", []proxy.Decision{proxy.Denied, proxy.GuardBlocked}, obs.Hosts},
+		{"Blocked", []proxy.Decision{proxy.GuardBlocked}, obs.Blocked},
+		{"Untunneled", []proxy.Decision{proxy.Untunneled}, obs.Untunneled},
+		{"UnproposableHosts", []proxy.Decision{proxy.Refused}, obs.UnproposableHosts},
+	} {
+		if want := conns / 4 * len(set.want); len(set.got) != want {
+			t.Errorf("%s has %d hosts, want %d: a connection's verdict reaches exactly one set", set.name, len(set.got), want)
+		}
+		for _, hp := range set.got {
+			var i int
+			if _, err := fmt.Sscanf(hp.Host, "h%d.example", &i); err != nil {
+				t.Fatalf("%s = %v, which no connection reported", set.name, hp)
+			}
+			if !slices.Contains(set.want, decision(i)) {
+				t.Errorf("%v got %v, but %s claims it: a verdict landed on another connection's set", hp, decision(i), set.name)
+			}
+		}
 	}
 }

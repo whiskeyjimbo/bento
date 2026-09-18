@@ -120,7 +120,7 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # forget: -run with no match exits 0 and prints "no tests to run", so a rename would turn
 # this gate into a green no-op. Each name is matched as a prefix, so a family of tests
 # sharing one is covered by the one entry.
-RACE_LINUX_TESTS := TestEgressCollector TestEnforcerReuseIsConcurrencySafe
+RACE_LINUX_TESTS := TestEgressCollector TestRecordedEgress TestEnforcerReuseIsConcurrencySafe
 
 # internal/observe runs whole rather than by name: it is one tier, its concurrency tests
 # already fail under plain `go test` when the traceCalls mutex is wrong, and 24s buys the
