@@ -70,9 +70,7 @@ func newValidateCmd() *cobra.Command {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
 				out.Approval = approvalName(trust.CheckApproval(doc))
 				out.ApprovalNote = stampNote(mt.RealPath, doc)
-				for _, f := range stampFlaws(doc, mt) {
-					out.StampAtRisk = append(out.StampAtRisk, f.Reason)
-				}
+				out.StampAtRisk = toFlawsJSON(stampFlaws(doc, mt))
 				out.setRunnable(run)
 				out.setHostNotes(doc.Policy)
 				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
@@ -487,7 +485,7 @@ type policyJSON struct {
 	ApprovalNote string `json:"approval_note,omitempty"`
 	// StampAtRisk is why someone besides this user can change the stamped manifest, the
 	// same field run carries. A note, like approval_note; absent for an unstamped manifest.
-	StampAtRisk []string `json:"stamp_at_risk,omitempty"`
+	StampAtRisk []flawJSON `json:"stamp_at_risk,omitempty"`
 	// Runnable says whether this host can start what the manifest names, with
 	// RunnableProblems carrying run's own wording for why not. A pointer because absent
 	// is a third answer - the host could not resolve the paths at all - and the same pair

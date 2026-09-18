@@ -375,12 +375,19 @@ func TestProfileJSONCarriesTheManifestLocationFlaws(t *testing.T) {
 	}
 	out, runErr := runProfileNonInteractively(t, "--json", "--out", filepath.Join(shared, "m.yaml"), script)
 	var env struct {
-		LocationFlaws []string `json:"location_flaws"`
+		LocationFlaws []flawJSON `json:"location_flaws"`
 	}
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		t.Fatalf("decoding the envelope: %v (exit %v)\n%s", err, runErr, out)
 	}
 	if len(env.LocationFlaws) == 0 {
 		t.Errorf("a manifest written into a world-writable directory must carry location_flaws (exit %v)\n%s", runErr, out)
+	}
+	// The hint is the half a consumer can act on, and stderr says it, so the envelope has
+	// to as well: a world-writable directory's flaw names the chmod that narrows it.
+	for _, f := range env.LocationFlaws {
+		if f.Hint == "" {
+			t.Errorf("location_flaws entry %q carries no hint (exit %v)\n%s", f.Reason, runErr, out)
+		}
 	}
 }

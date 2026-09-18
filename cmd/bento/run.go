@@ -89,9 +89,7 @@ func newRunCmd() *cobra.Command {
 			var notes runNotesJSON
 			atRisk := stampFlaws(doc, mt)
 			warnUntrusted(cmd.ErrOrStderr(), atRisk)
-			for _, f := range atRisk {
-				notes.StampAtRisk = append(notes.StampAtRisk, f.Reason)
-			}
+			notes.StampAtRisk = toFlawsJSON(atRisk)
 			// After the at-risk warning and before the refusal: both are about how much the
 			// stamp is worth, and this one is inapplicable to the manifest the refusal below
 			// turns away.
@@ -394,7 +392,7 @@ type streamRefusalJSON struct {
 // has the same fact.
 type runNotesJSON struct {
 	// StampAtRisk is why someone besides this user can change the stamped manifest.
-	StampAtRisk []string `json:"stamp_at_risk,omitempty"`
+	StampAtRisk []flawJSON `json:"stamp_at_risk,omitempty"`
 	// ApprovalNote says this host holds no record of approving the current stamp, or that
 	// its approval journal is not private enough to say.
 	ApprovalNote string `json:"approval_note,omitempty"`

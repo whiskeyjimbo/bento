@@ -393,9 +393,7 @@ func profileResultJSON(path string, proposed, written *policy.Policy, doc manife
 		Flagged:      respell(status.flagged, spelling),
 		BlockedHosts: doc.BlockedHosts,
 	}
-	for _, f := range locationFlaws {
-		env.LocationFlaws = append(env.LocationFlaws, f.Reason)
-	}
+	env.LocationFlaws = toFlawsJSON(locationFlaws)
 	if merge.widened {
 		env.Merged = &mergeJSON{
 			KeptRead:           merge.keptRead,

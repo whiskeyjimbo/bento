@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
@@ -12,6 +13,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/whiskeyjimbo/bento/manifest"
+	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/trust"
 )
 
@@ -127,6 +130,47 @@ func TestWarnStampAtRiskOnlySpeaksForAStampedManifest(t *testing.T) {
 	warnStampAtRisk(&warn, doc, mt)
 	if !strings.Contains(warn.String(), "the directory holding it") {
 		t.Errorf("a world-writable directory must be reported for a stamped manifest; got %q", warn.String())
+	}
+}
+
+// A flaw's hint is the half of it a consumer can act on, and stderr says both halves
+// (warnUntrusted), so --json has to carry both. The parity table cannot express this: it
+// checks that stamp_at_risk is present, which an entry carrying the reason alone satisfies.
+func TestValidateJSONFlawsCarryTheHintStderrPrints(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Exec: "none"}
+	path := writeManifest(t, p, manifest.Provenance{Approves: p.Fingerprint()})
+	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	doc, mt, err := loadDocument(path)
+	if err != nil {
+		t.Fatalf("loadDocument: %v", err)
+	}
+	var human bytes.Buffer
+	warnStampAtRisk(&human, doc, mt)
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatalf("validate --json: %v\n%s", err, out)
+	}
+	var env struct {
+		StampAtRisk []flawJSON `json:"stamp_at_risk"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
+	}
+	var hinted int
+	for _, f := range env.StampAtRisk {
+		if f.Hint == "" {
+			continue
+		}
+		hinted++
+		if !strings.Contains(human.String(), f.Hint) {
+			t.Errorf("stamp_at_risk hint %q is not what stderr says:\n%s", f.Hint, human.String())
+		}
+	}
+	if hinted == 0 {
+		t.Errorf("a world-writable directory's flaw carries a chmod hint on stderr, so stamp_at_risk must carry it too;\nstderr:\n%s\njson:\n%s", human.String(), out)
 	}
 }
 

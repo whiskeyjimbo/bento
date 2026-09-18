@@ -42,3 +42,20 @@ func warnUntrusted(w io.Writer, flaws []trust.Flaw) {
 		}
 	}
 }
+
+// flawJSON is one trust flaw in machine form, the shape every frontend that carries flaws
+// uses: run's and validate's stamp_at_risk, profile's location_flaws. warnUntrusted says
+// both halves on stderr, so both are carried here - the hint is the half a consumer can
+// act on.
+type flawJSON struct {
+	Reason string `json:"reason"`
+	Hint   string `json:"hint,omitempty"`
+}
+
+func toFlawsJSON(flaws []trust.Flaw) []flawJSON {
+	var out []flawJSON
+	for _, f := range flaws {
+		out = append(out, flawJSON{Reason: f.Reason, Hint: f.Hint})
+	}
+	return out
+}

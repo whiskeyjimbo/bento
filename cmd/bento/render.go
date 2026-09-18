@@ -221,7 +221,7 @@ type profileJSON struct {
 	Merged *mergeJSON `json:"merged,omitempty"`
 	// LocationFlaws are why someone besides this user can change the manifest where it was
 	// written: whatever approve later stamps there attests only what they leave in place.
-	LocationFlaws []string `json:"location_flaws,omitempty"`
+	LocationFlaws []flawJSON `json:"location_flaws,omitempty"`
 }
 
 // mergeJSON says what folding this run's proposal into an existing manifest changed. A

@@ -1346,7 +1346,7 @@ func TestWriteRunResultRefusalSaysAllowDegradedWouldAdmit(t *testing.T) {
 // the stream, since the one a gate reads is whichever came last.
 func TestWriteRunResultCarriesThePreRunNotes(t *testing.T) {
 	notes := &runNotesJSON{
-		StampAtRisk:              []string{"group-writable"},
+		StampAtRisk:              []flawJSON{{Reason: "group-writable", Hint: "chmod 0750 it"}},
 		ApprovalNote:             unrecordedStamp,
 		UnsetEnv:                 []string{"TOKEN"},
 		MissingReadGrants:        []string{"/data/gone"},
