@@ -101,8 +101,17 @@ func BlockExec() error {
 // runtime nor bento calls any of these - glibc registers robust lists with set_robust_list,
 // not get - so denying them with EPERM costs nothing here.
 //
-// It is for the degraded tier only: the bwrap tier's PID namespace already
-// isolates every process from the target, so nothing outside the sandbox is
+// It also denies every System V IPC call - the shm, msg and sem families. Those are
+// the one cross-process channel that is neither a pid nor a path: a same-uid host
+// segment is reachable by key alone, so a target can shmget an existing key and shmat
+// it read-write, which is another process's memory through a door the rest of this
+// filter exists to close. On the bwrap tier --unshare-ipc hides the host's IPC
+// namespace outright; this is the degraded tier's counterpart, and without it that
+// restriction is simply dropped. POSIX message queues are deliberately not here: they
+// are named files under /dev/mqueue, which Landlock's path fence already denies.
+//
+// It is for the degraded tier only: the bwrap tier's PID and IPC namespaces already
+// isolate every process from the target, so nothing outside the sandbox is
 // reachable there.
 //
 // It blocks pidfd_getfd but deliberately NOT pidfd_open or pidfd_send_signal: Go's
@@ -135,6 +144,9 @@ func BlockProcessReach() error {
 			{Action: seccomp.ActionErrno, Names: []string{
 				"ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "kcmp", "pidfd_getfd",
 				"move_pages", "get_robust_list", "perf_event_open",
+				"shmget", "shmat", "shmdt", "shmctl",
+				"msgget", "msgsnd", "msgrcv", "msgctl",
+				"semget", "semop", "semtimedop", "semctl",
 			}},
 		},
 	}, "cross-process block")

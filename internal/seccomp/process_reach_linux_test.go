@@ -84,6 +84,26 @@ func TestBlockProcessReachHelper(t *testing.T) {
 		fmt.Println("PERF_EVENT_OPEN_NOT_EPERM", errno)
 		os.Exit(13)
 	}
+	// The System V IPC families must be EPERM. shmget with an IPC_PRIVATE key and no
+	// IPC_CREAT normally gives ENOENT, and semop/msgget on a nonexistent id give
+	// EINVAL/ENOENT, so EPERM here is the filter firing rather than the kernel's own
+	// argument check.
+	for _, c := range []struct {
+		name string
+		nr   uintptr
+	}{
+		{"SHMGET", unix.SYS_SHMGET}, {"SHMAT", unix.SYS_SHMAT},
+		{"SHMDT", unix.SYS_SHMDT}, {"SHMCTL", unix.SYS_SHMCTL},
+		{"MSGGET", unix.SYS_MSGGET}, {"MSGSND", unix.SYS_MSGSND},
+		{"MSGRCV", unix.SYS_MSGRCV}, {"MSGCTL", unix.SYS_MSGCTL},
+		{"SEMGET", unix.SYS_SEMGET}, {"SEMOP", unix.SYS_SEMOP},
+		{"SEMTIMEDOP", unix.SYS_SEMTIMEDOP}, {"SEMCTL", unix.SYS_SEMCTL},
+	} {
+		if _, _, errno := unix.Syscall6(c.nr, 0, 0, 0, 0, 0, 0); errno != unix.EPERM {
+			fmt.Println(c.name+"_NOT_EPERM", errno)
+			os.Exit(14)
+		}
+	}
 	// pidfd_open must STILL work: Go's child management depends on it, so it must not
 	// be caught by the block.
 	fd, _, errno := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(os.Getpid()), 0, 0)

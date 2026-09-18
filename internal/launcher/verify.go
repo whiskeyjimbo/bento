@@ -229,11 +229,7 @@ const procSelfStatus = "/proc/self/status"
 // It is load-bearing beyond the flag: the read-only shields are plain bind mounts, and
 // what stops the target from remounting them read-write is having no CAP_SYS_ADMIN.
 func verifyEmptyCapBound() error {
-	data, err := os.ReadFile(procSelfStatus)
-	if err != nil {
-		return fmt.Errorf("launcher: reading %s to verify the capability bounding set: %w", procSelfStatus, err)
-	}
-	held, err := capBounding(data)
+	held, err := readCapBounding()
 	if err != nil {
 		return fmt.Errorf("launcher: %w", err)
 	}
@@ -241,6 +237,17 @@ func verifyEmptyCapBound() error {
 		return fmt.Errorf("launcher: the sandbox's capability bounding set is not the empty one this run was admitted on; it holds %016x, so the target can remount bento's read-only shields read-write", held)
 	}
 	return nil
+}
+
+// readCapBounding is this process's own bounding set, read from the kernel. Both tiers
+// ask the question - the bwrap tier to verify bwrap emptied it, the degraded tier to
+// find out whether it could empty it at all - so the read lives in one place.
+func readCapBounding() (uint64, error) {
+	data, err := os.ReadFile(procSelfStatus)
+	if err != nil {
+		return 0, fmt.Errorf("reading %s for the capability bounding set: %w", procSelfStatus, err)
+	}
+	return capBounding(data)
 }
 
 // capBounding parses the CapBnd mask out of a /proc/<pid>/status dump. A dump with no
