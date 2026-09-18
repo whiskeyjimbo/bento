@@ -105,6 +105,14 @@ func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 	if !strings.Contains(got[0].Reason, "cannot be established") {
 		t.Errorf("an unanswerable group says so; got %q", got[0].Reason)
 	}
+	// World write is proof on its own, and the reason that flaw is fatal. An unprovable
+	// group must not soften the sentence that refuses it, nor claim its cause.
+	worldToo := unknown
+	worldToo.mode = fs.ModeDir | 0o777
+	w := dirFlaws(worldToo, "the directory holding it", me)
+	if len(w) != 1 || !w[0].Fatal || strings.Contains(w[0].Reason, "cannot be established") {
+		t.Errorf("world write is certain whatever the group reads as; got %+v", w)
+	}
 	// A proven-shared directory this user does not own - root:www-data 0775 - is refused,
 	// and foreignOwner exempts root, so this arm's hint is the only remedy named. A chmod
 	// they cannot run would be worse than naming none.
