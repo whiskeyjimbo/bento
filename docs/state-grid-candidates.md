@@ -309,3 +309,30 @@ Correction to row 34's own text: `internal/linux/scopeattest.go` and `internal/l
 are NOT consumers of `trust.groupReach`. Every "group" in them is a cgroup. The enum is
 unexported and confined to package `trust`; the reviewer reshaped the grid around producers
 instead, which is where the defect was.
+
+## Seventh sweep, 2026-09-18
+
+Different from the six before it: 21 commits landed today, so a real part of the surface is
+code no grid has ever seen - including code the sixth round's own fixes wrote
+(`restrictCapabilityBound`, `TestTierDifferential`, `warnResidue`, `scopeLimits.sampled`,
+`absentWrites`, `terminalResidual`/`capBoundResidual`). Signals used: the diff of today's
+commits for new functions and new degradation fields, post-run report-correction sites
+counted against the `enforce.Layer` enum, and the grid gaps the sixth round recorded rather
+than walked.
+
+| # | Candidate | Signals | Invariant (one-sided) | Grid shape | Fit | Route |
+|---|-----------|---------|----------------------|------------|-----|-------|
+| 35 | Post-run report corrections x layer (`enforce/run.go` postRunShortfall and the admission arms, `internal/linux/linux.go` worsenNetwork + the residue warnings, `scopeattest.go` noteScopeLimits, `degraded.go` degradedProbe's rewrite) | New. ~20 correction call sites against an 8-constant `enforce.Layer` enum - the enum-times-call-sites shape, and nobody has gridded the CORRECTION axis (`state-grid-layer-consumers.md` walked the consumer axis, `state-grid-admission.md` the posture axis). Two of the sites were added today | A post-run correction may only ever worsen a layer, never improve one; and a worsening that refuses a run must reach the report, the shortfall and the operator's channel alike - a layer worsened in one and not the others is the forbidden direction | layer (8) x correction site class (pre-run probe, in-run attestation, post-run shortfall, degraded rewrite, operator channel) ~40, collapse the layers that share a correction path | Strong. bv2-dnda5 is already a live cell in it: an unsampled reading now refuses a completed default-posture run, a failure mode that did not exist this morning | grid |
+| 36 | The during-run artifact window (`internal/linux/shields.go` materialization, the checkout, the target's own view) | Carried, and recorded as a gap by the sixth round's teardown grid rather than walked: that grid's dimensions folded "during" away entirely. bv2-76tn4 and bv2-2dpgj are each one cell of it, both open | An artifact bento materializes inside the user's checkout is either invisible to everything that would capture it, or disclosed - never present, capturable and unmentioned | artifact class (materialized file shield, mount-point dir, in-sandbox tmpfs /tmp and /dev/shm, scratch) x window (before start, during run, after teardown) x observer (the target, the host user, git) ~30 | Good. The in-sandbox tmpfs class has no row in any existing grid | grid |
+| 37 | The sixth round's own output (`restrictCapabilityBound` + its seams, `TestTierDifferential`'s 4 rows against Grid A's 13 restrictions, `warnResidue` x entry path, `scopeLimits.sampled` x reader) | New code, one day old, gated but never gridded. Each of the round's five fixes introduced a state that did not exist before, and two of them self-reported blast radius (bv2-dnda5, bv2-3mxlo). `TestTierDifferential` covers 4 of the 13 restrictions in the launcher grid | Every state the new code introduces is disclosed on every path that can reach it - no entry path silently discards a residue or an unsampled reading | new mechanism (4) x entry path (run, degraded, profile, embed, supervise) ~20 | Medium, and honestly declared: Phase 0 says decline a churning area, and this churned today. It is gated and not mid-refactor, but verdicts here are the youngest and rot fastest. bv2-0hy3m and bv2-dhj3o are already two of its cells | grid only if the user wants the round audited; otherwise let it settle a week |
+| 38 | `internal/denylist` | Unchanged from rows 24, 30 and the fifth sweep: still the second-highest fix scope in the repo, still unexamined, still parked behind P1 bv2-h7k3b, which has now been open since 2026-08-17 - a month | - | - | Decline again, for the same reason, which is now the finding | **Deciding bv2-h7k3b is worth more than a fourth grid.** Three sweeps have declined this area for one undecided bead |
+
+Declined this sweep, with reasons:
+- `TestTierDifferential` covering 4 of 13 restrictions is a coverage list, not a grid - the
+  missing rows are named and the table was built to take them. File as a test item, not a round.
+- `reapUntil`'s wait target (bv2-73e4c), recorded as not-walked by the teardown grid: it is about
+  which child a wait consumes, an ordering question. `concurrency-audit`, not this.
+- `internal/proxy`: routed to `failure-modes` twice and that run is spent; bv2-khpb1 is the open cell.
+- The frontends (validate, approve, doctor, render, manifest, clamp, gate, shield verdicts,
+  landlock ABI, exec record, trust flaws, output parity, platform stubs, result arms): all
+  gridded in rounds one through five. Re-grid only on a specific reason, not on a sweep.
