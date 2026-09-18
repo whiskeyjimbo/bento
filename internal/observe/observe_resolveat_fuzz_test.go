@@ -57,9 +57,10 @@ func anchorKinds(t testing.TB) map[string]int32 {
 	}
 	t.Cleanup(func() { sockFile.Close() })
 
-	// O_PATH on a directory: a descriptor openat still resolves against, but one that
-	// several /proc reads answer differently - it is in the seeds so the differential
-	// settles what the magic link says, rather than either side assuming it.
+	// O_PATH on a directory: a descriptor openat still resolves against, so the oracle
+	// only ever early-returns on it. It is here so the generator covers the kind rather
+	// than to assert anything about it; the anchoring it must keep doing is pinned by
+	// TestResolveAtAnchorsAndDrops.
 	pathFd, err := unix.Open(dir, unix.O_PATH|unix.O_DIRECTORY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -76,9 +77,9 @@ func anchorKinds(t testing.TB) map[string]int32 {
 	}
 }
 
-// FuzzResolveAt is the generalisation of TestResolveAtAnchorsAndDrops' regular-file case
-// (bv2-wl3mt): rather than one hand-picked (fd kind, path) pair, it asserts the property
-// over every pair the fuzzer reaches.
+// FuzzResolveAt is the generalisation of TestResolveAtAnchorsAndDrops' regular-file case:
+// rather than one hand-picked (fd kind, path) pair, it asserts the property over every
+// pair the fuzzer reaches.
 //
 // Oracle: the kernel is asked, for real, whether anything resolves against the anchor -
 // openat(fd, ".", O_RDONLY). If that errors (ENOTDIR for a regular file, socket or deleted

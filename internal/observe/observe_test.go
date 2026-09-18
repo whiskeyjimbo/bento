@@ -573,6 +573,18 @@ func TestResolveAtAnchorsAndDrops(t *testing.T) {
 	if got, ok := resolveAt(os.Getpid(), int32(d.Fd()), "file"); got != reg || !ok {
 		t.Errorf("directory fd: got %q, %v, want %q anchored", got, ok, reg)
 	}
+	// An O_PATH descriptor on a directory is still an anchor openat resolves against, so
+	// refusing it would turn real accesses into drops and under-report the profile. It is
+	// the case that separates stat'ing the magic link from stat'ing the path the link
+	// reads back, so it pins which one fdIsDir does.
+	pathFd, err := unix.Open(filepath.Dir(reg), unix.O_PATH|unix.O_DIRECTORY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(pathFd)
+	if got, ok := resolveAt(os.Getpid(), int32(pathFd), "file"); got != reg || !ok {
+		t.Errorf("O_PATH directory fd: got %q, %v, want %q anchored", got, ok, reg)
+	}
 }
 
 // A relative path opened after a chdir must be anchored at the directory the run
