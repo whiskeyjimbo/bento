@@ -507,9 +507,10 @@ func TestRecordedEgressDropsADestinationTheDialNeverReached(t *testing.T) {
 // The recording proxy calls observe from a goroutine per connection, and the three tests
 // above drive it serially, where the race detector sees nothing. This is the concurrent
 // half, the counterpart of TestEgressCollectorKeepsVerdictsApartUnderConcurrency: under
-// -race it settles the mutex, and the assertions settle the property -race cannot see,
-// that a connection's decision lands in its own set and never in another's, and that the
-// count of the ones naming nothing to propose loses none.
+// -race it settles the mutex. The set lengths are the teeth: a racy append loses elements,
+// and removing the lock fails them. The membership check beside them is insurance for a
+// future observe that routes on shared state - observe branches on the decision within one
+// goroutine, so no mutation so far has moved a host into another set.
 func TestRecordedEgressKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 	const conns = 204 // divisible by the four decisions that record something
 	var rec recordedEgress

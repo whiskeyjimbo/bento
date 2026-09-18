@@ -719,11 +719,15 @@ func traceHelper(t *testing.T, mode, dir string, n int) Result {
 // What this catches, scoped to what a spike has actually made it go red: decoding a
 // sibling's registers instead of the stopping tid's - inspecting root rather than the
 // stopped pid records one file and misses five. It does NOT catch a decoder that keys its
-// per-tid bookkeeping wrongly (a stopKey without the pid, or one lastOp shared across
-// tids): the openat pathname is read from the stopping pid's own registers and recorded
-// within a single stop, so it never crosses those maps, and both mutations pass here. That
-// keying is guarded, by the single-goroutine tests over drops and held, which is the right
-// place for it - the tracer loop is one goroutine, so its maps cannot data-race.
+// per-stop bookkeeping wrongly (a stopKey without the pid, or one lastOp shared across
+// tids), and both of those mutations pass here. The reason is what this test asserts on:
+// the access reaches res.Accesses at the ENTRY stop, straight off the stopping tid's
+// registers, before anything is parked under a key. The held-open replay DOES cross
+// stopKey - six threads opening at one call site share a number and an instruction
+// pointer, so a pid-less key collides and crosses their exit-stop found/missed verdicts -
+// but that is the Absent answer, not the pathname this asserts. The single-goroutine tests
+// over drops and held are what guard the keying, which is the right place for it: the
+// tracer loop is one goroutine, so its maps cannot data-race.
 //
 // Both directions are checked: every opened file present, and nothing under the directory
 // that no thread ever named. The over-attribution half is insurance rather than a proven
