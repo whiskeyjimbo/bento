@@ -229,3 +229,93 @@ func TestPreflightFailureNamesTheWriteDirItAlreadyCreated(t *testing.T) {
 		t.Errorf("a preflight refusal must name the directory it already created; stderr was %q, want a line naming %s", stderr.String(), made)
 	}
 }
+
+// The degraded tier calls prepareWriteDirs through the same function the bwrap tier
+// does, and has failable steps of its own between it and the launch - checkLauncher is
+// one. The directory stays, as it does on the full tier, but the run must say so.
+func TestDegradedSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build", "out")
+
+	old := launchGuard
+	launchGuard = func(string) error { return errors.New("refused for the test") }
+	t.Cleanup(func() { launchGuard = old })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{out}}
+	var stderr bytes.Buffer
+	if _, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{Stderr: &stderr}, enforce.RunOptions{}); err == nil {
+		t.Fatal("the launch guard must fail the run")
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+		t.Errorf("a degraded setup failure must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
+	}
+}
+
+// Profiling is the third entry path through prepareWriteDirs, and the one whose whole
+// job is to run a target nobody has vetted yet. The runCmd seam produces the arm where
+// the wrapper never started, which is what leaves the directory with no target having
+// used it.
+func TestProfileSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build", "out")
+
+	orig := runCmd
+	runCmd = func(*exec.Cmd, func(int)) error { return errors.New("the wrapper never started") }
+	t.Cleanup(func() { runCmd = orig })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{out}}
+	var stderr bytes.Buffer
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stderr: &stderr}, false, nil, nil); err == nil {
+		t.Fatal("a wrapper that never starts must fail the profiling run")
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+		t.Errorf("a profiling setup failure must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
+	}
+}
+
+// removeCreatedShields reports what it could not reclaim; Profile is the other bwrap
+// entry path and must hand that to the operator as Run does. The seam forces the reclaim
+// to fail on every file, which is what a mount point standing inside the checkout looks
+// like from here.
+func TestProfileNamesShieldMountPointsItCouldNotReclaim(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := shieldLstat
+	shieldLstat = func(string) (os.FileInfo, error) { return nil, errors.New("the host will not answer for it") }
+	t.Cleanup(func() { shieldLstat = old })
+
+	// A write grant on a plain directory is what makes bwrap carve the workspace
+	// shields (.cargo/config and friends) as host mount points inside it.
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{dir}}
+	var stderr bytes.Buffer
+	if _, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{Stderr: &stderr}, false, nil, nil); err != nil {
+		t.Fatalf("profiling: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "could not reclaim") {
+		t.Errorf("a profiling run that left a shield mount point standing must name it; stderr was %q", stderr.String())
+	}
+}

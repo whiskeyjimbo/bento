@@ -696,30 +696,13 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 		return preflighted{}, err
 	}
 
-	// Recorded before the MkdirAll, because afterwards nothing tells a directory bento
-	// made apart from one the user already had.
-	created := absentWrites(writes)
-	if err := prepareWriteDirs(p, sb); err != nil {
+	created, err := prepareWriteDirs(p, sb)
+	if err != nil {
 		// The list rides out with the error: it creates one grant at a time, so a
 		// refusal on a later grant leaves an earlier grant's directory on the host.
 		return preflighted{createdWrites: created}, err
 	}
 	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted, createdWrites: created}, nil
-}
-
-// absentWrites names the write grants that do not exist on the host yet, which are the
-// ones prepareWriteDirs is about to create. A stat that could not answer is not counted:
-// the teardown invariant names only what bento can prove it created. Missing parents
-// MkdirAll creates alongside the grant are not named separately - the grant is the path
-// the manifest asked for and the one an operator looks for.
-func absentWrites(writes []string) []string {
-	var absent []string
-	for _, w := range writes {
-		if _, err := bounded("the stat of "+w, func() (os.FileInfo, error) { return os.Stat(w) }); os.IsNotExist(err) {
-			absent = append(absent, w)
-		}
-	}
-	return absent
 }
 
 // warnResidue names host paths a run left behind, on the caller's own stderr.
@@ -752,20 +735,31 @@ func warnResidue(w io.Writer, what string, paths []string) {
 // decided by the time anything is created. The two shield checks repeated here are
 // belt-and-suspenders against that ordering drifting: they are what stops a mkdir
 // inside ~/.ssh for a grant that is about to be rejected.
-func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
+//
+// created names the grants this brought into existence, so a caller whose run then
+// fails before the target starts can say what it left on the host. It is recorded here
+// rather than by a second pass over the grants because the stat that decides it is the
+// one this already makes: asking again doubles the bounded wait on a dead mount, and
+// would name a grant a refusal earlier in the loop meant was never attempted. It rides
+// out with the error for the same reason - one grant is created at a time. A stat that
+// could not answer is not counted: the teardown invariant names only what bento can
+// prove it created. Missing parents MkdirAll creates alongside the grant are not named
+// separately - the grant is the path the manifest asked for and the one an operator
+// looks for.
+func prepareWriteDirs(p *policy.Policy, sb sandbox) (created []string, err error) {
 	writes, err := resolveAll(sb, p.Write)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Writes never carry the read opt-in, so no host directory is created under a
 	// shield the policy merely reads.
 	if err := checkWriteNotShielded(sb, writes); err != nil {
-		return err
+		return nil, err
 	}
 	// Refuse a grant above a credential shield before creating any directory, so a
 	// to-be-refused grant does not leave a host artifact from the MkdirAll below.
 	if err := checkWriteNotAboveShield(sb, writes); err != nil {
-		return err
+		return nil, err
 	}
 	for _, w := range writes {
 		// Bounded, like the sandbox's own seams: the grant is a host path, and this runs
@@ -776,8 +770,12 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 		case err == nil && fi.IsDir():
 			// Already a directory: nothing to prepare.
 		case err == nil:
-			return grantrefusal.WriteIsFile(w)
+			return created, grantrefusal.WriteIsFile(w)
 		case os.IsNotExist(err):
+			// Recorded before the MkdirAll, not after it answers: a MkdirAll that fails
+			// partway still leaves the parents it managed to make, and those are exactly
+			// what an operator is otherwise never told about.
+			created = append(created, w)
 			// 0700: only the invoking user's own target writes here (bwrap unshares
 			// the user namespace without remapping the uid), so nothing needs group
 			// or other access to a directory that exists because a sandbox asked
@@ -786,17 +784,17 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) error {
 			if _, err := bounded("the creation of "+w, func() (struct{}, error) {
 				return struct{}{}, os.MkdirAll(w, 0o700)
 			}); err != nil {
-				return fmt.Errorf("linux: creating write directory %q: %w", w, err)
+				return created, fmt.Errorf("linux: creating write directory %q: %w", w, err)
 			}
 		case errors.Is(err, syscall.ELOOP):
 			// Reached before compile's own check, so refuse it in the same words a
 			// looping read grant gets rather than leaking a bare stat error.
-			return grantrefusal.Looped(w)
+			return created, grantrefusal.Looped(w)
 		default:
-			return grantrefusal.WriteUnstattable(w, err)
+			return created, grantrefusal.WriteUnstattable(w, err)
 		}
 	}
-	return nil
+	return created, nil
 }
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a

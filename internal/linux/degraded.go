@@ -115,7 +115,20 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// as a change the target made. The ordering matters twice over now that the baseline
 	// also resolves core.hooksPath: run against a grant whose directory does not exist
 	// yet, git answers nothing and the empty answer would be the one frozen for the run.
-	if err := prepareWriteDirs(p, sb); err != nil {
+	// Registered before the call for the reason Run's twin is: this creates one grant's
+	// directory at a time, so a refusal on a later grant returns with an earlier one
+	// already on the host, and the five failable steps between here and the launch each
+	// return with the whole set standing. The guard is launched alone rather than Run's
+	// err != nil && !launched: every refusal on this path returns through an err that
+	// shadows the named one, and a run that never launched never returns nil either way.
+	var launched bool
+	createdWrites, err := prepareWriteDirs(p, sb)
+	defer func() {
+		if !launched {
+			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", createdWrites)
+		}
+	}()
+	if err != nil {
 		return enforce.Result{}, err
 	}
 	// Bounded on the sandbox's own seam rather than raw: the write dirs are host paths,
@@ -239,6 +252,8 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// a limit property and not apply it, and only the scope says which.
 	var attested scopeLimits
 	err = runCmd(cmd, func(pid int) {
+		// Only reached once Start succeeded; see the residue defer above.
+		launched = true
 		if scoped {
 			attested = attestScopeLimits(pid)
 		}

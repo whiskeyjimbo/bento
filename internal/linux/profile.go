@@ -126,14 +126,28 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// the user accepted at the convergence prompt, an enforced run of the resulting
 	// manifest would create it anyway, and the alternative is a round that reports a
 	// write the sandbox silently dropped.
-	preflight, err := preflightGrants(sb, p, acceptAliasesUnder)
+	// Registered before the call, as Run's twin is: preflightGrants creates one grant's
+	// directory at a time and hands the set back on its error path too, and the steps
+	// between it and the launch below can each fail with the whole set standing.
+	var launched bool
+	var preflight preflighted
+	defer func() {
+		if !launched {
+			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
+		}
+	}()
+	preflight, err = preflightGrants(sb, p, acceptAliasesUnder)
 	if err != nil {
 		return profile.Observation{}, err
 	}
 	// Remove the shield mount points bwrap creates on the host, as Run does -
-	// profiling applies the same deny-list shields, so it leaves the same artifacts.
+	// profiling applies the same deny-list shields, so it leaves the same artifacts -
+	// and name the ones it could not reclaim, which is the whole point of the reclaim
+	// reporting what it left.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
-	defer removeCreatedShields(shieldDirs, shieldFiles)
+	defer func() {
+		warnResidue(proc.Stderr, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+	}()
 
 	// Inside the run's own 0700 directory rather than shared /tmp, and read back below
 	// through this handle rather than by path: between the child exiting and a re-open,
@@ -206,6 +220,8 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// the target is alive, as it does on both run tiers.
 	var attested scopeLimits
 	if err := runCmd(cmd, func(pid int) {
+		// Only reached once Start succeeded; see the residue defer above.
+		launched = true
 		if scoped {
 			attested = attestScopeLimits(pid)
 		}
