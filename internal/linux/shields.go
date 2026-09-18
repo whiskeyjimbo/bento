@@ -587,7 +587,16 @@ func insideAWriteGrant(path string, writes []string) bool {
 // loses its later writes to an unlinked inode. And the zero-length check is not atomic
 // with the unlink: a write landing between the two is removed with the file.
 //
-// Best effort throughout: a kill before this runs leaves the artifact, as before.
+// Best effort throughout: a kill before this runs leaves the artifact, as before. A
+// SIGKILL is the case that matters, since nothing deferred runs at all: the mount points
+// stay in the checkout - including a .git/ in a directory that was never a repository -
+// and a supervisor that escalates to SIGKILL on a cap has to remove them by hand. There
+// is no way to enumerate them afterwards, and that is not a reporting gap that can be
+// closed from here: once a path is standing, sb.exists is true for it, so every later run
+// reports it read-only or hidden, CORRECTLY and indistinguishably from a file the user
+// wrote. The window in which anything can say bento made it closes with the run that
+// stranded it, which is why a start-of-run reclaim needs a durable record of its own and
+// cannot be derived from createdShields - that function returns the complement.
 //
 // The whole cleanup under one bound rather than each Lstat, because the paths are many
 // and a bound per call would still block for hours. It runs on a defer on both bwrap entry

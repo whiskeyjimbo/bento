@@ -831,6 +831,17 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 		fmt.Fprintln(w, "[bento] did not have it: a directory takes writes and drops them at the run's end,")
 		fmt.Fprintln(w, "[bento] a file refuses them - and neither the path nor anything in it reaches the host")
 	}
+	// The same shape one layer out, and the only writable surface a run with no write
+	// grant at all has: /tmp and /dev/shm are per-run tmpfs, so a write there succeeds and
+	// goes with the mount namespace. Not a containment gap - both are outside every
+	// checkout and nothing there reaches the host - but a lane told to put its output
+	// somewhere picks /tmp, reports success, and loses the work with no error for a
+	// supervisor to catch. Named here rather than counted: nothing walks those mounts, and
+	// a count keyed to the one the frontends know about (/tmp) would miss the other.
+	if mountNSConfines {
+		fmt.Fprintln(w, "[bento] /tmp and /dev/shm are this run's own scratch: a write there succeeds and is")
+		fmt.Fprintln(w, "[bento] discarded when the run ends, so output meant to be kept belongs in a write: grant")
+	}
 }
 
 // describeLimits names the declared limits the way the manifest spells them, for the

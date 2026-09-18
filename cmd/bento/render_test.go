@@ -1976,3 +1976,25 @@ func TestRunReportJSONKeepsNoReportOnAnEmptyReport(t *testing.T) {
 		t.Error("a report with no layers evaluated nothing and must not read as fully enforced")
 	}
 }
+
+// The scratch tmpfs is the discarded shield one layer out: a write to /tmp or /dev/shm
+// succeeds and is gone afterwards, and it is the only writable surface a run with no
+// write grant has at all. Under-disclosure rather than a containment gap, so a legend
+// line rather than a result field - but a planning lane that writes its output to /tmp
+// reports success and loses the work with nothing in the transcript to catch.
+func TestDenialLegendNamesTheDiscardedScratch(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll}
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, enforce.Result{Report: r}, false)
+	out := b.String()
+	if !strings.Contains(out, "/dev/shm") {
+		t.Errorf("the legend must name both scratch mounts, not only the one the frontends know: %q", out)
+	}
+	if !strings.Contains(out, "discarded when the run ends") {
+		t.Errorf("a write to scratch succeeding and vanishing must be named: %q", out)
+	}
+}
