@@ -250,8 +250,21 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// having the run path consult a second one, and it cannot affect admission by
 	// construction: admit already ran, against `required`, which this does not touch.
 	// postRunShortfall's strict branch excludes them for the same reason - see there.
+	//
+	// The probe is the DEFAULT source, not the only one: the same worsening overlay as
+	// above then applies, because "reports what was actually enforced" is what the
+	// Enforcer doc asks of a backend and it does not carve report-only layers out. A
+	// backend that learned mid-run the host fact is gone must not be shown saying the
+	// opposite. It runs as a second pass rather than folded into the loop above because
+	// StateOf reads an absent layer as Unavailable, so nothing could ever look worse
+	// than a layer the probe had not yet written.
 	for _, l := range probed.Layers {
 		if l.Layer.ReportOnly() {
+			required.SetStatus(l)
+		}
+	}
+	for _, l := range res.Report.Layers {
+		if l.Layer.ReportOnly() && l.State > required.StateOf(l.Layer) {
 			required.SetStatus(l)
 		}
 	}

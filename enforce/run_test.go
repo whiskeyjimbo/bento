@@ -1442,3 +1442,33 @@ func TestNothingThatJudgesARunReadsAReportOnlyLayer(t *testing.T) {
 		t.Errorf("postRunShortfall faulted a run on a report-only layer: %v", got)
 	}
 }
+
+// The carry is a default, not an override. A report-only layer is judged by nobody, so
+// the probe is its only source in the ordinary case - but a backend that learned mid-run
+// the host fact is gone has reported what was actually enforced, which is what the
+// Enforcer doc asks of it, and showing the pre-run Enforced over it is a disclosure that
+// reads the opposite of what the run found.
+func TestABackendsWorseReportOnlyVerdictSurvivesTheCarry(t *testing.T) {
+	probe := fullyEnforced()
+	probe.Add(LayerAutoExecReport, Enforced, "git is on this host's PATH")
+	backend := Report{}
+	backend.Add(LayerAutoExecReport, Unavailable, "git vanished from PATH mid-run")
+
+	f := &fakeEnforcer{probe: probe, result: Result{Report: backend}}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+	var carried *LayerStatus
+	for _, l := range res.Report.Layers {
+		if l.Layer == LayerAutoExecReport {
+			carried = &l
+		}
+	}
+	if carried == nil {
+		t.Fatal("the run's report has no auto-exec-report row")
+	}
+	if carried.State != Unavailable {
+		t.Errorf("carried row = %+v, want the backend's Unavailable: the pre-run probe erased what the run itself found", *carried)
+	}
+}

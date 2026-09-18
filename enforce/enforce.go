@@ -23,9 +23,17 @@ import (
 // directory, and the sandbox does not serialize them.
 //
 // Reusing the value is not what makes a second run cheaper, though, and an embedder
-// structuring itself around this should know which one it is: the expensive host probes
-// are memoized per PROCESS, not per Enforcer. A long-lived process amortizes them
-// however many Enforcers it builds; a fresh exec per invocation pays them every time.
+// structuring itself around this should know which one it is: the host probes that ARE
+// memoized are memoized per PROCESS, not per Enforcer, so a long-lived process amortizes
+// them however many Enforcers it builds and a fresh exec per invocation pays them every
+// time. Not all of them are. On Linux the cgroup scope and delegation probes are cached;
+// the namespace probe is not, and it is the expensive one - it execs the sandbox binary
+// on every call.
+//
+// Two Probe calls in one process can therefore disagree, and an embedder must not read
+// one as a promise about the other: a host that loses the namespace between them answers
+// truthfully both times. A backend correcting a layer mid-run has to compare against what
+// the report already holds for the same reason.
 type Enforcer interface {
 	// Probe reports what this host can enforce, per layer, without running a
 	// target. It backs both `doctor` and strict-mode's pre-run refusal.
