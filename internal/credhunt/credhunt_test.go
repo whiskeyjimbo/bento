@@ -463,3 +463,23 @@ func TestHuntSniffsAUTF16File(t *testing.T) {
 		}
 	}
 }
+
+// A machine store equal to the scan root - XDG_CACHE_HOME=$HOME, a plain misconfiguration -
+// must not prune the root. Pruning there walks nothing, reports a clean home and exits 0,
+// which is the silent total wrong answer this tool exists to avoid; the checkout prune
+// spares the root for the same reason.
+func TestAMachineStoreEqualToTheScanRootIsNotPruned(t *testing.T) {
+	home := t.TempDir()
+	lead := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+
+	found, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{home}, MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paths(found); !slices.Equal(got, []string{lead}) {
+		t.Errorf("findings = %v, want %s; a store equal to the scan root pruned the whole hunt", got, lead)
+	}
+	if len(pruned) != 0 {
+		t.Errorf("pruned = %v, want none; the scan root is never a prune", pruned)
+	}
+}

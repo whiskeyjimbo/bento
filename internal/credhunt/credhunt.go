@@ -241,7 +241,10 @@ func Hunt(opts Options) ([]Finding, []string, []string, error) {
 				pruned = append(pruned, path)
 				return fs.SkipDir
 			}
-			if slices.Contains(stores, path) {
+			// Never the scan root, for the reason the checkout prune four lines up is not:
+			// XDG_CACHE_HOME=$HOME is a plain misconfiguration, and pruning there walks
+			// nothing and reports a clean home.
+			if path != home && slices.Contains(stores, path) {
 				pruned = append(pruned, path)
 				return fs.SkipDir
 			}
