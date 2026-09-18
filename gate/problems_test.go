@@ -10,6 +10,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 )
 
@@ -298,4 +299,114 @@ func TestMountGrantProblemsResolveDotDotPhysically(t *testing.T) {
 	if got := gate.RootWriteProblems([]string{escaping}); len(got) != 0 {
 		t.Errorf("a write whose \"..\" lands inside a temp tree is not a grant of the host root; got %v", got)
 	}
+}
+
+// FuzzShieldedGrantProblemsNameARealShield generalises the table above. The table pins the
+// exact sentence a handful of grants earn; this pins the direction the gate's package doc
+// forbids crossing for any grant at all. The gate is allowed to MISS a refusal - its doc
+// enumerates six such narrowings, all of which need host facts a cross-platform package
+// cannot read - but it must never INVENT one, because a gate refusing what a run accepts
+// stops a manifest that would have worked.
+//
+// The run's own half (internal/linux's checkGrants and checkNotShielded) is unexported, so
+// this cannot call it; the ground truth is instead a restatement of shield containment over
+// set.Shields(), which is what makes it a differential rather than a re-ask of the same
+// Contains the gate itself calls.
+//
+// Slow per exec - tens rather than tens of thousands - because both halves resolve the grant
+// against the real filesystem. That is the oracle, not overhead: a comparison of spellings
+// rather than of where the grant lands is the defect TestShieldedGrantProblemsFollowTheGrantsSymlinks
+// exists for. It explores a small corpus per budget and is here for the direction it pins.
+func FuzzShieldedGrantProblemsNameARealShield(f *testing.F) {
+	// Planted once: the set is walked off HOME, and per-exec setup is what makes a target
+	// too slow for the 30s budget make fuzz gives it.
+	home := f.TempDir()
+	f.Setenv("HOME", home)
+	for _, dir := range []string{".ssh", ".gnupg", ".config"} {
+		if err := os.Mkdir(filepath.Join(home, dir), 0o700); err != nil {
+			f.Fatal(err)
+		}
+	}
+	set, err := gate.ShieldSet()
+	if err != nil {
+		f.Fatalf("gate.ShieldSet: %v", err)
+	}
+	shields := set.Shields()
+	if len(shields) == 0 {
+		f.Fatal("no shields on the planted home; the oracle would be vacuous")
+	}
+
+	f.Add(".ssh")
+	f.Add(".ssh/id_rsa")
+	f.Add(".bashrc")
+	f.Add(".")
+	f.Add("")
+	f.Add("../etc/passwd")
+	f.Add(".SSH/id_rsa")
+	f.Add(".ssh/")
+	f.Add(".ssh/./id_rsa")
+	f.Add("\x00.ssh")
+
+	f.Fuzz(func(t *testing.T, rel string) {
+		grant := filepath.Join(home, rel)
+
+		reads := gate.ShieldedReadProblems(set, []string{grant})
+		writes := gate.ShieldedWriteProblems(set, []string{grant})
+		if len(reads) > 1 || len(writes) > 1 {
+			t.Fatalf("one grant earned %d read and %d write problems", len(reads), len(writes))
+		}
+
+		landed := pathresolve.Existing(grant)
+		if len(reads) == 1 && !insideAnyShield(shields, landed, denylist.DenyAll) {
+			t.Fatalf("read grant %q was refused as shielded, but lands at %q, which is at or inside no DenyAll shield: %v", grant, landed, reads)
+		}
+		if len(writes) == 1 && !insideAnyShield(shields, landed, denylist.DenyAll) &&
+			!insideAnyShield(shields, landed, denylist.DenyWrite) && !aboveAnyShield(shields, landed) {
+			t.Fatalf("write grant %q was refused as shielded, but lands at %q, which is at, inside or above no shield: %v", grant, landed, writes)
+		}
+
+		// The asymmetry the table spells case by case: a write opts into nothing a read
+		// does, so anything refused for a read is refused for a write too. The converse is
+		// deliberately not asserted - the shield path itself is exactly where they part.
+		if len(reads) == 1 && len(writes) == 0 {
+			t.Fatalf("grant %q is refused as a read (%v) but honored as a write", grant, reads)
+		}
+	})
+}
+
+// insideAnyShield and aboveAnyShield restate shield containment: a rule covers its own path,
+// and everything under it when it names a directory. Compared case-insensitively so the
+// assertion stays sound on a case-folding filesystem, where Contains reaches a shield the
+// grant does not spell exactly - the direction that would otherwise read as an invented
+// refusal.
+func insideAnyShield(shields []shield.Applied, landed string, deny denylist.Deny) bool {
+	for _, s := range shields {
+		if s.Rule.Deny != deny {
+			continue
+		}
+		for _, root := range []string{s.Rule.Path, s.Resolved} {
+			if root == "" {
+				continue
+			}
+			if strings.EqualFold(landed, root) || (s.Rule.Dir && hasFoldedPrefix(landed, root+"/")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func aboveAnyShield(shields []shield.Applied, landed string) bool {
+	for _, s := range shields {
+		for _, root := range []string{s.Rule.Path, s.Resolved} {
+			if root != "" && hasFoldedPrefix(root, landed+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFoldedPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
