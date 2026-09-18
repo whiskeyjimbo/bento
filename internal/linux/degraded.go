@@ -164,7 +164,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// A fresh scratch dir stands in for the bwrap tier's tmpfs /tmp: granted writable
 	// and exported as TMPDIR, so a target's temp files have a home without exposing the
 	// host /tmp (and other tenants' scratch), which the read/write set excludes.
-	dir, err := os.MkdirTemp("", "bento-degraded-")
+	// runDirBase, not $TMPDIR - see the bwrap tier's run directory. It matters more here:
+	// this tier has no mount namespace, so the scratch is a real host directory the target
+	// writes into for the length of the run.
+	dir, err := os.MkdirTemp(runDirBase, "bento-degraded-")
 	if err != nil {
 		return enforce.Result{}, fmt.Errorf("linux: creating run directory: %w", err)
 	}

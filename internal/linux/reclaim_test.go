@@ -396,3 +396,50 @@ func TestProfileResidueReachesTheObservationWithNoStderr(t *testing.T) {
 		t.Error("a profiling run whose reclaim could not account for a mount point must carry it in the observation")
 	}
 }
+
+// os.MkdirTemp("") honours $TMPDIR, and nothing constrains where that points - a TMPDIR
+// inside the user's checkout put bento's own run directory live inside it for the length
+// of the run, named in no report. The run directory is bento's, not the target's, so it
+// has no reason to follow the invoking environment anywhere.
+//
+// Observed from inside the run, not after it: the run directory is removed on the way
+// out, so a check that reads the checkout afterwards passes whether or not it was ever
+// there. The target lists the directory while it is alive, which is the window the cell
+// is about.
+func TestRunDirectoryIgnoresTMPDIR(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	inside := filepath.Join(dir, "tmpdir")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(dir, "observed")
+	script := filepath.Join(dir, "s.sh")
+	// A shell glob rather than ls: the manifest grants no exec, so a subprocess would
+	// come back 126 and the listing would never happen.
+	if err := os.WriteFile(script, []byte("echo "+inside+"/* > "+observed+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Built before TMPDIR is redirected: the suite's own fixtures are temporary files too,
+	// and the subject here is bento's run directory alone.
+	e := sandboxEnforcer(t)
+	t.Setenv("TMPDIR", inside)
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{dir}}
+	res, err := e.Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("the listing must succeed for the check to mean anything; exit %d", res.ExitCode)
+	}
+	saw, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saw), "bento-run-") {
+		t.Errorf("a TMPDIR inside the checkout must not hold bento's run directory during the run; the target saw %q", saw)
+	}
+}

@@ -820,6 +820,10 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) (created []string, err error
 	return created, nil
 }
 
+// runDirBase is where bento's own per-run directory goes on both bwrap tiers and the
+// degraded one. Fixed rather than $TMPDIR-derived; see the run directory below.
+const runDirBase = "/tmp"
+
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
 func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []string) (sandbox, func(), error) {
@@ -869,7 +873,14 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		return sandbox{}, noop, err
 	}
 
-	dir, err := os.MkdirTemp("", "bento-run-")
+	// "/tmp" rather than "", which is $TMPDIR: this is bento's own run directory, not the
+	// target's, and the target never sees it - it holds the empty file the shields bind
+	// and, when profiling, the observation report. Honoring $TMPDIR put it wherever the
+	// invoking environment pointed, including inside the user's own checkout under a
+	// write grant, where it sat live for the length of the run named in no report. The
+	// sandbox's own scratch is /tmp regardless (sandboxTmp), so this is where the rest of
+	// a run already lives.
+	dir, err := os.MkdirTemp(runDirBase, "bento-run-")
 	if err != nil {
 		return sandbox{}, noop, fmt.Errorf("linux: creating run directory: %w", err)
 	}
