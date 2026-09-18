@@ -36,6 +36,13 @@ import (
 const (
 	sentinelTierArm = "BENTO_TEST_TIER_ARM"
 	sentinelShmKey  = "BENTO_TEST_SHM_KEY"
+	// sentinelUnderScript marks the inner run of the script(1) re-exec below, and is the
+	// recursion guard: without it the inner run would re-exec itself forever.
+	sentinelUnderScript = "BENTO_TEST_TIER_PTY"
+	// sentinelHostNS prefixes one variable per namespace carrying the TEST PROCESS's
+	// namespace identity, which is the host's. A child compares its own against it; the
+	// ids are kernel inode numbers, so neither side can be hardcoded.
+	sentinelHostNS = "BENTO_TEST_HOST_NS_"
 
 	armUnfenced = "unfenced"
 	armDegraded = "degraded"
@@ -45,6 +52,11 @@ const (
 	// child that prints it back read another process's memory.
 	hostSegmentMarker = "HOST-SEGMENT-CONTENT"
 )
+
+// namespaceProbes are the namespaces whose identity a row compares against the host's.
+// Each is a bwrap --unshare-<name> flag with no degraded counterpart, so each row's
+// finding is the same shape: the degraded tier shares the host's.
+var namespaceProbes = []string{"pid", "uts", "cgroup"}
 
 // tierProbe is one restriction, and what each tier is expected to give the target.
 // unfenced is the control: a row whose unfenced value equals its degraded value is
@@ -84,6 +96,40 @@ var tierProbes = []tierProbe{
 		bwrap:    "empty",
 	},
 	{
+		name: "inet-socket",
+		// bwrap reads "permitted" and that is not a scandal: --unshare-net lives in
+		// baseFlags, not in the namespaceFlags/sessionFlags set this arm models, so the
+		// real bwrap tier's network fence is out of the arm's scope by construction. What
+		// the row pins is the other side - that the degraded tier's substitute is live.
+		why:      "grid row 2: the degraded tier has no netns, so BlockEgress is the whole IP-egress fence; socket(2) is its chokepoint",
+		unfenced: "permitted",
+		degraded: "denied",
+		bwrap:    "permitted",
+	},
+	{
+		name:     "pid-namespace",
+		why:      "grid row 3: --unshare-pid gives the bwrap tier its own process table; the degraded tier shares the host's and substitutes BlockProcessReach, which the sysv-ipc row measures",
+		unfenced: "shared",
+		degraded: "shared",
+		bwrap:    "separate",
+	},
+	{
+		name:     "uts-namespace",
+		why:      "grid row 11: --unshare-uts is bwrap-only and has no degraded substitute at all",
+		unfenced: "shared",
+		degraded: "shared",
+		bwrap:    "separate",
+	},
+	{
+		name: "cgroup-namespace",
+		// This row is also what makes --unshare-cgroup's presence in the arm load-bearing
+		// (bv2-6m2dq): drop the flag and bwrap reads "shared" here.
+		why:      "grid row 11: --unshare-cgroup is bwrap-only and has no degraded substitute at all",
+		unfenced: "shared",
+		degraded: "shared",
+		bwrap:    "separate",
+	},
+	{
 		name:     "controlling-terminal",
 		why:      "bv2-lpuue / grid row 6: --new-session leaves none; the degraded substitute denies two ioctls and leaves the terminal attached",
 		hostFact: "a controlling terminal",
@@ -102,6 +148,9 @@ var tierProbes = []tierProbe{
 }
 
 func TestTierDifferential(t *testing.T) {
+	if reexecUnderTerminal(t) {
+		return
+	}
 	key, cleanup := hostSegment(t)
 	defer cleanup()
 
@@ -112,13 +161,13 @@ func TestTierDifferential(t *testing.T) {
 
 	for _, p := range tierProbes {
 		t.Run(p.name, func(t *testing.T) {
-			// Not skipMissingDep: a controlling terminal is a property of how the test
-			// was invoked, not a package a host can install, so BENTO_REQUIRE_TEST_DEPS
-			// must not turn its absence into a failure. The fence itself is covered
-			// unconditionally by internal/seccomp's TestBlockTerminalInjection; what
-			// these rows add is the tier COMPARISON, which needs a real terminal.
+			// Unreachable rather than skipped: reexecUnderTerminal has already given the
+			// run a controlling terminal or refused to proceed, so an arm reporting n/a
+			// here means the terminal the rows were promised went missing between the two
+			// - which is the one outcome a skip would hide, and the whole of bv2-ciz11.
 			if got[armUnfenced][p.name] == "n/a" {
-				t.Skipf("%s needs %s, and this run was not started from one", p.name, p.hostFact)
+				t.Fatalf("%s needs %s and this run was given one, yet the unfenced arm reported n/a: "+
+					"the arm lost the terminal rather than measuring it", p.name, p.hostFact)
 			}
 			for arm, want := range map[string]string{
 				armUnfenced: p.unfenced, armDegraded: p.degraded, armBwrap: p.bwrap,
@@ -131,6 +180,63 @@ func TestTierDifferential(t *testing.T) {
 	}
 }
 
+// reexecUnderTerminal makes sure the rows that measure the terminal fence have a terminal
+// to measure, by re-running this one test under script(1) when the invocation had none. It
+// reports whether it did so, in which case the caller has nothing left to do.
+//
+// Two rows compare what --new-session takes away against what the degraded tier's ioctl
+// block leaves, and both need a real controlling terminal. `go test` gives none, so before
+// this they skipped, and a CI table reported PASS having asserted nothing about the fence
+// that landed with them. Giving the run a terminal is the fix rather than failing without
+// one: a terminal is a property of how the test was invoked.
+//
+// script(1) is used rather than a pty allocated here: it forks, setsid()s and TIOCSCTTY's
+// the slave itself, so this process gets a terminal it genuinely owns and bwrap's
+// --new-session still genuinely detaches from it. A pty this process merely held open
+// would have to be claimed by the child, and claiming it under the bwrap arm - already
+// setsid'd, so a session leader with no terminal - would hand that arm the very thing the
+// row exists to find absent.
+//
+// A missing script IS skipMissingDep's case, and that is not the fatality the bead
+// forbids: script is util-linux, a package a host installs, where a controlling terminal
+// is not. So make test (BENTO_REQUIRE_TEST_DEPS=1) fails loudly for it and a dev box skips.
+func reexecUnderTerminal(t *testing.T) bool {
+	t.Helper()
+	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
+		tty.Close()
+		return false
+	}
+	if os.Getenv(sentinelUnderScript) != "" {
+		t.Fatal("re-executed under script(1) and still have no controlling terminal; " +
+			"the terminal rows cannot be measured and must not report a pass")
+	}
+	script, err := exec.LookPath("script")
+	if err != nil {
+		skipMissingDep(t, "this run has no controlling terminal and script(1) is not installed to give it one, "+
+			"so the terminal rows would measure nothing: %v", err)
+		return true
+	}
+	inner := shellQuote(os.Args[0]) + " -test.run '^TestTierDifferential$' -test.timeout=4m"
+	if testing.Verbose() {
+		inner += " -test.v"
+	}
+	cmd := exec.Command(script, "-q", "-e", "-c", inner, "/dev/null")
+	cmd.Env = append(os.Environ(), sentinelUnderScript+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the differential re-run under script(1) failed with %v:\n%s", err, out)
+	} else {
+		t.Logf("ran under script(1), which supplied the controlling terminal this invocation lacked:\n%s", out)
+	}
+	return true
+}
+
+// shellQuote wraps s for the single command string script(1) hands to sh -c. The test
+// binary's path is chosen by the toolchain, under a temporary directory this test does
+// not pick, so it is not assumed to be free of shell metacharacters.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // runTierArm runs the probe child under one arm and returns its probe results. A
 // missing probe reads as the empty string, which no row expects, so a child that died
 // partway through fails the rows it never reached rather than passing them.
@@ -138,6 +244,13 @@ func runTierArm(t *testing.T, arm, key string) map[string]string {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestTierProbeHelper$")
 	cmd.Env = append(os.Environ(), sentinelTierArm+"="+arm, sentinelShmKey+"="+key)
+	for _, ns := range namespaceProbes {
+		link, err := os.Readlink("/proc/self/ns/" + ns)
+		if err != nil {
+			t.Fatalf("reading the host's %s namespace identity: %v", ns, err)
+		}
+		cmd.Env = append(cmd.Env, sentinelHostNS+ns+"="+link)
+	}
 	// The probes read the child's own controlling terminal, which it inherits through
 	// stdin. exec.Cmd leaves stdin at /dev/null otherwise, so every terminal row would
 	// report "detached" on every arm and assert nothing.
@@ -152,9 +265,14 @@ func runTierArm(t *testing.T, arm, key string) map[string]string {
 		// the host so the test binary and the Go toolchain's paths stay reachable. No
 		// seccomp: the three blocks in RunDegraded are the degraded tier's substitutes,
 		// not shared layers, so installing them here would erase the differential.
+		//
+		// The list is hand-copied because namespaceFlags is unexported in internal/linux
+		// and this package cannot import it - the dependency runs the other way - so the
+		// arm cannot be derived from it. What keeps it honest is that every flag is
+		// load-bearing for a row: drop one and its row reads the unfenced value.
 		cmd.Args = append([]string{
 			bwrap, "--dev-bind", "/", "/",
-			"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts",
+			"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
 			"--cap-drop", "ALL", "--new-session",
 		}, cmd.Args...)
 		cmd.Path = bwrap
@@ -206,6 +324,32 @@ func runTierProbes() {
 	report := func(name, value string) { fmt.Printf("PROBE %s %s\n", name, value) }
 
 	report("sysv-ipc", probeHostSegment(os.Getenv(sentinelShmKey)))
+
+	// socket(AF_INET) rather than a connect: the egress filter is an allowlist on the
+	// domain argument of socket(2) and filters creation, not I/O, so creation is where
+	// the tiers differ - and the probe needs no network to answer.
+	if _, _, errno := unix.Syscall(unix.SYS_SOCKET, unix.AF_INET, unix.SOCK_STREAM, 0); errno == unix.EPERM {
+		report("inet-socket", "denied")
+	} else {
+		report("inet-socket", "permitted")
+	}
+
+	// Namespace identity is read from the kernel and compared against the host's, which
+	// the parent passed in: the ids are inode numbers, so neither side can be a literal.
+	// Read through the host's procfs, which the bwrap arm binds in whole - --proc is in
+	// pseudoFSFlags, outside the set this arm models - and which still answers with the
+	// READER's namespace for these links.
+	for _, ns := range namespaceProbes {
+		link, err := os.Readlink("/proc/self/ns/" + ns)
+		switch {
+		case err != nil:
+			report(ns+"-namespace", "unreadable")
+		case link == os.Getenv(sentinelHostNS+ns):
+			report(ns+"-namespace", "shared")
+		default:
+			report(ns+"-namespace", "separate")
+		}
+	}
 
 	// The bounding set is read rather than inferred: it is the one fact that says
 	// whether a capability could still be gained, and /proc/self/status carries it
