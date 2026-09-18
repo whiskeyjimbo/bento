@@ -78,7 +78,7 @@ total size against `maxManifestBytes`.
 | Any list nil | HANDLED `omitempty`, manifest.go:49-57 |
 | Any list `[]string{}` (Args, Env, Read, Write, Network) | NORMALIZED to nil - see rejections |
 | Multi-element list, every field | HANDLED, verified by spike |
-| Document > `maxManifestBytes` | **UNHANDLED** manifest.go:161: Marshal has no size gate, Parse refuses at 1 MiB |
+| Document > `maxManifestBytes` | **UNHANDLED when walked, fixed in c02e561** manifest.go:161: Marshal had no size gate, Parse refuses at 1 MiB; Marshal now measures its rendered bytes against the same constant |
 | Nesting depth of Marshal's output vs `maxNestDepth` | IMPOSSIBLE manifest.go:262-300: the written shape reaches 3 levels, cap is 32 |
 | Marshal output containing a tag/anchor/alias token | IMPOSSIBLE in practice: quoting (manifest.go:487) keeps `!`, `&`, `*`-leading values quoted; verified over 50 indicator strings in 6 placements |
 | Marshal output non-UTF-8 or carrying a control character | IMPOSSIBLE policy.go:155 and manifest.go:508 screen both sides on `FirstUnsafeRune` |
@@ -115,7 +115,7 @@ total size against `maxManifestBytes`.
 
 ## Phase 3 - findings, forbidden direction first
 
-1. **Document > `maxManifestBytes` UNHANDLED** (manifest.go:161 vs manifest.go:455). Nothing
+1. **Document > `maxManifestBytes` UNHANDLED when walked, fixed in c02e561 (bv2-jql08)** (manifest.go:161 vs manifest.go:455). Nothing
    caps the size of what Marshal writes, and no policy field is length-capped except the
    network host. A policy whose grants exceed 1 MiB of YAML is written happily and then
    refused by its own parser - the exact class of defect Marshal's doc comment says it was

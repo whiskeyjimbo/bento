@@ -26,7 +26,7 @@ Good fit.
 | F5 | metadata ops on host paths outside grants (chmod, chown, utimes, setxattr, stat) | nothing handles them | path absent from the mount ns |
 | F6 | egress | seccomp `BlockEgress` + Landlock net TCP; network rules / gate refused (`linux.go:65-88`) | netns + proxy |
 | F7 | process reach / signals / abstract IPC | seccomp `BlockProcessReach` + Landlock scoping (ABI 6), disclosed by `signalClause`/`unixSocketClause` | pid ns, netns |
-| F8 | terminal injection | seccomp `BlockTerminalInjection` | bwrap --new-session |
+| F8 | terminal injection | seccomp `BlockTerminalInjection`, fatal on both the support probe and the install | bwrap --new-session, unverified when this grid was walked; `canUnshare` now proves it from inside via `sessionProof` (3b7a6d1) |
 | F9 | exec block (none/none-strict) | `installExecFilter` via `execBlockFlags`, reconciled | same filter via launcher |
 | F10 | limits | systemd scope when `canCreateScope`, admission refusal otherwise | same, plus post-run `attestScopeLimits`/`noteScopeLimits` |
 | F11 | env / HOME / TMPDIR | `sandboxEnv(proc.Env, scratch)`, StripEnv, TMPDIR override | `sandboxEnv(proc.Env, SandboxHome)`, --clearenv |
