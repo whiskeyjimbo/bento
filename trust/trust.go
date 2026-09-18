@@ -396,12 +396,15 @@ func dirFlaws(d fileFacts, role string, euid uint32) []Flaw {
 				hint = relocateHint(d.path)
 			}
 		case d.group == groupUnknown:
-			// Said out loud for the same reason ErrLocationUnknown is: on a host whose
-			// account database cannot answer - a directory service, an unreadable
-			// /etc/group - the check is declined for every path, and the generic line
-			// alone reads as a check that passed. Not fatal: over-warning is the tolerated
-			// direction here, and refusing would fail approve on every such host.
-			reason = fmt.Sprintf("%s, %s, is %s-writable (%#o) and whether its group holds other users cannot be checked on this host, so anyone there may be able to replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
+			// Said out loud for the same reason ErrLocationUnknown is: where the account
+			// database could not answer - a directory service, an unreadable /etc/group, a
+			// member it names but cannot resolve - the generic line alone reads as a check
+			// that passed, and on a host where nothing is ever provable that is every path.
+			// Not "on this host", unlike ErrLocationUnknown: an unresolvable member leaves
+			// this one group unanswered on a database that answers the rest. Not fatal
+			// either - over-warning is the tolerated direction, and refusing would fail
+			// approve on every host with a directory service.
+			reason = fmt.Sprintf("%s, %s, is %s-writable (%#o) and whether its group holds other users cannot be established, so anyone there may be able to replace the manifest", d.path, role, writerClass(shared), d.mode.Perm())
 		}
 		out = append(out, Flaw{Reason: reason, Fatal: fatal, Hint: hint})
 	}
