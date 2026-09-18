@@ -122,7 +122,7 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # sharing one is covered by the one entry - but a name is spelled out in full when its
 # family has serial members, since the prefix would then still match after the concurrent
 # one was deleted and leave this leg running only the serial siblings.
-RACE_LINUX_TESTS := TestEgressCollector TestRecordedEgressKeepsVerdictsApartUnderConcurrency TestEnforcerReuseIsConcurrencySafe
+RACE_LINUX_TESTS := TestEgressCollectorKeepsVerdictsApartUnderConcurrency TestRecordedEgressKeepsVerdictsApartUnderConcurrency TestEnforcerReuseIsConcurrencySafe
 
 # internal/observe runs whole rather than by name: it is one tier, its concurrency tests
 # already fail under plain `go test` when the traceCalls mutex is wrong, and 24s buys the
