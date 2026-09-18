@@ -525,6 +525,14 @@ var pseudoFSFlags = []string{
 // ignores it, a sandboxed program pushes characters into the user's shell that it reads
 // back as typed input after the run exits. The probe's canary proves from inside that it
 // took; a var rather than a literal in two places because that is how the two drift.
+//
+// The substitute is narrower than this flag, and the sentence above is a statement about
+// the degraded tier's fatality, not about its reach: a seccomp filter denies TIOCSTI and
+// TIOCLINUX and nothing else, so a degraded target keeps every other power a controlling
+// terminal carries - keystroke reads, TIOCSWINSZ, escape sequences, the foreground
+// group's SIGINT. setsid is not available there (that stage is started as a process-group
+// leader so its descendants can be swept), so the narrowing is forced; it is disclosed in
+// the degraded tier's probe Consequences (probe.go, terminalResidual) rather than closed.
 var sessionFlags = []string{"--new-session"}
 
 func baseFlags() []string {

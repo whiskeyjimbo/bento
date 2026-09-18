@@ -24,9 +24,14 @@ import (
 // Nothing in the report's own bytes authenticates its writer, and nothing could: whatever
 // the host launches inherits this descriptor along with the host's argv and environment, so
 // a nonce or a shared secret would be handed to a substituted launcher with everything else.
-// The report's origin is established by resolveBwrap instead, which refuses to launch a
-// sandbox builder this uid could have replaced. parseApplied's job is narrower and stays
-// what it was: refusing content the genuine stage does not write.
+// On the bwrap tier the report's origin is established by resolveBwrap instead, which
+// refuses to launch a sandbox builder this uid could have replaced. The degraded tier
+// launches no bwrap and so has no counterpart to that check: it re-execs sb.bentoPath,
+// which bentoSelfPath takes from os.Executable() rather than resolving off PATH, so there
+// is no resolution step to aim at - substituting that binary means bento itself was
+// already substituted. (checkLauncher on both paths is the launchGuard test seam, not a
+// verification.) parseApplied's job is narrower and stays what it was: refusing content
+// the genuine stage does not write.
 const appliedReportFD = 3
 
 // bridgeLivenessFD is the descriptor carrying the in-sandbox bridge's report of its

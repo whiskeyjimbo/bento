@@ -444,6 +444,23 @@ func TestDegradedConsequencesDiscloseResidualsNoABICloses(t *testing.T) {
 	}
 }
 
+// The two restrictions the bwrap tier applies and this tier can only approximate - the
+// terminal detach and the capability bounding set - are forced by the absent bwrap, so
+// the state grid allows them only while the report records them. A comment is not a
+// channel, so the Consequences text is the record, and it is unconditional: neither
+// residual is keyed on a Landlock ABI or a kernel fact the probe reads.
+func TestDegradedConsequencesDiscloseTheTierParityResiduals(t *testing.T) {
+	for cell := 0; cell < 1<<5; cell++ {
+		b := func(i int) bool { return cell&(1<<i) != 0 }
+		l := filesystemLayer(namespacesBlocked, "userns blocked here", true, b(0), b(1), b(2), b(3), b(4), true)
+		for _, want := range []string{"TIOCSTI", "TIOCSWINSZ", "--new-session", "PR_CAPBSET_DROP", "bounding set"} {
+			if !strings.Contains(l.Consequences, want) {
+				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
+			}
+		}
+	}
+}
+
 // The degraded tier's unix-socket disclosure has to track what the kernel can actually
 // restrict, not repeat one fixed sentence. From ABI 6 the tier scopes the abstract
 // namespace and from ABI 9 the ruleset handles resolve_unix, granting it only on the

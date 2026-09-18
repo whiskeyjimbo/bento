@@ -291,7 +291,8 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"flipped and mtimes forged. Seccomp cannot close this, as it sees no paths and the same calls are " +
 			"what a granted workspace needs" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
-			resolveUnixResidual(resolveUnixRestricted) + unknownRightsResidual
+			resolveUnixResidual(resolveUnixRestricted) + unknownRightsResidual +
+			terminalResidual + capBoundResidual
 		return l
 	default:
 		return status(enforce.Unavailable, joinReason(nsReason,
@@ -434,6 +435,32 @@ func resolveUnixResidual(resolveUnixRestricted bool) string {
 // matters, while a missed newer kernel would stay silent about a real gap.
 const unknownRightsResidual = ". Nor does it restrict any access right a kernel past Landlock ABI 9 " +
 	"adds: this build handles only the rights it knows"
+
+// terminalResidual discloses how far the degraded tier's terminal fence reaches. The
+// bwrap tier passes --new-session, which calls setsid() and leaves the target no
+// controlling terminal at all; the degraded tier cannot, because the host starts that
+// stage as a process-group leader so its descendants can be swept on teardown, and
+// setsid refuses a leader. What it substitutes is a seccomp deny on the two injection
+// ioctls and nothing else, so everything else a controlling terminal carries survives.
+// Unconditional: the probe cannot know whether the run it is describing will be started
+// on a terminal, so it describes the mechanism's reach rather than asserting a tty.
+const terminalResidual = ". Nor does it detach the target from a controlling terminal it is given, which " +
+	"bwrap's --new-session removes outright: the substitute denies the two injection ioctls " +
+	"(TIOCSTI, TIOCLINUX) and no more, so a terminal-attached run leaves the target able to read the " +
+	"user's keystrokes, resize the window (TIOCSWINSZ), write escape sequences the emulator acts on, " +
+	"and take the foreground group's SIGINT"
+
+// capBoundResidual discloses the capability bounding set, which the bwrap tier empties
+// with --cap-drop ALL and this tier can only attempt. It is named as inert rather than as
+// a drop because both cells it can land in are covered: a run holding capabilities that
+// cannot empty the set is refused outright, and on an unprivileged host the set survives
+// unspendable - the seccomp installs set PR_SET_NO_NEW_PRIVS before the attempt, and a
+// bounding set is only spendable through a setuid or file-capability exec.
+const capBoundResidual = ". The capability bounding set is attempted rather than guaranteed empty here: " +
+	"PR_CAPBSET_DROP needs a privilege this tier exists because the host withheld, so on an ordinary " +
+	"unprivileged host the set survives the run - inert rather than dropped, since no-new-privs is " +
+	"already set and a bounding set can only be spent through a setuid or file-capability exec. A run " +
+	"that does hold capabilities and cannot empty the set is refused instead of degraded"
 
 // namespaceProbe is what the user-namespace probe could establish. The third state
 // is the point of the type: an unanswered probe - the canary reaped under memory
