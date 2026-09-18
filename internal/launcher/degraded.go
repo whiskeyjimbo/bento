@@ -293,7 +293,19 @@ func RunDegraded(cfg DegradedConfig) (int, error) {
 	// The target inherits the parent's controlling terminal on stdin (this tier execs
 	// it directly, with no bwrap --new-session to detach it), so block the ioctls that
 	// forge terminal input - otherwise the target could push a command line into the
-	// shell that reads after the sandbox exits. Landlock's ioctl_dev right would also
+	// shell that reads after the sandbox exits.
+	//
+	// This is NARROWER than --new-session and is not a substitute for it: bwrap leaves
+	// the target no controlling terminal at all, while this denies two ioctl requests
+	// and leaves the terminal attached. Reading the user's keystrokes, TIOCSWINSZ,
+	// writing escape sequences a terminal emulator acts on and foreground SIGINT all
+	// stay open here. setsid is not available as a counterpart: the host starts this
+	// stage with Setpgid so its descendants can be swept on teardown (see
+	// internal/linux's launcherProcAttr), which makes it a process-group leader, and
+	// setsid refuses one. TestTierDifferential measures both halves - the gap and what
+	// the block does cover.
+	//
+	// Landlock's ioctl_dev right would also
 	// cover this, but only at ABI 5 (kernel 6.10+). The tier is entered for a missing
 	// bwrap or unprivileged userns rather than for an old kernel, so its hosts span both
 	// sides of that line and the block cannot rest on Landlock.

@@ -73,7 +73,11 @@ func TerminalInjectionSupported() bool { return true }
 // It is for the degraded (no-bwrap) tier only. The bwrap tier runs the target in a
 // new session (bwrap --new-session), which detaches the controlling terminal so
 // TIOCSTI has nothing to inject into; the degraded tier execs the target directly and
-// it inherits the parent's terminal on stdin, so the block is the substitute. Landlock
+// it inherits the parent's terminal on stdin, so the block stands in for it on the
+// injection question only. It is not equivalent: everything else a controlling terminal
+// carries - keystroke reads, TIOCSWINSZ, escape sequences a terminal emulator acts on,
+// foreground SIGINT - a --new-session target does not have and a degraded target does.
+// Landlock
 // would also cover this via its ioctl_dev right, but only at ABI 5 (kernel 6.10) and
 // above. The tier is entered for a missing bwrap or unprivileged userns, not for an old
 // kernel, so its hosts span both sides of that line and the guarantee cannot rest on it.
