@@ -298,7 +298,7 @@ func hostSegment(t *testing.T) (string, func()) {
 	}
 	addr, _, errno := unix.Syscall(unix.SYS_SHMAT, id, 0, 0)
 	if errno != 0 {
-		unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
+		_, _, _ = unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
 		t.Fatalf("attaching the host System V segment: %v", errno)
 	}
 	mem, err := os.OpenFile("/proc/self/mem", os.O_WRONLY, 0)
@@ -307,12 +307,12 @@ func hostSegment(t *testing.T) (string, func()) {
 		mem.Close()
 	}
 	if err != nil {
-		unix.Syscall(unix.SYS_SHMDT, addr, 0, 0)
-		unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
+		_, _, _ = unix.Syscall(unix.SYS_SHMDT, addr, 0, 0)
+		_, _, _ = unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
 		t.Fatalf("writing the marker into the host System V segment: %v", err)
 	}
 	return strconv.Itoa(key), func() {
-		unix.Syscall(unix.SYS_SHMDT, addr, 0, 0)
-		unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
+		_, _, _ = unix.Syscall(unix.SYS_SHMDT, addr, 0, 0)
+		_, _, _ = unix.Syscall(unix.SYS_SHMCTL, id, uintptr(unix.IPC_RMID), 0)
 	}
 }

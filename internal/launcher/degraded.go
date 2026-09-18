@@ -168,7 +168,7 @@ func restrictCapabilityBound() error {
 func dropCapBoundingSet(held uint64) {
 	for cap := 0; cap < 64; cap++ {
 		if held&(1<<uint(cap)) != 0 {
-			unix.Syscall(unix.SYS_PRCTL, unix.PR_CAPBSET_DROP, uintptr(cap), 0)
+			_, _, _ = unix.Syscall(unix.SYS_PRCTL, unix.PR_CAPBSET_DROP, uintptr(cap), 0)
 		}
 	}
 }
