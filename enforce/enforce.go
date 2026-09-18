@@ -583,14 +583,24 @@ type Result struct {
 	Residue []string
 }
 
-// ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path
-// is absent - a credential store the sandbox tmpfs'd or overmounted with an empty
-// file), "read-only" (the path stays readable but cannot be written - a
-// code-execution surface like a git hooks dir), or "discarded" (the path did not exist
-// on the host, so it is an empty scratch directory the target may write and nothing it
-// writes there survives the run - what a shield on an absent git hooks dir does).
-// A consumer must not treat these as two values: "discarded" is a directory the target
-// CAN write, so a check for whether a write can fail belongs on "read-only" alone.
+// ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path was
+// on the host and its contents are not reachable - a credential store the sandbox tmpfs'd
+// or overmounted with an empty file), "read-only" (the path was on the host and stays
+// readable but cannot be written - a code-execution surface like a git hooks dir), or
+// "discarded" (the path was NOT on the host: bento materialized it for the run, and
+// nothing at it reaches the host or survives teardown).
+//
+// "discarded" is about provenance, not about what a write does there, and the two do not
+// line up: an absent directory becomes a writable scratch mount that takes writes and
+// drops them, while an absent file becomes an empty read-only stand-in that refuses them.
+// So a consumer asking whether a write can fail must not read these as two values and
+// must not read "discarded" as "writable" either; only the distinction from the other two
+// kinds is carried here, and the shield's own Path is what says which shape it is.
+//
+// The provenance is the half a consumer cannot recover later. A run killed before its
+// teardown leaves a materialized path standing, and from then on every run sees it exist
+// and reports it "hidden" or "read-only" - correctly, and indistinguishably from a file
+// the user wrote. This field is the only window in which anything says bento made it.
 // Path can carry bytes influenced by a
 // prior run (a git submodule directory name), so a consumer that renders it to a
 // terminal must quote it; the built-in surfaces do (JSON-encoded, or counts only).

@@ -616,15 +616,16 @@ func TestDenialLegendNamesTheSilentShieldShapes(t *testing.T) {
 	}
 }
 
-// A discarded shield is the quietest of the three: the target's write to it SUCCEEDS and
-// then vanishes with the run's scratch mount, so there is no errno for the legend's other
-// lines to explain. A reader given only those lines concludes the write landed on the host.
+// A discarded shield is the one kind that names where the path came from rather than what
+// a write to it does: bento created it because the host did not have it. A directory one
+// takes the write and drops it at teardown, which is the quiet half the legend's errno
+// lines cannot explain - a reader given only those concludes the write landed on the host.
 func TestDenialLegendNamesADiscardedShield(t *testing.T) {
 	var r enforce.Report
 	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 	r.Add(enforce.LayerExec, enforce.Enforced, "")
 	p := &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/out"}}
-	const vanished = "reached a scratch mount"
+	const vanished = "a path bento created for this run"
 
 	discarded := enforce.Result{Report: r, Shields: []enforce.ShieldApplied{{Path: "/tmp/out/.git/hooks", Kind: "discarded"}}}
 	var b bytes.Buffer

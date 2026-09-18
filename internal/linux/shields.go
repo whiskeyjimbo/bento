@@ -22,24 +22,35 @@ import (
 // files, git hooks, editor config trees) reports read-only.
 //
 // The kind is read off what shieldMount really emits, not off the rule alone, which is
-// why the host is consulted here. A DenyWrite on a directory that does not exist yet gets
-// a tmpfs rather than a read-only bind, and a tmpfs is writable: the target can create
-// files in it for the whole run and they simply never reach the host. That is the common
-// case, not an exotic one - a write grant on a plain directory shields a .git/hooks that
-// is not there - and calling it read-only would name a protection other than the one
-// applied. It reports discarded instead.
+// why the host is consulted here. A shield over a path that is NOT ON THE HOST is a path
+// bwrap brings into existence for the run - a tmpfs over an absent directory, an empty
+// read-only bind over an absent file - and both are things bento made, not protections
+// over something the user had. Calling either by the kind its Deny implies names a
+// protection other than the one applied, and hides the one fact the operator cannot
+// recover afterwards: once a run has stranded such a path, every later run sees it exist
+// and reports it as the user's own forever.
+//
+// So existence is asked FIRST, before the Deny, and it is asked on both arms. That is the
+// whole shape of the fix: gating it on DenyWrite alone left the DenyAll half - a
+// caller deny on an absent path, a credential file that is not there yet under a write
+// grant - reporting hidden for a path nothing was hiding. Gating it on r.Dir as well
+// left the file half, which is the one that can be CAPTURED: a DenyWrite file shield
+// (.cargo/config) on a fresh checkout is a real zero-byte host file inside the user's
+// tree for the length of the run, and a target that stages broadly commits it.
 func shieldsApplied(sb sandbox, rules []denylist.Rule) []enforce.ShieldApplied {
 	if len(rules) == 0 {
 		return nil
 	}
 	out := make([]enforce.ShieldApplied, 0, len(rules))
 	for _, r := range rules {
-		kind := "hidden"
-		if r.Deny == denylist.DenyWrite {
+		var kind string
+		switch {
+		case !sb.exists(r.Path):
+			kind = "discarded"
+		case r.Deny == denylist.DenyWrite:
 			kind = "read-only"
-			if r.Dir && !sb.exists(r.Path) {
-				kind = "discarded"
-			}
+		default:
+			kind = "hidden"
 		}
 		out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: kind, Source: r.Source})
 	}

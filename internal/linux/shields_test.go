@@ -1343,3 +1343,50 @@ func TestRemoveCreatedShieldsIsBounded(t *testing.T) {
 		t.Fatal("removeCreatedShields never returned: a write grant whose mount died during the run holds the process on a defer after the run is over")
 	}
 }
+
+// The file half of the same cell, and the one that can be CAPTURED. A DenyWrite FILE
+// shield on a path the host does not have is a real zero-byte host file bwrap creates
+// inside the user's checkout for the length of the run - .cargo/config on a fresh
+// checkout - so a target that stages broadly commits it. Reported "read-only", the one
+// kind that says the path was already there, an operator reads it as their own file. The
+// existence test used to be gated on r.Dir, which is precisely what left this half open.
+func TestCompileReportsAnAbsentFileShieldAsDiscarded(t *testing.T) {
+	sb := testSandbox("/home/u/proj/src", "/home/u/proj/.cargo/config.toml")
+	p := &policy.Policy{Entrypoint: "/work/run.py", Write: []string{"/home/u/proj"}}
+	_, shields, err := compile(p, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasShield(shields, "/home/u/proj/.cargo/config", "discarded") {
+		t.Errorf("an absent file shield is a host file bento created and must not be reported read-only; got %v", shields)
+	}
+	if !hasShield(shields, "/home/u/proj/.cargo/config.toml", "read-only") {
+		t.Errorf("a file shield the host really has is bound read-only; got %v", shields)
+	}
+}
+
+// The sibling arm, on the other side of the invariant. A DenyAll rule never consulted
+// existence at all, so a shield on a path the host does not have reported "hidden", the
+// kind that means the host's own contents are out of reach. Nothing was hidden: bento
+// made the path. Disclosure only rather than capture - buildExtraDeny forces dir for an
+// absent caller deny, so it is always a tmpfs and never a host file the index can see -
+// but it is the same one-line cause as the file arm above, and a fix landing on one
+// leaves the identical defect next door.
+//
+// Driven at shieldsApplied rather than through compile because checkWriteNotAboveShield
+// refuses a write grant containing a caller deny before a run gets this far; the kind
+// computation is what this cell is about, and it is reached from the degraded tier's
+// exposedShields as well as from compile.
+func TestShieldsAppliedReportsAnAbsentDenyAllAsDiscarded(t *testing.T) {
+	sb := testSandbox("/home/u/proj/store", "/home/u/proj/store/kept")
+	shields := shieldsApplied(sb, []denylist.Rule{
+		{Path: "/home/u/proj/absent", Deny: denylist.DenyAll, Dir: true},
+		{Path: "/home/u/proj/store", Deny: denylist.DenyAll, Dir: true},
+	})
+	if !hasShield(shields, "/home/u/proj/absent", "discarded") {
+		t.Errorf("an absent DenyAll path is a tmpfs bento created, not a hidden host path; got %v", shields)
+	}
+	if !hasShield(shields, "/home/u/proj/store", "hidden") {
+		t.Errorf("a DenyAll path the host really has is hidden; got %v", shields)
+	}
+}

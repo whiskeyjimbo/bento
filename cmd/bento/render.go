@@ -663,10 +663,10 @@ func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	return true
 }
 
-// shieldsApplied reports whether the run bound a shield of one kind. Each kind fails its
+// shieldsApplied reports whether the run bound a shield of one kind. Each kind reads its
 // own way - read-only answers EROFS from inside a write grant, hidden reports nothing at
-// all, discarded takes the write and drops it - so the legend's lines are gated on the
-// kind that produced the shape they describe.
+// all, discarded names a path bento itself created for the run - so the legend's lines are
+// gated on the kind that produced the shape they describe.
 func shieldsApplied(res enforce.Result, kind string) bool {
 	for _, s := range res.Shields {
 		if s.Kind == kind {
@@ -822,12 +822,14 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	if mountNSConfines && shieldsApplied(res, "hidden") {
 		fmt.Fprintln(w, "[bento] a hidden shield reports no error either: the directory stats as empty, the file reads as zero bytes")
 	}
-	// The quietest kind, and the only one with no failure to explain: the write SUCCEEDS.
-	// It lands on the scratch mount bound over the path and goes with it at the run's end,
-	// so a reader working from the errno lines alone concludes it reached the host.
+	// The kind that names where the path came from rather than what a write to it does,
+	// so it explains a failure and a success at once: bento created the path for this run,
+	// and a directory one takes writes while a file one refuses them. The success is the
+	// half a reader working from the errno lines alone would conclude reached the host.
 	if mountNSConfines && shieldsApplied(res, "discarded") {
-		fmt.Fprintln(w, "[bento] a discarded shield reports no error at all: the write succeeds, and")
-		fmt.Fprintln(w, "[bento] reached a scratch mount that goes away with the run, not the host")
+		fmt.Fprintln(w, "[bento] a discarded shield is a path bento created for this run because the host")
+		fmt.Fprintln(w, "[bento] did not have it: a directory takes writes and drops them at the run's end,")
+		fmt.Fprintln(w, "[bento] a file refuses them - and neither the path nor anything in it reaches the host")
 	}
 }
 
