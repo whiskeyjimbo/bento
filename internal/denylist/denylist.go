@@ -2472,7 +2472,8 @@ var walletKeyPaths = []string{
 // profile, an Electron messenger, chain data - and ~/.local/share/dino (received file
 // transfers under files/ beside the archive) and ~/.local/share/profanity (chatlogs
 // nested per account per day), whose secrets are real but sit in trees that grow without
-// bound. Their config halves are here; the trees stay in bulkStoreDirs. Excluded as
+// bound. profanity's config half is here and its tree stays in bulkStoreDirs; dino keeps
+// its keys in the same tree as the transfers, so nothing of it expands. Excluded as
 // pointless: a ~/.cache sibling, which a farm does not manage and which holds a copy
 // rather than the original.
 //
