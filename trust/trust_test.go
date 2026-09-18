@@ -99,6 +99,12 @@ func TestDirFlawsSkipAPrivateGroup(t *testing.T) {
 	if len(got) != 1 || got[0].Fatal {
 		t.Fatalf("a group nothing is known about is reported, not refused; got %+v", got)
 	}
+	// Said out loud, the way ErrLocationUnknown says it: on a host where the account
+	// database cannot answer for any path, the generic umask line alone leaves the reader
+	// unable to tell a declined check from a passed one.
+	if !strings.Contains(got[0].Reason, "cannot be checked") {
+		t.Errorf("an unanswerable group says so; got %q", got[0].Reason)
+	}
 	// A proven-shared directory this user does not own - root:www-data 0775 - is refused,
 	// and foreignOwner exempts root, so this arm's hint is the only remedy named. A chmod
 	// they cannot run would be worse than naming none.
