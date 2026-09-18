@@ -44,7 +44,7 @@ var observeSupported = observe.Supported
 // describe this run - profiling observes exec rather than blocking it, and its proxy
 // records rather than allowlisting. What it does share with Run is that a requested
 // resource limit protects the host, so that one is enforced and refused here directly.
-func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths, acceptAliasesUnder []string) (profile.Observation, error) {
+func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths, acceptAliasesUnder []string) (obs profile.Observation, err error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err
 	}
@@ -133,7 +133,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	var preflight preflighted
 	defer func() {
 		if !launched {
-			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
+			recordResidue(proc.Stderr, &obs.Residue, "write-grant directories it created for a run that did not start", preflight.createdWrites)
 		}
 	}()
 	preflight, err = preflightGrants(sb, p, acceptAliasesUnder)
@@ -146,7 +146,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// reporting what it left.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
 	defer func() {
-		warnResidue(proc.Stderr, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+		recordResidue(proc.Stderr, &obs.Residue, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
 	}()
 
 	// Inside the run's own 0700 directory rather than shared /tmp, and read back below
@@ -245,7 +245,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 			strings.Join(missing, ", "))
 	}
 
-	obs, err := parseObservations(report)
+	obs, err = parseObservations(report)
 	if err != nil {
 		return profile.Observation{}, err
 	}

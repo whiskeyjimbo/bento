@@ -319,3 +319,80 @@ func TestProfileNamesShieldMountPointsItCouldNotReclaim(t *testing.T) {
 		t.Errorf("a profiling run that left a shield mount point standing must name it; stderr was %q", stderr.String())
 	}
 }
+
+// An embedder may pass a nil Stderr, which is permitted and is the whole reason the
+// result carries the residue too: stderr is the CLI's channel, and a caller with no
+// terminal otherwise learns nothing about what the run left on its host.
+func TestResidueReachesTheResultWithNoStderr(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build", "out")
+
+	old := launchGuard
+	launchGuard = func(string) error { return errors.New("refused for the test") }
+	t.Cleanup(func() { launchGuard = old })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{out}}
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil {
+		t.Fatal("the launch guard must fail the run")
+	}
+	if !slices.Contains(res.Residue, out) {
+		t.Errorf("a run with no stderr must carry the host directory it left behind in the result; Residue was %v, want %s", res.Residue, out)
+	}
+}
+
+// The same for the degraded tier, which builds its result on five arms of its own.
+func TestDegradedResidueReachesTheResultWithNoStderr(t *testing.T) {
+	requireDegraded(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build", "out")
+
+	old := launchGuard
+	launchGuard = func(string) error { return errors.New("refused for the test") }
+	t.Cleanup(func() { launchGuard = old })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{out}}
+	res, err := enforcerUsing(testBento(t)).runDegraded(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err == nil {
+		t.Fatal("the launch guard must fail the run")
+	}
+	if !slices.Contains(res.Residue, out) {
+		t.Errorf("a degraded run with no stderr must carry the host directory it left behind in the result; Residue was %v, want %s", res.Residue, out)
+	}
+}
+
+// Profile returns an Observation and never builds a Result, so it needs the peer field
+// or the embed case is the one entry path with no channel at all.
+func TestProfileResidueReachesTheObservationWithNoStderr(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := shieldLstat
+	shieldLstat = func(string) (os.FileInfo, error) { return nil, errors.New("the host will not answer for it") }
+	t.Cleanup(func() { shieldLstat = old })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{dir}}
+	obs, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
+	if err != nil {
+		t.Fatalf("profiling: %v", err)
+	}
+	if len(obs.Residue) == 0 {
+		t.Error("a profiling run whose reclaim could not account for a mount point must carry it in the observation")
+	}
+}

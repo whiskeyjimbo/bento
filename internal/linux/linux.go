@@ -117,7 +117,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	var preflight preflighted
 	defer func() {
 		if err != nil && !launched {
-			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
+			recordResidue(proc.Stderr, &res.Residue, "write-grant directories it created for a run that did not start", preflight.createdWrites)
 		}
 	}()
 	preflight, err = preflightGrants(sb, p, opts.AcceptAliasesUnder)
@@ -141,7 +141,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// removeCreatedShields for why this is safe and best-effort.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
 	defer func() {
-		warnResidue(proc.Stderr, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+		recordResidue(proc.Stderr, &res.Residue, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
 	}()
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
@@ -720,6 +720,17 @@ func warnResidue(w io.Writer, what string, paths []string) {
 	for _, p := range paths {
 		fmt.Fprintf(w, "  %s\n", p)
 	}
+}
+
+// recordResidue hands one account of what a run left on the host to both channels at
+// once: the operator's stderr, where a CLI reader sees it, and the run's own result,
+// which is the only channel an embedder passing a nil Stderr has. Appended rather than
+// assigned, because the two categories are reported from two separate defers and the
+// result carries one list; and the destination is a pointer because a defer that
+// populates a result has nothing else to write through.
+func recordResidue(w io.Writer, into *[]string, what string, paths []string) {
+	warnResidue(w, what, paths)
+	*into = append(*into, paths...)
 }
 
 // prepareWriteDirs makes each granted write directory exist on the host before it

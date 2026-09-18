@@ -124,6 +124,14 @@ type Observation struct {
 	// decode), but a target that sandboxes itself dies the same way, so the two are not
 	// distinguishable here and the message must not claim otherwise.
 	SeccompKilled bool
+	// Residue is enforce.Result.Residue for the profiling path, and carries the same
+	// caveats: the host paths this run created and left standing, one list for two
+	// categories, populated on different arms. A profiling run creates write-grant
+	// directories the enforced run would create anyway and carves the same shield mount
+	// points, so it leaves the same artifacts and a caller with no terminal needs the
+	// same account of them. It is a peer field rather than the same one because this
+	// path returns an Observation and never builds a Result.
+	Residue []string
 }
 
 // systemDirs are the runtime and OS directory trees every program touches to load

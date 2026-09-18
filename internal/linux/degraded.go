@@ -31,7 +31,7 @@ import (
 // CA bundle (systemReadPaths), the granted reads, and the entrypoint/interpreter as
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
-func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (enforce.Result, error) {
+func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (res enforce.Result, err error) {
 	report := e.degradedProbe(ctx)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
@@ -125,7 +125,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	createdWrites, err := prepareWriteDirs(p, sb)
 	defer func() {
 		if !launched {
-			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", createdWrites)
+			recordResidue(proc.Stderr, &res.Residue, "write-grant directories it created for a run that did not start", createdWrites)
 		}
 	}()
 	if err != nil {

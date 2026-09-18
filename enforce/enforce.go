@@ -559,6 +559,28 @@ type Result struct {
 	// Sorted, and carried on the same arms as the two lists it qualifies. The same quoting
 	// caveat applies: a grant path can carry bytes a prior run chose.
 	UnresolvedHooks []string
+	// Residue names the host paths this run left standing that it created itself: a
+	// write-grant directory made for a run whose target never started, and a shield
+	// mount point the post-run reclaim could not remove. It is the same account a
+	// backend writes to Process.Stderr, for a caller that has no terminal - an embedder
+	// may pass a nil Stderr, and without this the account is simply lost.
+	//
+	// Deliberately one list rather than one per category. A consumer's question is
+	// "what is on my host that was not there before", which both answers; splitting it
+	// would be three fields for one question. What a consumer must NOT read into it is
+	// a negative: the two halves populate on different arms. The shield half is answered
+	// on every arm, including the error ones; the write-grant half is only asked when the
+	// target never started, since a run that started asked for that directory and keeping
+	// it is the point. An empty Residue on a successful run therefore means no mount point
+	// survived, not that no directory was created.
+	//
+	// It is not an error and never becomes one: a run that left a mount point standing
+	// still confined what it ran, and a caller taught to read the error for hygiene would
+	// learn to ignore the error. It is not a layer state either - see warnResidue.
+	//
+	// Paths can carry bytes a prior run chose (a shield under a git submodule directory),
+	// so a consumer rendering one to a terminal must quote it.
+	Residue []string
 }
 
 // ShieldApplied is one always-on shield the run engaged. Kind is "hidden" (the path
