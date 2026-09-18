@@ -44,18 +44,22 @@ import (
 // been there. Reading post-run would therefore accuse every healthy limited run whose
 // bookkeeping took longer than that millisecond.
 //
-// caps holds a controller file only where the question was answerable. An empty map is the
-// reading that attests nothing - no scope found - and it worsens no layer: faulting a
-// completed run for being fast is worse than the gap it leaves.
+// caps holds a controller file only where the question was answerable, and sampled says
+// whether a scope was found to read at all. The two are separate because an empty caps map
+// alone cannot tell "the scope was there and answered nothing" from "there was no scope" -
+// and a reading that attests nothing must not leave the pre-run probe's Enforced standing,
+// which is the forbidden direction of the limits invariant.
 //
-// How often a fast target actually produces it: 0 of 100 runs of `/bin/true` under a full
-// set of limits on a healthy user manager (measured). The sample is taken from the
+// How often a fast target produces an unsampled reading: 0 of 100 runs of `/bin/true` under
+// a full set of limits on a healthy user manager (measured). The sample is taken from the
 // WRAPPER's pid, and systemd-run lives in the scope until the target exits, so it is not
 // racing the target the way the pid alone suggests - it is the manager that has to be slow.
-// The residue is a host whose manager never creates the scope at all, which reads the same
-// as a run too fast to sample and reports whatever the pre-run probe concluded.
+// So worsening on an unsampled reading costs the measured case nothing, and it is the
+// conservative direction the invariant allows in any event: a run reported unenforced when
+// it was in fact bounded is a miss, a run reported enforced on no evidence is the bug.
 type scopeLimits struct {
-	caps map[string]bool
+	caps    map[string]bool
+	sampled bool
 }
 
 // scopeSampleTimeout bounds the wait for the wrapper to land in its scope. systemd-run has
@@ -100,7 +104,7 @@ func readScopeCaps(dir string) scopeLimits {
 			caps[f] = bound
 		}
 	}
-	return scopeLimits{caps: caps}
+	return scopeLimits{caps: caps, sampled: true}
 }
 
 // gone reports whether the process has exited or its cgroup has been reaped out from under
@@ -167,6 +171,12 @@ func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
 		{enforce.LayerLimitsCPU, l.CPU != "", "cpu.max", "cpu"},
 	} {
 		if !c.requested || r.StateOf(c.layer) != enforce.Enforced {
+			continue
+		}
+		if !a.sampled {
+			r.Set(c.layer, enforce.Unavailable, "no scope was found to read for this run, so the "+c.name+
+				" cap the manifest asked for could not be confirmed to have been applied: the pre-run probe answers what this host can enforce, "+
+				"and an unverifiable run is reported unenforced rather than claimed enforced on that answer")
 			continue
 		}
 		if bound, known := a.caps[c.file]; known && !bound {

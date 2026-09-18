@@ -76,18 +76,6 @@ func TestScopeLimitsReconcileAgainstTheScopeTheRunGot(t *testing.T) {
 		}
 	})
 
-	// A target that finishes before the sample lands leaves no scope to read, and that is
-	// not a finding: faulting a completed run for being fast would refuse correct runs,
-	// which is worse than the gap it closes. It is also what a --collect'd scope looks like
-	// a millisecond after the wrapper exits, which is why the caps are read at sampling
-	// time rather than from the path afterwards.
-	t.Run("no scope found", func(t *testing.T) {
-		r := enforced()
-		noteScopeLimits(&r, limits, scopeLimits{})
-		if got := r.StateOf(enforce.LayerLimitsMemory); got != enforce.Enforced {
-			t.Errorf("memory = %v with nothing sampled, want the probe's verdict left alone", got)
-		}
-	})
 }
 
 // --collect removes the transient scope's cgroup about a millisecond after the wrapper
@@ -188,5 +176,32 @@ func TestRunReconcilesTheLimitsLayersItGot(t *testing.T) {
 	}
 	if got := res.Report.StateOf(enforce.LayerLimitsMemory); got != enforce.Unavailable {
 		t.Errorf("LayerLimitsMemory = %v in the run's own report, want unavailable: the scope it got carried no memory cap", got)
+	}
+}
+
+// A reading that sampled no scope at all is not evidence that the caps bound. It is what a
+// manager that never created the scope leaves behind, and it is byte-identical to a run too
+// fast to sample - so the report must not keep the pre-run probe's Enforced over it. That
+// is the forbidden direction of the limits invariant: a limit may read unenforced when it
+// was in fact enforced, never the reverse.
+func TestAnUnsampledScopeDoesNotLeaveTheLimitsEnforced(t *testing.T) {
+	limits := policy.Limits{Memory: "64M", PIDs: 64, CPU: "50%"}
+
+	var r enforce.Report
+	r.Add(enforce.LayerLimitsMemory, enforce.Enforced, "")
+	r.Add(enforce.LayerLimitsPIDs, enforce.Enforced, "")
+	r.Add(enforce.LayerLimitsCPU, enforce.Enforced, "")
+
+	// Exactly what attestScopeLimits returns when it gave up: the wrapper was never seen
+	// in a scope, or it was gone before one existed.
+	noteScopeLimits(&r, limits, scopeLimits{})
+
+	for _, l := range []enforce.Layer{enforce.LayerLimitsMemory, enforce.LayerLimitsPIDs, enforce.LayerLimitsCPU} {
+		if got := r.StateOf(l); got != enforce.Unavailable {
+			t.Errorf("%v = %v over a run whose scope was never sampled, want unavailable: nothing verified the cap, so the report is claiming an enforcement on the probe's word alone", l, got)
+		}
+		if reason := reasonOf(r, l); !strings.Contains(reason, "no scope was found to read") {
+			t.Errorf("%v reason = %q, want it to say the reading attested nothing", l, reason)
+		}
 	}
 }

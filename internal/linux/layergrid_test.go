@@ -132,7 +132,7 @@ func TestEveryLayerIsAnsweredForByTheInRunCorrections(t *testing.T) {
 	limits := seed()
 	before = seed()
 	noteScopeLimits(&limits, policy.Limits{Memory: "128M", PIDs: 32, CPU: "50%"},
-		scopeLimits{caps: map[string]bool{"memory.max": false, "pids.max": false, "cpu.max": false}})
+		scopeLimits{caps: map[string]bool{"memory.max": false, "pids.max": false, "cpu.max": false}, sampled: true})
 	note(before, limits)
 
 	for _, l := range layers {
