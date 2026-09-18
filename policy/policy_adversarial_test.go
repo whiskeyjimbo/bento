@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"math"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -613,4 +614,146 @@ func lenientPortNum(s string) (int, bool) {
 	}
 	n, err := strconv.Atoi(s)
 	return n, err == nil && n <= 65535
+}
+
+func FuzzValidatedRuleMatchesItsOwnWitness(f *testing.F) {
+	f.Add("*", "*", "api.example.com")
+	f.Add(".example.com", "80-90", "api.example.com")
+	f.Add("10.0.0.1", "443", "10.0.0.1")
+	f.Add("::1", "443", "::1")
+	f.Add("API.Example.COM", "443", "api.example.com")
+	f.Add("xn--bcher-kva.example", "1-65535", "xn--bcher-kva.example")
+	// The fold's own trap: U+212A folds onto ASCII 'k' under Unicode rules, so this pair
+	// matches iff normalizeHost ever grows into strings.ToLower.
+	f.Add("kelvin.example", "443", "Kelvin.example")
+	// A doubled trailing dot, which normalizeHost deliberately does not idempotently
+	// strip; the differential has to agree with it there, not with a tidier grammar.
+	f.Add("example.com", "443", "example.com..")
+
+	f.Fuzz(func(t *testing.T, host, port, target string) {
+		r := NetworkRule{Host: host, Port: port}
+		// matchHost's documented precondition (match.go:15-19). It is load-bearing rather
+		// than decorative: without it the apex assertion below fires on pattern ".", which
+		// matchHost reads as a suffix pattern normalizing to "" that suffix-matches
+		// everything. Validate refuses ".", so that is the precondition working.
+		if r.Validate() != nil {
+			return
+		}
+		rules := []NetworkRule{r}
+		np := normalizeHost(host)
+
+		// The load-bearing assertion: matchHost against a restatement of its three-case
+		// grammar AND of its ASCII-only fold, spelled out below rather than delegated, the
+		// way wellFormedRulePort and lenientPortNum restate the two port grammars. The
+		// witness checks further down mostly hold by construction - a witness built from
+		// the rule's own text matches it however the grammar is spelled - so this is the
+		// part that fails when the matcher's meaning drifts.
+		if got, want := matchHost(host, normalizeHost(target)), referenceMatchHost(host, referenceNormalizeHost(target)); got != want {
+			t.Fatalf("matchHost(%q, %q) = %v; the grammar restated says %v", host, target, got, want)
+		}
+
+		// match.go:76-79. Granting ".example.com" must not silently also grant the apex,
+		// and must still grant a subdomain - a suffix rule that matches nothing is the
+		// dead allowlist entry validateHostPattern exists to refuse.
+		if apex, isSuffix := strings.CutPrefix(np, "."); isSuffix {
+			if matchHost(host, normalizeHost(apex)) {
+				t.Fatalf("suffix rule %q reached its own apex %q", host, apex)
+			}
+			if !matchHost(host, normalizeHost("sub"+np)) {
+				t.Fatalf("suffix rule %q refused the subdomain %q it is written to grant", host, "sub"+np)
+			}
+		}
+
+		// match.go:82-88. A v4-mapped target must not reach a v4 rule: the comparison is
+		// textual, and making it IP-aware would widen a rule past what its author wrote.
+		if ip := net.ParseIP(np); ip != nil && ip.To4() != nil {
+			if mapped := "::ffff:" + np; matchHost(host, normalizeHost(mapped)) {
+				t.Fatalf("v4 rule %q was reached by the v4-mapped target %q", host, mapped)
+			}
+		}
+
+		// match.go:51-57. The fold is ASCII-only, so a target carrying a non-ASCII byte
+		// cannot reach a literal ASCII rule. Under strings.ToLower it could: U+212A folds
+		// onto 'k', and the proxy would dial the raw bytes it checked an ASCII name for.
+		if np != "*" && !strings.HasPrefix(np, ".") && isASCII(np) {
+			if nt := normalizeHost(target); !isASCII(nt) && matchHost(host, nt) {
+				t.Fatalf("literal ASCII rule %q was reached by the non-ASCII target %q", host, nt)
+			}
+		}
+
+		// Non-vacuity: the target the rule is written to authorize must be admitted. A rule
+		// that validates and authorizes nothing is the dead allowlist entry both files'
+		// comments say they are avoiding.
+		witnessHost := np
+		switch {
+		case np == "*":
+			witnessHost = "witness.example"
+		case strings.HasPrefix(np, "."):
+			witnessHost = "sub" + np
+		}
+		lo, hi, isRange := strings.Cut(port, "-")
+		witnessPorts := []string{port}
+		if port == "*" {
+			witnessPorts = []string{"443"}
+		} else if isRange {
+			// Both bounds, not just one: an inclusive bound read as exclusive is a rule
+			// that silently stops authorizing its own endpoint.
+			witnessPorts = []string{lo, hi}
+		}
+		for _, wp := range witnessPorts {
+			if !Allows(rules, witnessHost, wp) {
+				t.Fatalf("rule %+v validated but refuses %q:%q, the target it is written to authorize", r, witnessHost, wp)
+			}
+		}
+		if isRange && port != "*" {
+			l, _ := canonicalPortNum(lo)
+			h, _ := canonicalPortNum(hi)
+			// Skipped at the domain edges, where the neighbour is not a port at all and
+			// atoiPort would refuse it for a reason the range branch did not decide.
+			if l > 1 && Allows(rules, witnessHost, strconv.Itoa(l-1)) {
+				t.Fatalf("range %q admitted %d, below its low bound", port, l-1)
+			}
+			if h < 65535 && Allows(rules, witnessHost, strconv.Itoa(h+1)) {
+				t.Fatalf("range %q admitted %d, above its high bound", port, h+1)
+			}
+		}
+	})
+}
+
+// referenceMatchHost restates matchHost's three-case grammar, and referenceNormalizeHost
+// its fold, so the differential measures the matcher against the grammar its comments
+// state rather than against itself. It takes a host already normalized by its own
+// normalizer, because Allows normalizes exactly once and normalizeHost is deliberately
+// not idempotent on a doubled trailing dot (internal/proxy/proxy.go:1088).
+func referenceMatchHost(pattern, normalizedHost string) bool {
+	p := referenceNormalizeHost(pattern)
+	switch {
+	case p == "*":
+		return true
+	case strings.HasPrefix(p, "."):
+		return strings.HasSuffix(normalizedHost, p)
+	default:
+		return p == normalizedHost
+	}
+}
+
+// referenceNormalizeHost folds A-Z per byte and drops one trailing root dot. Per byte and
+// not per rune: a fold that reaches beyond ASCII is the hole normalizeHost's comment names.
+func referenceNormalizeHost(host string) string {
+	b := []byte(host)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return strings.TrimSuffix(string(b), ".")
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 0x7f {
+			return false
+		}
+	}
+	return true
 }
