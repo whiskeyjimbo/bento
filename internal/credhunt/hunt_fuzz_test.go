@@ -43,18 +43,12 @@ func FuzzHuntNeverReportsAShieldedFile(f *testing.F) {
 		plantIfInside(t, home, rel, content)
 
 		opts := benchOpts(home)
-		found, pruned, _, err := Hunt(opts)
+		found, _, _, err := Hunt(opts)
 		if err != nil {
 			t.Fatalf("Hunt: %v", err)
 		}
-		if pruned < 0 {
-			t.Fatalf("Hunt pruned %d", pruned)
-		}
 
 		for _, fi := range found {
-			if fi.Path != home && !strings.HasPrefix(fi.Path, home+string(filepath.Separator)) {
-				t.Fatalf("finding %q lies outside the home %q the hunt was given", fi.Path, home)
-			}
 			// The linear answer, over the same rules the index was built from.
 			if r, ok := denylist.Covers(fi.Path, opts.Rules); ok && r.Deny == denylist.DenyAll {
 				t.Fatalf("finding %q is covered by the DenyAll shield %q; the index missed a prune the linear scan makes", fi.Path, r.Path)

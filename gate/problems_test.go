@@ -345,6 +345,8 @@ func FuzzShieldedGrantProblemsNameARealShield(f *testing.F) {
 	f.Add(".SSH/id_rsa")
 	f.Add(".ssh/")
 	f.Add(".ssh/./id_rsa")
+	// Under a top-level FILE shield, which is where the two containment definitions part.
+	f.Add(".netrc/x")
 	f.Add("\x00.ssh")
 
 	f.Fuzz(func(t *testing.T, rel string) {
@@ -374,11 +376,18 @@ func FuzzShieldedGrantProblemsNameARealShield(f *testing.F) {
 	})
 }
 
-// insideAnyShield and aboveAnyShield restate shield containment: a rule covers its own path,
-// and everything under it when it names a directory. Compared case-insensitively so the
-// assertion stays sound on a case-folding filesystem, where Contains reaches a shield the
-// grant does not spell exactly - the direction that would otherwise read as an invented
-// refusal.
+// insideAnyShield and aboveAnyShield restate the containment the GATE is measured against,
+// which is shield.Set.covers: a rule covers its own path and everything under it, whatever
+// the rule's Dir says. Deliberately not denylist.Covers, which does honor Dir - the two
+// genuinely differ on a grant under a top-level FILE shield (~/.netrc/x), and there the gate
+// and the run's checkNotShielded both refuse, so measuring the gate against the Dir-honoring
+// one would call a refusal the run makes an invented one.
+//
+// Compared case-insensitively so a shield Contains reaches through a fold still counts as
+// named. That is not enough on a case-folding filesystem, where a grant ABOVE a DenyAll
+// shield earns FoldedShield under shield.Read (internal/shield/verdict.go:122) and this
+// reports it as covered by no DenyAll shield at all; on Linux no verdict reaches there, and
+// the honest statement is that this oracle is written for a case-sensitive one.
 func insideAnyShield(shields []shield.Applied, landed string, deny denylist.Deny) bool {
 	for _, s := range shields {
 		if s.Rule.Deny != deny {
@@ -388,7 +397,7 @@ func insideAnyShield(shields []shield.Applied, landed string, deny denylist.Deny
 			if root == "" {
 				continue
 			}
-			if strings.EqualFold(landed, root) || (s.Rule.Dir && hasFoldedPrefix(landed, root+"/")) {
+			if strings.EqualFold(landed, root) || hasFoldedPrefix(landed, root+"/") {
 				return true
 			}
 		}

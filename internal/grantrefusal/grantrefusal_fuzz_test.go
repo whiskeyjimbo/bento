@@ -26,15 +26,17 @@ func FuzzRefusalsAreTerminalSafe(f *testing.F) {
 	f.Fuzz(func(t *testing.T, grant, shield, dir string) {
 		// The wrapped error is deliberately control-free: WriteUnstattable renders the
 		// host's own *fs.PathError verbatim through %w, which quotes nothing, so what this
-		// can assert is the constructor's own contribution. The grant reaching that stat has
-		// already been screened for unsafe runes by policy.Validate, which is where that
-		// half of the property is pinned.
+		// can assert is the constructor's own contribution. Not the whole sentence, and the
+		// gap is not the grant - policy.FirstUnsafeRune screens control runes out of that -
+		// but the path the PathError names, which is the symlink-RESOLVED one both call
+		// sites stat (gate.go:236, internal/linux/linux.go:731). Its components are host
+		// symlink targets no manifest screen ever saw.
 		stat := errors.New("permission denied")
 		// The one argument held out of the fuzz. GrantIsManagedMount renders its mount
 		// through %s, twice, which quotes nothing - and that is not a hole because the
-		// mount is never a path off a manifest: both call sites pass a member of
-		// denylist.ManagedMounts, a literal set of five. Fuzzing it would assert a property
-		// the sentence does not claim and flag a defect nothing can reach.
+		// mount is never a path off a manifest: both call sites iterate
+		// denylist.ManagedMounts, five literals in a package-level var. Fuzzing it would
+		// assert a property the sentence does not claim and flag a defect nothing can reach.
 		const mount = "/tmp"
 		for _, err := range []error{
 			WriteIsFile(grant),

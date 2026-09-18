@@ -675,9 +675,12 @@ func FuzzValidatedRuleMatchesItsOwnWitness(f *testing.F) {
 		// match.go:51-57. The fold is ASCII-only, so a target carrying a non-ASCII byte
 		// cannot reach a literal ASCII rule. Under strings.ToLower it could: U+212A folds
 		// onto 'k', and the proxy would dial the raw bytes it checked an ASCII name for.
-		if np != "*" && !strings.HasPrefix(np, ".") && isASCII(np) {
-			if nt := normalizeHost(target); !isASCII(nt) && matchHost(host, nt) {
-				t.Fatalf("literal ASCII rule %q was reached by the non-ASCII target %q", host, nt)
+		// Asked of the RAW target, not of what normalizeHost returned: under
+		// strings.ToLower the fold is what turns U+212A into ASCII, so a check gated on
+		// the normalized form being non-ASCII would be skipped by the very drift it names.
+		if np != "*" && !strings.HasPrefix(np, ".") && isASCII(np) && !isASCII(target) {
+			if matchHost(host, normalizeHost(target)) {
+				t.Fatalf("literal ASCII rule %q was reached by the non-ASCII target %q", host, target)
 			}
 		}
 
@@ -739,6 +742,9 @@ func referenceMatchHost(pattern, normalizedHost string) bool {
 
 // referenceNormalizeHost folds A-Z per byte and drops one trailing root dot. Per byte and
 // not per rune: a fold that reaches beyond ASCII is the hole normalizeHost's comment names.
+// A second spelling of the same three lines rather than an independent algorithm, because
+// there is no other way to write them - what it buys is that a change to normalizeHost has
+// to be made twice, which is what the differential catches.
 func referenceNormalizeHost(host string) string {
 	b := []byte(host)
 	for i := range b {
