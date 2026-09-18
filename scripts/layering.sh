@@ -125,7 +125,17 @@ cmd/bento'
 # about the test, so a production rule in the same package must still fail here.
 fixture_files='gate/problems_test.go'
 
-found=$(grep -rEln --include='*.go' "$assemblers" . | while read -r f; do
+# git's tracked set rather than a filesystem walk: an agent worktree under .claude/worktrees
+# is a whole second copy of the tree, and walking it reports every package in it as a new
+# assembly site. The go list pass above is already immune - a worktree carries its own
+# go.mod, so ./... does not descend into it.
+#
+# --cached, not --others --exclude-standard: the latter would also catch a new file before
+# it is staged, but it would rely on .claude/ being ignored, and that lives in
+# .git/info/exclude rather than in the committed .gitignore - so it holds in this clone and
+# not in a fresh one. The cost is that an unstaged new assembly site passes here; it cannot
+# merge without being staged, and CI runs this over a clone where everything is tracked.
+found=$(git ls-files -z -- '*.go' | xargs -0 -r grep -lE "$assemblers" | while read -r f; do
 	f=${f#./}
 	if echo "$fixture_files" | grep -qxF "$f"; then
 		continue
