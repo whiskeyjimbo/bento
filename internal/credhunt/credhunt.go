@@ -426,13 +426,44 @@ func tokenAssignment(line string) bool {
 
 // isCheckout reports whether dir is the root of a version-controlled working tree. Only
 // the root is tested, because pruning there prunes the whole tree beneath it.
+//
+// The marker's content is checked, not just its name. A prune hides a whole subtree from
+// every future scan, and creating a name in a directory is far less capability than
+// reading what is under it - so trusting the name alone lets anyone who can write into a
+// home hide the rest of it behind an empty file called .git. A .git FILE is still
+// legitimate, though: that is how git spells a worktree or a submodule, and it carries a
+// "gitdir:" line. .hg and .svn have no file form, so for those only a directory counts.
 func isCheckout(dir string) bool {
 	for _, marker := range []string{".git", ".hg", ".svn"} {
-		if _, err := os.Lstat(filepath.Join(dir, marker)); err == nil {
+		info, err := os.Lstat(filepath.Join(dir, marker))
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			return true
+		}
+		if marker == ".git" && info.Mode().IsRegular() && hasGitdirLine(filepath.Join(dir, marker)) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasGitdirLine reports whether path begins with git's worktree/submodule pointer. The
+// read is a fixed few bytes: the prefix is all that decides, and the file is attacker-
+// writable by construction - the whole reason isCheckout stopped trusting the name.
+func hasGitdirLine(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	const gitdir = "gitdir: "
+	head := make([]byte, len(gitdir))
+	if _, err := io.ReadFull(f, head); err != nil {
+		return false
+	}
+	return string(head) == gitdir
 }
 
 // numberedBackup reports whether name ends in emacs' numbered-backup form, "~<n>~".

@@ -483,3 +483,29 @@ func TestAMachineStoreEqualToTheScanRootIsNotPruned(t *testing.T) {
 		t.Errorf("pruned = %v, want none; the scan root is never a prune", pruned)
 	}
 }
+
+// The prune has to read the marker, not just find the name. Creating a name in a
+// directory is less capability than reading what is under it, so an empty file called
+// .git would let anyone who can write into a home hide the rest of it from every future
+// scan. A .git FILE is still a real checkout when it carries git's "gitdir:" pointer -
+// that is how a worktree and a submodule are spelled - and pruning those is what the
+// prune is for, so both directions are pinned here.
+func TestIsCheckoutReadsTheMarkerRatherThanTrustingItsName(t *testing.T) {
+	home := t.TempDir()
+	planted := plant(t, home, "work/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	if err := os.WriteFile(filepath.Join(home, "work", ".git"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hidden := plant(t, home, "tree/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	if err := os.WriteFile(filepath.Join(home, "tree", ".git"), []byte("gitdir: ../.git/worktrees/tree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := paths(hunt(t, home))
+	if !slices.Contains(got, planted) {
+		t.Errorf("an empty file named .git hid %s from the scan; the marker's content must decide, not its name. got %v", planted, got)
+	}
+	if slices.Contains(got, hidden) {
+		t.Errorf("%s sits in a real git worktree, which spells its marker as a gitdir: file, and must still be pruned; got %v", hidden, got)
+	}
+}
