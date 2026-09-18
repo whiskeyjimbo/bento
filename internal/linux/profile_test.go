@@ -558,3 +558,61 @@ func TestRecordedEgressKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 		}
 	}
 }
+
+// The prerequisite gate above refuses a host whose manager does not delegate the requested
+// controllers, but it reads that from a probe memoized for the process lifetime - and
+// systemd accepts a property for an undelegated controller and silently does not apply it.
+// A long-lived embedder whose manager changed delegation after the first probe therefore
+// passes its own gate on a stale fact. Only the scope the run was actually placed in
+// answers for the run, so profiling samples it like both run tiers do, and refuses the
+// observation rather than vouching for a manifest built from an unbounded run.
+func TestProfileRefusesAnObservationItsScopeCannotAttest(t *testing.T) {
+	requireSandbox(t)
+	if ok, reason := canCreateScope(t.Context()); !ok {
+		t.Skip("no usable systemd user scope: " + reason)
+	}
+
+	profileWith := func(t *testing.T, attest func(int) scopeLimits) error {
+		t.Helper()
+		orig := attestScopeLimits
+		attestScopeLimits = attest
+		t.Cleanup(func() { attestScopeLimits = orig })
+
+		p := &policy.Policy{
+			Entrypoint: "/bin/true",
+			Exec:       policy.ExecNone,
+			Limits:     policy.Limits{Memory: "256M"},
+		}
+		_, err := sandboxEnforcer(t).Profile(context.Background(), p, enforce.Process{}, false, nil, nil)
+		return err
+	}
+
+	// The positive control, and the thing that makes the refusal below mean anything: a
+	// scope carrying the cap profiles normally. It is what fails if the run never samples
+	// its scope at all, because an unsampled reading attests nothing and refuses too.
+	t.Run("a scope carrying the cap", func(t *testing.T) {
+		err := profileWith(t, func(int) scopeLimits {
+			return readScopeCaps(fakeScope(t, map[string]string{"memory.max": "268435456\n"}))
+		})
+		if err != nil {
+			t.Fatalf("profiling refused a run whose scope carried the memory cap: %v - the scope is not being sampled, so every limited profiling run now refuses", err)
+		}
+	})
+
+	// The shape the prerequisite gate cannot see: the gate reads a probe memoized for the
+	// process lifetime, and systemd accepts a property for an undelegated controller and
+	// silently does not apply it. The scope exists and carries a pids cap, but not the
+	// memory cap the manifest asked for, so the untrusted target ran unbounded and the
+	// observation must not be vouched for.
+	t.Run("a scope missing the cap", func(t *testing.T) {
+		err := profileWith(t, func(int) scopeLimits {
+			return readScopeCaps(fakeScope(t, map[string]string{"pids.max": "64\n"}))
+		})
+		if err == nil {
+			t.Fatal("profiling vouched for an observation whose scope carried no memory cap: the untrusted target ran unbounded and the manifest is built from it anyway")
+		}
+		if !strings.Contains(err.Error(), "cannot be shown to have carried the requested memory limit") {
+			t.Fatalf("err = %v, want the refusal to name the limit the scope could not be shown to carry", err)
+		}
+	})
+}

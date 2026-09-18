@@ -176,10 +176,12 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// target's exit code, as Run does. Env is nil for the same reason Run passes nil:
 	// the profiling command inherits bento's environment.
 	exe, cargs := bwrap, args
+	scoped := false
 	if !p.Limits.IsZero() {
 		if err := preflightLimits(ctx, p.Limits, nil); err != nil {
 			return profile.Observation{}, fmt.Errorf("linux: %w", err)
 		}
+		scoped = true
 		// Unnamed: profiling is an operator watching one run to learn what it touches,
 		// not a job a supervisor reaps, and there is no run id on this path to name it with.
 		exe, cargs = wrapWithLimits(bwrap, args, p.Limits, "")
@@ -196,8 +198,28 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// trustworthy only to the degree the profiled code is (see the launcher's
 	// runObserve).
 	cmd.ExtraFiles = []*os.File{report}
-	if err := cmd.Run(); err != nil && !isExitError(err) {
+	// The gate above refuses a host the pre-run probe says cannot enforce these limits, but
+	// that reading is memoized for the process lifetime and systemd accepts a property for
+	// an undelegated controller without applying it - so the gate alone can pass on a fact
+	// that was true at probe time and is not now. Reading the scope this run was actually
+	// placed in is the only thing that answers for the run itself; it has to happen while
+	// the target is alive, as it does on both run tiers.
+	var attested scopeLimits
+	if err := runCmd(cmd, func(pid int) {
+		if scoped {
+			attested = attestScopeLimits(pid)
+		}
+	}); err != nil && !isExitError(err) {
 		return profile.Observation{}, fmt.Errorf("linux: profiling run: %w", err)
+	}
+
+	// Refused rather than reported: profiling has no Report to carry a shortfall, which is
+	// why the prerequisite gate above is its own refusal in the first place. The target has
+	// already run by now, so this does not prevent the unbounded run - it prevents a
+	// manifest being synthesized from one, which is the part still worth stopping.
+	if missing := unattestedScopeCaps(p.Limits, attested); len(missing) > 0 {
+		return profile.Observation{}, fmt.Errorf("the scope this profiling run was given cannot be shown to have carried the requested %s limit(s), so the untrusted target may have run unbounded and this observation must not be vouched for: systemd accepts a property for a controller it does not delegate and silently does not apply it, which is what the pre-run check cannot see once its reading has gone stale",
+			strings.Join(missing, ", "))
 	}
 
 	obs, err := parseObservations(report)

@@ -156,21 +156,27 @@ func cgroupPathOf(pid string) (string, bool) {
 	return "", false
 }
 
+// limitControllers pairs each limits layer with the cgroup file that carries its cap and
+// the manifest field that asks for it. Shared by the two readers of an attestation - the
+// report reconcile and profiling's refusal - so the two cannot drift on which controller
+// answers for which layer.
+var limitControllers = []struct {
+	layer     enforce.Layer
+	requested func(policy.Limits) bool
+	file      string
+	name      string
+}{
+	{enforce.LayerLimitsMemory, func(l policy.Limits) bool { return l.Memory != "" }, "memory.max", "memory"},
+	{enforce.LayerLimitsPIDs, func(l policy.Limits) bool { return l.PIDs > 0 }, "pids.max", "pids"},
+	{enforce.LayerLimitsCPU, func(l policy.Limits) bool { return l.CPU != "" }, "cpu.max", "cpu"},
+}
+
 // noteScopeLimits reconciles the limits layers against what the scope's cgroup actually
 // carries. It only ever WORSENS a layer, like the applied report's own reconcile: the
 // probe answers what this host can enforce, and this answers what this run got.
 func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
-	for _, c := range []struct {
-		layer     enforce.Layer
-		requested bool
-		file      string
-		name      string
-	}{
-		{enforce.LayerLimitsMemory, l.Memory != "", "memory.max", "memory"},
-		{enforce.LayerLimitsPIDs, l.PIDs > 0, "pids.max", "pids"},
-		{enforce.LayerLimitsCPU, l.CPU != "", "cpu.max", "cpu"},
-	} {
-		if !c.requested || r.StateOf(c.layer) != enforce.Enforced {
+	for _, c := range limitControllers {
+		if !c.requested(l) || r.StateOf(c.layer) != enforce.Enforced {
 			continue
 		}
 		if !a.sampled {
@@ -185,6 +191,23 @@ func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
 				c.name+" controller does, so the target ran unbounded rather than under the limit the manifest asked for")
 		}
 	}
+}
+
+// unattestedScopeCaps names the requested limits the scope this run was given cannot be
+// shown to have carried - the controller file said nothing bound, or no scope was found to
+// read at all. It is noteScopeLimits' question for a caller with no Report to worsen:
+// profiling produces none, so its only way to say the target ran unbounded is to refuse.
+func unattestedScopeCaps(l policy.Limits, a scopeLimits) []string {
+	var out []string
+	for _, c := range limitControllers {
+		if !c.requested(l) {
+			continue
+		}
+		if bound, known := a.caps[c.file]; !a.sampled || (known && !bound) {
+			out = append(out, c.name)
+		}
+	}
+	return out
 }
 
 // controllerBound reports whether a scope's controller file names a cap, and whether the
