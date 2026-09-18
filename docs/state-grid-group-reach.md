@@ -61,7 +61,7 @@ surface for trust flaws. `Flaws()` / `LocationFlaws()` have exactly three caller
 
 | Cell | Verdict | Evidence |
 |---|---|---|
-| **Unknown x S1** (reach returns Unknown) | **WRONG** | `trust/accounts.go:43-46` - the early return on a gid `/etc/group` does not name discards `db.primary[gid]`, which the loop at `:60-64` would have read as proof. Finding 1. |
+| **Unknown x S1** (reach returns Unknown) | **WRONG**, fixed in e054f63 | `trust/accounts.go:43-46` - the early return on a gid `/etc/group` does not name discards `db.primary[gid]`, which the loop at `:60-64` would have read as proof. Finding 1. The line numbers here are the ones before the fix. |
 | Private x S1 | HANDLED | `trust/accounts.go:68` - reached only after both loops found nobody and nothing was unresolved. |
 | Shared x S1 | HANDLED | `trust/accounts.go:57,62` - a resolvable non-owner non-root member in either shape returns immediately. |
 | **Unknown x S2** (no lookup performed) | HANDLED | `trust/trust.go:77` - the lookup is skipped only when `0o020` is clear, so `sharedWrite` has no group bit to decide about. Spike 7. |
@@ -76,7 +76,7 @@ surface for trust flaws. `Flaws()` / `LocationFlaws()` have exactly three caller
 | **Unknown x S5** | HANDLED | `trust/trust.go:387` - `groupShared` is required for the fatal promotion, so Unknown stays advisory. **This is HANDLED, not a mislabelled WRONG.** The invariant forbids Unknown presenting *as private*, and Spike 3 proves it does not: private is silent, Unknown is advisory, Shared is fatal. What Unknown falls short of is *ground truth*, not `groupPrivate` - and on every host where Unknown arises (LDAP or sss in `nsswitch.conf`, a compat `+` entry, unreadable files) it arises for *every* path, so promoting it to fatal would break `approve` everywhere on that host. That is the argument at `trust/trust.go:368-375`, and it is the design decision, not a gap. Spike 3. |
 | Private x S5 | HANDLED | never reaches the switch - `sharedWrite` at `:92` already cleared the bit, so the `if shared != 0` at `:366` is false and no flaw is emitted. Spike 3. |
 | Shared x S5 | HANDLED | `trust/trust.go:387-397` - fatal, with its own reason naming the proof and a hint that switches on ownership. |
-| **Unknown x S6** | HANDLED | `cmd/bento/trustwarn.go:34` prints the generic `is group-writable` line; `approve.go:403` does not refuse. Distinguishable from both siblings. Spike 3. |
+| **Unknown x S6** | HANDLED | `cmd/bento/trustwarn.go:34` prints the generic `is group-writable` line; `approve.go:403` does not refuse. Distinguishable from both siblings. Spike 3. Since 50fee8d and 7327d57 the line is no longer the generic one - it names the unanswered question. |
 | Private x S6 | HANDLED | nothing printed, nothing refused - correct, since the grant reaches a set of one. Spike 3. |
 | Shared x S6 | HANDLED | `approve.go:403-407` refuses with the `holds other users` reason. Spike 3. |
 
@@ -88,7 +88,8 @@ Three HANDLED cells were re-examined adversarially and stand:
   unknown one is advisory. That is the right way round, but it means the rendering carries
   no "we could not check the group" line anywhere - unlike `located`, which has
   `ErrLocationUnknown` and an explicit fatal flaw (`trust/trust.go:148-152, 295-300`). See
-  Finding 2.
+  Finding 2, fixed in 50fee8d and 7327d57: the unknown line now names the unanswered
+  question, though the private one is still silent, which is the right way round.
 - **Private x S4/S5 under a foreign owner.** `withGroup` keys the lookup on the file's owner,
   not the observer (`trust/trust.go:78`). A directory owned by someone else whose group holds
   only them reads private, so no group flaw - but `foreignOwner` (`:401`) is fatal on its own.
@@ -116,7 +117,7 @@ verdicts are correct today.
 
 ## Phase 3 - findings, forbidden direction first
 
-### Finding 1 - `reach` discards the proof of sharing that `/etc/passwd` holds when `/etc/group` does not name the gid. `trust/accounts.go:43-46`. **VERIFIED BY SPIKE**
+### Finding 1 - `reach` discards the proof of sharing that `/etc/passwd` holds when `/etc/group` does not name the gid. `trust/accounts.go:43-46`. **VERIFIED BY SPIKE**. Fixed in e054f63 (bv2-2duoj); line numbers below are the pre-fix ones
 
 ```go
 members, named := db.members[gid]
@@ -179,7 +180,7 @@ This host has neither (`comm -23` of passwd gids against group gids is empty). O
 shapes: a container image with a trimmed `/etc/group`, a `groupdel` while users still
 reference the gid, and NFS/LDAP-exported gid maps written into a local passwd.
 
-### Finding 2 - `groupUnknown` has no user-visible label, unlike its sibling `located`. `trust/trust.go:376-398`, `cmd/bento/trustwarn.go:34`. Severity: low. **VERIFIED BY SPIKE** (that the states are distinguishable) + **BY READING** (that they are unlabelled)
+### Finding 2 - `groupUnknown` has no user-visible label, unlike its sibling `located`. `trust/trust.go:376-398`, `cmd/bento/trustwarn.go:34`. Severity: low. **VERIFIED BY SPIKE** (that the states are distinguishable) + **BY READING** (that they are unlabelled). Fixed in 50fee8d and 7327d57 (bv2-5c02s): the `groupUnknown` arm of `dirFlaws` rewords the same non-fatal flaw to say the question could not be established. Line numbers below are the pre-fix ones
 
 The package makes the same empty-because-unasked distinction twice. For location it is
 explicit to the user: `ErrLocationUnknown` produces a dedicated fatal flaw that says the
@@ -274,7 +275,7 @@ Only the S6 row was read against a stale tree.
 | Cell | Verdict | Evidence |
 |---|---|---|
 | Private x S6 | HANDLED | `stamp_at_risk` / `location_flaws` are `omitempty` and `sharedWrite` emitted no flaw, so the key is absent - the same answer as "nothing wrong", which is correct here because a set-of-one grant *is* nothing wrong. |
-| Unknown x S6 | HANDLED | one `flawJSON` entry, generic `is group-writable` reason plus the `chmod g-w` hint. Present, so a consumer sees it. |
+| Unknown x S6 | HANDLED | one `flawJSON` entry, generic `is group-writable` reason plus the `chmod g-w` hint. Present, so a consumer sees it. Since 50fee8d and 7327d57 the reason also names the unanswered question. |
 | Shared x S6 | **HANDLED, with a carried-column gap** | one `flawJSON` entry whose reason names the proof (`and its group holds other users`). But `flawJSON` has only `reason` and `hint` - **`Fatal` is dropped**. See section 2. |
 
 The three reach values remain distinguishable in JSON, but only by free-text `reason`, not
@@ -328,7 +329,8 @@ reason, not a silent drop.
 
 ```
 stamp_at_risk = [
- {"reason":"/w, ... is group-writable (0775), so anyone there can replace the manifest",
+ {"reason":"/w, ... is group-writable (0775) and whether its group holds other users cannot
+   be established, so anyone there may be able to replace the manifest",
   "hint":"chmod g-w /w narrows it"},
  {"reason":"/w, ... is group-writable (0775) and its group holds other users, so they can
    replace the manifest","hint":"chmod g-w /w narrows it"}
