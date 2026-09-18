@@ -29,9 +29,10 @@ const (
 // that as shared warns about a reader nobody can be.
 //
 // Proof either way, never absence of evidence: a gid the database does not name, a member
-// it names but cannot resolve, or files it cannot read all answer groupUnknown. Root is not
-// counted, for the reason foreignOwner does not count it - it can write anywhere regardless,
-// so its membership describes no widening.
+// it names but cannot resolve, or files it cannot read all answer groupUnknown - unless
+// passwd holds the gid as somebody else's login group, which proves sharing on its own.
+// Root is not counted, for the reason foreignOwner does not count it - it can write
+// anywhere regardless, so its membership describes no widening.
 func groupReachOf(gid, uid uint32) groupReach {
 	return accountDB().reach(gid, uid)
 }
@@ -40,14 +41,13 @@ func (db *accounts) reach(gid, uid uint32) groupReach {
 	if db == nil {
 		return groupUnknown
 	}
-	members, named := db.members[gid]
-	if !named {
-		return groupUnknown
-	}
 	// A resolvable other member is proof and ends it; an unresolvable name only withholds
 	// proof, so the scan finishes before settling for that - a group naming both holds
-	// somebody whatever the one it could not resolve turns out to be.
-	unresolved := false
+	// somebody whatever the one it could not resolve turns out to be. A gid /etc/group
+	// does not name is the same kind of withholding and not an answer: passwd may still
+	// hold it as somebody's login group, which proves sharing on its own.
+	members, named := db.members[gid]
+	unresolved := !named
 	for _, name := range members {
 		member, known := db.uidByName[name]
 		switch {

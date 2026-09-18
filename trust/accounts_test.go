@@ -14,12 +14,20 @@ jrose:x:1000:
 shared:x:1200:
 wheel:x:1300:ghost
 mixed:x:1400:ghost,peer
+trunc:x:2100
+bad:x:2200x:
 `
 	const passwd = `root:x:0:0::/root:/bin/sh
 syslog:x:104:110::/nonexistent:/usr/sbin/nologin
 alloy:x:105:112::/nonexistent:/usr/sbin/nologin
 jrose:x:1000:1000::/home/jrose:/bin/zsh
 peer:x:1001:1200::/home/peer:/bin/zsh
+ann:x:2001:2000::/home/ann:/bin/zsh
+bob:x:2002:2000::/home/bob:/bin/zsh
+cara:x:2101:2100::/home/cara:/bin/zsh
+dave:x:2102:2100::/home/dave:/bin/zsh
+erin:x:2201:2200::/home/erin:/bin/zsh
+finn:x:2202:2200::/home/finn:/bin/zsh
 `
 	db := parseAccounts(group, passwd)
 	const me = 1000
@@ -34,7 +42,14 @@ peer:x:1001:1200::/home/peer:/bin/zsh
 		"a member passwd cannot resolve is not proof":         {1300, groupUnknown},
 		"a resolvable other member outweighs one that is not": {1400, groupShared},
 		"a gid the database does not name is not proof":       {4242, groupUnknown},
-		"root can write anywhere, so its group is ours":       {0, groupPrivate},
+		// The three ways /etc/group can fail to name a gid that passwd still proves is
+		// shared: no line at all, a line short of the member field, and one whose gid is
+		// not a number. Separate rows because they enter the parser by different arms; the
+		// malformed shapes are the likelier ones on a hand-edited or trimmed file.
+		"a gid only passwd names, held by others, is shared": {2000, groupShared},
+		"a truncated group line still leaves passwd's proof": {2100, groupShared},
+		"a group line with a non-numeric gid leaves it too":  {2200, groupShared},
+		"root can write anywhere, so its group is ours":      {0, groupPrivate},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := db.reach(tc.gid, me); got != tc.want {
