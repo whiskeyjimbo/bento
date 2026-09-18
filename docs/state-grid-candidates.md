@@ -336,3 +336,70 @@ Declined this sweep, with reasons:
 - The frontends (validate, approve, doctor, render, manifest, clamp, gate, shield verdicts,
   landlock ABI, exec record, trust flaws, output parity, platform stubs, result arms): all
   gridded in rounds one through five. Re-grid only on a specific reason, not on a sweep.
+
+## Seventh outcome, 2026-09-18
+
+Rows 35, 36 and 37 were gridded: `state-grid-report-corrections.md` (29 cells across two
+grids), `state-grid-during-run.md` (23), `state-grid-new-mechanisms.md` (20 substantive
+verdicts). Row 38 was not a grid and was settled as a decision: `denylist-holds-decision.md`.
+Every cell in all three grids got a verdict; no reviewer returned an unwalked cell. All four
+reviewers confirmed working from 09ddde4 before reading source - the step-zero fix for the
+stale-base problem the sixth round hit, and it held.
+
+Filed: bv2-2duoj-era beads aside, this round filed the reconcile upgrade (P1), the Enforcer
+memoization doc, the Result.Residue channel, the fuzz-oracle fix, the report-only overlay,
+the worsenNetwork coupling gap, the capability-disclosure coupling test, the tier-differential
+flag drift, the TMPDIR run directory, and for row 38 the ExpandLinks split (P1), the 107-store
+coverage widening, and the HoldsByCode collapse. Appended rather than filed: bv2-76tn4,
+bv2-ntncf, bv2-2dpgj, bv2-0hy3m, bv2-dhj3o, bv2-ciz11, bv2-dnda5.
+
+**The headline finding.** `internal/linux/applied.go:507` upgrades an Unavailable filesystem
+layer to Degraded, claiming bubblewrap's mount namespace confines a run whose own probe said
+nothing could. Its exec-strict twin twelve lines above states the exact rule it breaks
+("writing Degraded there would UPGRADE the layer and attest a partial guarantee this host has
+none of"), `degradedProbe` guards the same way, and 930d8fc fixed the exec-strict cell of that
+row and stopped. It refutes a recorded decision: `state-grid-layer-consumers.md` dismissed
+that exact site VERIFIED BY READING, resting on an unstated premise - the Enforcer doc's claim
+that host probes are memoized per process, which is false for the namespace probe. Spiked end
+to end on real Probe output, so LIVE rather than latent behind admission.
+
+**Row 38's answer beat its question.** The bead asked about `HoldsUnknown`; that value turned
+out unreachable on any expansion-eligible rule, proved both directions. The live issue is that
+107 stores never expand symlinks, 25 of them under `~/.config` where stow and chezmoi symlink
+the tree wholesale, including stores whose own comments name private keys. One undecided P1 had
+blocked review of the repo's churniest package for a month; option (b) unblocks it with a
+statable invariant.
+
+What the reviewers corrected in themselves, recorded because it is the technique working:
+- The new-mechanisms reviewer declined this file's own fit caveat with a better argument:
+  the churn rule targets logic being rewritten, but omissions at the seams of a just-landed
+  mechanism "don't rot with age, they calcify" - waiting only widens the window in which the
+  asymmetry reads as intentional.
+- The corrections reviewer superseded its own fuzz handoff. A widened seed does not catch the
+  bug; the oracle compares corrupted-vs-intact from the SAME baseline and never against the
+  baseline it started from, which is what the invariant actually says.
+- The same reviewer found it had over-collapsed a cell, verdicting `warnResidue`'s contract
+  instead of its call sites - which were already two filed beads. Its words: "my grid should
+  have found them and did not."
+- The during-run reviewer's spike corrected its own severity: `buildExtraDeny` forces
+  `dir := true`, so the sibling arm is disclosure-only, not capturable. Right about the
+  mechanism, wrong about what it produces, because `r.Dir` is decided one file away.
+
+Not filed, with reasons:
+- bv2-dnda5 narrowed by two grids independently to a known cost rather than a defect: on Run an
+  unsampled reading only worsens and refuses nothing, because admission runs before the run and
+  nothing re-admits on the post-run report. Only Profile refuses, having no Report to worsen.
+- The runtime tmpfs asymmetry (/tmp, /dev/shm reported nothing while a shield tmpfs reports
+  `discarded`): both are outside every checkout and die with the mount namespace, so it is
+  under-disclosure of a non-capturable artifact - the tolerated direction.
+- `canUnshare`'s internal 5s bound firing independently: no seam exists, and the finding that
+  needed it no longer rests on it.
+- The two `removeCreatedShields` orderings and the descriptor-holder residual: orderings, routed
+  to `concurrency-audit`.
+- The target reading bento's run directory under a write-granted `$TMPDIR`: capability, routed
+  to `threat-model`. Only the disclosure half was verdicted.
+
+Carried for an eighth sweep: `internal/denylist` becomes gridable once bv2-5y7c0 lands - the
+invariant is "expansion is a function of one declared field and nothing else". bv2-3mxlo implies
+a second invariant over the probe's Consequences string (a restriction the tier DOES apply,
+refusing with no explanation) that is a grid of its own and was not walked.
