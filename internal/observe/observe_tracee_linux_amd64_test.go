@@ -711,15 +711,24 @@ func traceHelper(t *testing.T, mode, dir string, n int) Result {
 
 // Concurrent openers must each be attributed their own pathname. The decoder reads the
 // pathname out of tracee memory at the syscall ENTRY stop, and between one thread's entry
-// and its exit every sibling has been resumed and stopped again in turn, so a decoder
-// that keys the read on anything but the tid that stopped - or that re-reads a buffer a
-// sibling has since reused - reports one thread's file against another's open. Siblings share an address
-// space, so reading the memory through the wrong tid is not the failure mode here;
-// reading the wrong tid's registers is, and so is a stale buffer.
+// and its exit every sibling has been resumed and stopped again in turn. Siblings share an
+// address space, so reading the memory through the wrong tid is not the failure mode here;
+// reading the wrong tid's REGISTERS is, and so is a pathname read back from a buffer a
+// sibling has since reused.
 //
-// Both directions are checked: every opened file present, and nothing under the
-// directory that no thread ever named. Over-attribution is the one that matters, because
-// the manifest is what the user consents to.
+// What this catches, scoped to what a spike has actually made it go red: decoding a
+// sibling's registers instead of the stopping tid's - inspecting root rather than the
+// stopped pid records one file and misses five. It does NOT catch a decoder that keys its
+// per-tid bookkeeping wrongly (a stopKey without the pid, or one lastOp shared across
+// tids): the openat pathname is read from the stopping pid's own registers and recorded
+// within a single stop, so it never crosses those maps, and both mutations pass here. That
+// keying is guarded, by the single-goroutine tests over drops and held, which is the right
+// place for it - the tracer loop is one goroutine, so its maps cannot data-race.
+//
+// Both directions are checked: every opened file present, and nothing under the directory
+// that no thread ever named. The over-attribution half is insurance rather than a proven
+// tooth: no mutation so far has made it fail on its own, the under-attribution loop
+// catching each one first.
 func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 	const threads = 6
 	dir := t.TempDir()
