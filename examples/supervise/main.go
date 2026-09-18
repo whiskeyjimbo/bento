@@ -450,6 +450,17 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+s.Kind+" on a host that can shield)"))
 		}
 	}
+	// What the run left on the host: a write-grant directory made for a target that never
+	// started, or a shield mount point the reclaim could not remove. The backend also
+	// names these on Process.Stderr, but a supervisor is free to pass none, and the human
+	// here has just approved something - a path left behind that nothing mentions reads as
+	// part of what they approved. Named one per line so they can go and look.
+	if len(res.Residue) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("these paths are on this host because of this run, and bento did not remove them:"))
+		for _, path := range res.Residue {
+			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(path)))
+		}
+	}
 }
 
 // setupReason words a non-attested SetupState for the human. The states are bento's

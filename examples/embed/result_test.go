@@ -50,6 +50,9 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		// A grant that could not be read whole, which is what tells the two lists above
 		// apart from a clean pair.
 		UnresolvedHooks: []string{"/repo/\x1b[2Kvendor"},
+		// A shield mount point the reclaim could not account for, standing inside a
+		// checkout whose directory names a prior run chose.
+		Residue: []string{"/repo/\x1b[2K.git/hooks"},
 	}
 	return res, &policy.Policy{Network: []policy.NetworkRule{{Host: "ok.example", Port: "443"}}}
 }
@@ -82,6 +85,8 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		`"/repo/\x1b[2Kpackage.json"`,            // ChangedAutoExec, quoted
 		"before the next build",                  // ChangedAutoExec
 		"no connection through the egress proxy", // EgressConnections read as a bypass
+		`"/repo/\x1b[2K.git/hooks"`,              // Residue, quoted
+		"was not removed",                        // Residue
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output is missing %q; a field left unprinted is a silence an operator reads as nothing to report.\ngot:\n%s", want, got)
@@ -148,6 +153,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true, "UnresolvedHooks": true,
+		"Residue": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

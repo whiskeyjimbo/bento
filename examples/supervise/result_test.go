@@ -46,6 +46,9 @@ func populatedResult() enforce.Result {
 		// A grant that could not be read whole, which is what tells the two lists above
 		// apart from a clean pair.
 		UnresolvedHooks: []string{"/repo/\x1b[2Kvendor"},
+		// A shield mount point the reclaim could not account for, standing inside a
+		// checkout whose directory names a prior run chose.
+		Residue: []string{"/repo/\x1b[2K.git/hooks"},
 	}
 }
 
@@ -59,6 +62,8 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 
 	for _, want := range []string{
 		"the egress proxy stopped accepting mid-run", // Report.Degradations
+		`"/repo/\x1b[2K.git/hooks"`,                  // Residue, quoted
+		"bento did not remove them",                  // Residue
 		"shielded 1 credential/host-service path(s)", // Shields
 		`"ads.example\x1b[2K" port 443`,              // GateAdmitted, quoted
 		"the live gate admitted egress",              // GateAdmitted
@@ -122,6 +127,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true, "UnresolvedHooks": true,
+		"Residue": true,
 	}
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[enforce.Result]()) {

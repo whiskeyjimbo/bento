@@ -490,6 +490,20 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	for _, s := range res.Exposed {
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
 	}
+	// Residue: host paths this run created and left standing - a write-grant directory
+	// made for a target that never started, or a shield mount point the reclaim could not
+	// remove. An embedder is the caller this field exists for: the backend also names
+	// these on Process.Stderr, and an embedder that passes none - which is permitted - has
+	// no other channel, so not printing it here is the silence the field was added to end.
+	//
+	// One path per line rather than a count, because the point is that someone can go and
+	// look. The field merges two categories that populate on different arms, so an EMPTY
+	// Residue is not "nothing was created" - but that caveat lives on the field's own doc
+	// and would be false comfort to restate against a non-empty list, which is the only
+	// case that prints anything at all.
+	for _, path := range res.Residue {
+		fmt.Fprintf(w, "embed: WARNING: %q is on this host because of this run and was not removed\n", path)
+	}
 }
 
 // parseAllow reads a comma-separated allowlist of "host" or "host:port" entries
