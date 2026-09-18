@@ -27,10 +27,11 @@ import (
 // On the bwrap tier the report's origin is established by resolveBwrap instead, which
 // refuses to launch a sandbox builder this uid could have replaced. The degraded tier
 // launches no bwrap and so has no counterpart to that check: it re-execs sb.bentoPath,
-// which bentoSelfPath takes from os.Executable() rather than resolving off PATH, so there
-// is no resolution step to aim at - substituting that binary means bento itself was
-// already substituted. (checkLauncher on both paths is the launchGuard test seam, not a
-// verification.) parseApplied's job is narrower and stays what it was: refusing content
+// which bentoSelfPath takes from os.Executable(), so substituting that binary means bento
+// itself was already substituted. (checkLauncher, on that path and the bwrap one alike, is
+// the launchGuard test seam, not a verification. A scoped run of either tier is wrapped in
+// a PATH-resolved systemd-run, which no trust check covers on either side.)
+// parseApplied's job is narrower and stays what it was: refusing content
 // the genuine stage does not write.
 const appliedReportFD = 3
 

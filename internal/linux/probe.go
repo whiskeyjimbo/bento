@@ -446,9 +446,10 @@ const unknownRightsResidual = ". Nor does it restrict any access right a kernel 
 // on a terminal, so it describes the mechanism's reach rather than asserting a tty.
 const terminalResidual = ". Nor does it detach the target from a controlling terminal it is given, which " +
 	"bwrap's --new-session removes outright: the substitute denies the two injection ioctls " +
-	"(TIOCSTI, TIOCLINUX) and no more, so a terminal-attached run leaves the target able to read the " +
-	"user's keystrokes, resize the window (TIOCSWINSZ), write escape sequences the emulator acts on, " +
-	"and take the foreground group's SIGINT"
+	"(TIOCSTI, TIOCLINUX) and no more, so a terminal-attached run leaves the target able to write escape " +
+	"sequences the emulator acts on, resize the window (TIOCSWINSZ), and - by claiming the foreground " +
+	"group with tcsetpgrp, which the attached terminal still permits - read the user's keystrokes and " +
+	"take the foreground group's SIGINT"
 
 // capBoundResidual discloses the capability bounding set, which the bwrap tier empties
 // with --cap-drop ALL and this tier can only attempt. It is named as inert rather than as
@@ -457,8 +458,8 @@ const terminalResidual = ". Nor does it detach the target from a controlling ter
 // unspendable - the seccomp installs set PR_SET_NO_NEW_PRIVS before the attempt, and a
 // bounding set is only spendable through a setuid or file-capability exec.
 const capBoundResidual = ". The capability bounding set is attempted rather than guaranteed empty here: " +
-	"PR_CAPBSET_DROP needs a privilege this tier exists because the host withheld, so on an ordinary " +
-	"unprivileged host the set survives the run - inert rather than dropped, since no-new-privs is " +
+	"PR_CAPBSET_DROP needs CAP_SETPCAP, which no unprivileged process holds in the initial user " +
+	"namespace - the one this tier runs in, having no other. So on an ordinary host the set survives the run - inert rather than dropped, since no-new-privs is " +
 	"already set and a bounding set can only be spent through a setuid or file-capability exec. A run " +
 	"that does hold capabilities and cannot empty the set is refused instead of degraded"
 
