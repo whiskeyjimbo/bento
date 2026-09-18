@@ -453,7 +453,13 @@ func TestDegradedConsequencesDiscloseTheTierParityResiduals(t *testing.T) {
 	for cell := 0; cell < 1<<5; cell++ {
 		b := func(i int) bool { return cell&(1<<i) != 0 }
 		l := filesystemLayer(namespacesBlocked, "userns blocked here", true, b(0), b(1), b(2), b(3), b(4), true)
-		for _, want := range []string{"TIOCSTI", "TIOCSWINSZ", "--new-session", "PR_CAPBSET_DROP", "bounding set"} {
+		// "refused" is the half that ties this text to a DECISION rather than to a
+		// mechanism: restrictCapabilityBound (internal/launcher/degraded.go) lets the
+		// unprivileged residual pass and refuses the privileged case, and this sentence is
+		// the only place the operator is told so. The coupling stays one-directional -
+		// the launcher cannot import this package, so no test can notice the decision
+		// changing while the text stands still (bv2-5dc8e).
+		for _, want := range []string{"TIOCSTI", "TIOCSWINSZ", "--new-session", "PR_CAPBSET_DROP", "bounding set", "refused"} {
 			if !strings.Contains(l.Consequences, want) {
 				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
 			}
