@@ -141,6 +141,7 @@ func TestRunDegradedRefusesWithoutTheRealFences(t *testing.T) {
 		{"process-reach", "could not install the cross-process block"},
 		{"terminal-injection", "could not install the terminal-injection block"},
 		{"landlock-install", "could not apply the Landlock confinement"},
+		{"capability-bound", "could not empty the capability bounding set"},
 	} {
 		t.Run(tc.fence, func(t *testing.T) {
 			report := filepath.Join(t.TempDir(), "applied")
@@ -202,6 +203,13 @@ func runDegradedChild(fence string) {
 		blockTerminalInjection = failed
 	case "landlock-install":
 		restrictDegraded = func([]string, []string, []string) error { return failed() }
+	case "capability-bound":
+		// The host whose kernel will not let the bounding set be dropped and whose
+		// caller holds capabilities anyway - the root-started degraded run. Seamed
+		// because an unprivileged test process is neither half of it.
+		capBoundingNow = func() (uint64, error) { return 0x3fffffffff, nil }
+		dropCapBound = func(uint64) {}
+		heldCaps = func() (uint64, error) { return 0x3fffffffff, nil }
 	}
 	if _, err := RunDegraded(DegradedConfig{AppliedFD: 3, Target: []string{"/bin/true"}}); err != nil {
 		os.Stdout.WriteString("REFUSED: " + err.Error() + "\n")
@@ -255,7 +263,7 @@ func TestRestrictCapabilityBound(t *testing.T) {
 // consumes the next value from reads, the drop is a no-op, and the effective set is
 // fixed. It returns the restore.
 func swapCapSeams(reads *[]uint64, eff uint64) func() {
-	oldRead, oldDrop, oldEff := capBoundingNow, dropCapBound, effectiveCaps
+	oldRead, oldDrop, oldEff := capBoundingNow, dropCapBound, heldCaps
 	capBoundingNow = func() (uint64, error) {
 		if len(*reads) == 0 {
 			return 0, fmt.Errorf("the test script ran out of bounding-set reads")
@@ -265,8 +273,8 @@ func swapCapSeams(reads *[]uint64, eff uint64) func() {
 		return v, nil
 	}
 	dropCapBound = func(uint64) {}
-	effectiveCaps = func() (uint64, error) { return eff, nil }
-	return func() { capBoundingNow, dropCapBound, effectiveCaps = oldRead, oldDrop, oldEff }
+	heldCaps = func() (uint64, error) { return eff, nil }
+	return func() { capBoundingNow, dropCapBound, heldCaps = oldRead, oldDrop, oldEff }
 }
 
 // The live counterpart: on whatever host this runs, the fence must reach a verdict from
@@ -274,7 +282,7 @@ func swapCapSeams(reads *[]uint64, eff uint64) func() {
 // process must not be refused. This is what would catch a Capget or a /proc/self/status
 // read that stopped working - the seamed test above cannot, by construction.
 func TestRestrictCapabilityBoundAdmitsAnUnprivilegedHost(t *testing.T) {
-	eff, err := heldEffectiveCaps()
+	eff, err := heldCapabilities()
 	if err != nil {
 		t.Fatalf("reading the effective capability set: %v", err)
 	}

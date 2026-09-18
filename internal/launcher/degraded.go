@@ -118,7 +118,7 @@ var (
 var (
 	capBoundingNow = readCapBounding
 	dropCapBound   = dropCapBoundingSet
-	effectiveCaps  = heldEffectiveCaps
+	heldCaps       = heldCapabilities
 )
 
 // restrictCapabilityBound is the degraded tier's counterpart to the bwrap tier's
@@ -131,9 +131,10 @@ var (
 // than dropped: this runs after the seccomp installs, every one of which sets
 // PR_SET_NO_NEW_PRIVS, and a bounding set can only be spent through a setuid or
 // file-capability exec, which no-new-privs already refuses. The case that is NOT inert
-// is a caller that holds capabilities now, where the bounding set bounds what its own
-// children keep - and that is the root-started run F2 in the launcher state grid
-// records as the one nothing refuses. It is refused here.
+// is a caller that holds capabilities now (see heldCapabilities for why that means the
+// PERMITTED set), where the bounding set bounds what its own children keep - and that
+// is the root-started run F2 in the launcher state grid records as the one nothing
+// refuses. It is refused here.
 //
 // The drop is never assumed: the bounding set is re-read from the kernel afterwards, so
 // what this reports applied is what the kernel says applied.
@@ -152,7 +153,7 @@ func restrictCapabilityBound() error {
 	if held == 0 {
 		return nil
 	}
-	eff, err := effectiveCaps()
+	eff, err := heldCaps()
 	if err != nil {
 		return fmt.Errorf("launcher: %w", err)
 	}
@@ -173,16 +174,24 @@ func dropCapBoundingSet(held uint64) {
 	}
 }
 
-// heldEffectiveCaps is the caller's effective capability set - what it can exercise
-// right now, as opposed to the bounding set, which is only a ceiling on what an exec
-// could gain.
-func heldEffectiveCaps() (uint64, error) {
+// heldCapabilities is what this process brings to an exec: the PERMITTED set, plus the
+// effective set, which is a subset of it on every kernel that answers this call but is
+// read rather than assumed.
+//
+// Permitted is the set that matters, not effective. Under no-new-privs the kernel
+// intersects whatever a file's capabilities would grant with the caller's OLD permitted
+// set, so the residual bounding set is inert exactly when permitted is empty - a caller
+// that cleared its effective set but kept permitted, or one with an ambient set (always
+// a subset of permitted, and one that survives exec regardless of no-new-privs), still
+// has a live residual.
+func heldCapabilities() (uint64, error) {
 	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var data [2]unix.CapUserData
 	if err := unix.Capget(&hdr, &data[0]); err != nil {
-		return 0, fmt.Errorf("reading the effective capability set: %w", err)
+		return 0, fmt.Errorf("reading the capability sets: %w", err)
 	}
-	return uint64(data[0].Effective) | uint64(data[1].Effective)<<32, nil
+	held := uint64(data[0].Permitted) | uint64(data[1].Permitted)<<32
+	return held | uint64(data[0].Effective) | uint64(data[1].Effective)<<32, nil
 }
 
 // degradedPrerequisites refuses a degraded run whose confinement this host cannot

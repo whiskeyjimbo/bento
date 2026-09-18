@@ -71,8 +71,14 @@ var tierProbes = []tierProbe{
 		bwrap:    "denied",
 	},
 	{
-		name:     "cap-bounding-set",
-		why:      "bv2-7nv8y / grid row 10: --cap-drop ALL empties it on the bwrap tier; the degraded tier cannot, and refuses a privileged run instead",
+		name: "cap-bounding-set",
+		// The degraded cell equalling the unfenced one is the finding, not a hole in the
+		// arm: PR_CAPBSET_DROP needs CAP_SETPCAP in a user namespace this tier could not
+		// create, so the drop is attempted and fails. What the tier does instead - refuse
+		// the run when the residual is live - is exercised by
+		// TestRunDegradedRefusesWithoutTheRealFences/capability-bound, which no arm here
+		// can reach without privilege.
+		why:      "bv2-7nv8y / grid row 10: --cap-drop ALL empties it on the bwrap tier; the degraded tier attempts the drop, cannot make it, and refuses a privileged run instead",
 		unfenced: "nonempty",
 		degraded: "nonempty",
 		bwrap:    "empty",
@@ -173,7 +179,9 @@ func TestTierProbeHelper(t *testing.T) {
 	}
 	if arm == armDegraded {
 		// RunDegraded's order, minus the exec filter and Landlock: neither bears on the
-		// rows here, and Landlock would confine the probes' own reads.
+		// rows here, and Landlock would confine the probes' own reads. The capability
+		// fence below IS included, so the cap-bounding-set row measures the set after a
+		// real drop attempt rather than one the arm never made.
 		for _, f := range []struct {
 			what string
 			fn   func() error
@@ -181,6 +189,7 @@ func TestTierProbeHelper(t *testing.T) {
 			{"egress", seccomp.BlockEgress},
 			{"process-reach", seccomp.BlockProcessReach},
 			{"terminal", seccomp.BlockTerminalInjection},
+			{"capability-bound", restrictCapabilityBound},
 		} {
 			if err := f.fn(); err != nil {
 				fmt.Printf("FENCE-FAILED %s %v\n", f.what, err)
