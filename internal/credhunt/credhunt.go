@@ -427,12 +427,13 @@ func tokenAssignment(line string) bool {
 // isCheckout reports whether dir is the root of a version-controlled working tree. Only
 // the root is tested, because pruning there prunes the whole tree beneath it.
 //
-// The marker's content is checked, not just its name. A prune hides a whole subtree from
-// every future scan, and creating a name in a directory is far less capability than
-// reading what is under it - so trusting the name alone lets anyone who can write into a
-// home hide the rest of it behind an empty file called .git. A .git FILE is still
-// legitimate, though: that is how git spells a worktree or a submodule, and it carries a
-// "gitdir:" line. .hg and .svn have no file form, so for those only a directory counts.
+// A marker FILE is read rather than trusted on its name. A prune hides a whole subtree
+// from every future scan, and creating a name in a directory is far less capability than
+// reading what is under it, so an empty file called .git would let anyone who can write
+// into a home hide the rest of it. A .git file is still legitimate when it carries git's
+// "gitdir: " pointer - that is how a worktree and a submodule are spelled. .hg and .svn
+// have no file form, so for those only a directory counts. A directory named .git is
+// still taken at its name; see bd bv2-gg916 for that residual.
 func isCheckout(dir string) bool {
 	for _, marker := range []string{".git", ".hg", ".svn"} {
 		info, err := os.Lstat(filepath.Join(dir, marker))
