@@ -104,6 +104,18 @@ type Rule struct {
 	// lifting the shield exposes. Set on DenyAll rules only: a write shield cannot be
 	// lifted by a grant, so no callout has to describe one.
 	Holds Holds
+	// ExpandLinks asks the shield assembler to walk this store for entries that are
+	// links into a dotfile farm and shield each target at its own path too. Set on
+	// DenyAll directory rules only; nothing else is walked.
+	//
+	// Declared per rule rather than derived from Holds so that the two questions stay
+	// apart: Holds picks the words a callout uses, this picks what the sandbox binds.
+	// Left off a store that a farm manages, the store's contents are reachable by
+	// naming the farm path instead - a read grant there is honored with no callout.
+	// Set on a bulk store (mail, browser profiles, chain data), every launch pays a
+	// recursive walk of it and the alias scan trips on hardlinked messages; see
+	// bulkStoreDirs.
+	ExpandLinks bool
 	// Source names the environment variable that put the shield at this path, and is
 	// empty for a rule at its default location.
 	//
@@ -532,15 +544,18 @@ func Shieldable(p string, homes []string) bool {
 // anchor set.
 func Home(home string) []Rule {
 
+	// expand is per group rather than per entry because the reason to walk a store is a
+	// property of the whole list: these are the stores a dotfile farm symlinks into.
 	dirGroups := []struct {
-		holds Holds
-		dirs  []string
+		holds  Holds
+		expand bool
+		dirs   []string
 	}{
-		{HoldsCredentials, credentialAnchorDirs},
-		{HoldsPrivateData, bulkStoreDirs},
-		{HoldsHistory, historyDirs},
-		{HoldsPersistence, persistenceDirs},
-		{HoldsServices, serviceDirs},
+		{HoldsCredentials, true, credentialAnchorDirs},
+		{HoldsPrivateData, false, bulkStoreDirs},
+		{HoldsHistory, true, historyDirs},
+		{HoldsPersistence, true, persistenceDirs},
+		{HoldsServices, false, serviceDirs},
 	}
 	credentialFiles := []string{
 		".git-credentials",
@@ -1231,7 +1246,7 @@ func Home(home string) []Rule {
 	}
 	for _, g := range dirGroups {
 		for _, d := range g.dirs {
-			emit(d, Rule{Deny: DenyAll, Dir: true, Holds: g.holds})
+			emit(d, Rule{Deny: DenyAll, Dir: true, Holds: g.holds, ExpandLinks: g.expand})
 		}
 	}
 	for _, g := range fileGroups {
@@ -1349,7 +1364,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			continue
 		}
 		if c := filepath.Clean(base); !isDefault(c, de.def) && !covered(c) && shieldable(c) {
-			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
+			rules = append(rules, Rule{Path: c, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, ExpandLinks: true, Source: de.env})
 		}
 	}
 
@@ -1585,7 +1600,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	for _, de := range dirSubEnvs {
 		if c, ok := relocBase(de.env); ok && !isDefault(c, de.def) {
 			if p := filepath.Join(c, de.sub); !covered(p) && shieldable(p) {
-				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: de.env})
+				rules = append(rules, Rule{Path: p, Deny: DenyAll, Dir: true, Holds: HoldsCredentials, ExpandLinks: true, Source: de.env})
 			}
 		}
 	}

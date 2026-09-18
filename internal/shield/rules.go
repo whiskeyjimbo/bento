@@ -104,6 +104,10 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// The symlink expansion is derived from the built-ins alone, and it is the built-ins
 	// a read can opt into, so the two sets are the same set. A shield a policy cannot name
 	// is one it can only be refused over, with no remedy in the sentence.
+	//
+	// The consequence for an embedder: a caller deny never reaches the expansion, so a
+	// DenyAll it puts on a farm-managed credential directory shields that directory and
+	// nothing the farm points at, whatever it sets on the rule.
 	links := s.credentialLinks(base)
 	s.links = links
 	s.builtin = append(slices.Clone(base), links...)
@@ -218,10 +222,15 @@ func coveredByAnother(path string, roots []string) bool {
 	})
 }
 
-// credentialLinks is the symlinked-credential expansion: where a credential store's entry
+// credentialLinks is the symlinked-credential expansion: where a shielded store's entry
 // is a link into a dotfile farm IN THE HOME (stow, chezmoi and yadm all produce these),
 // the target is shielded at its own path too, so the store cannot be reached by naming
 // where it points.
+//
+// Which stores those are is the deny-list's declaration, not this package's inference:
+// rule.ExpandLinks alone decides, so the callout bucket a rule carries can be reworded
+// without moving what the sandbox binds. A store that should be walked and is not is a
+// missing flag in denylist.go, never a case to add here.
 //
 // home-manager is EXCLUDED, not covered: its links point into /nix/store, outside every
 // anchor by construction, so linksUnder's own skip takes every one of them. That is the
@@ -231,16 +240,10 @@ func coveredByAnother(path string, roots []string) bool {
 func (s Set) credentialLinks(base []denylist.Rule) []denylist.Rule {
 	var out []denylist.Rule
 	for _, r := range base {
-		if r.Deny != denylist.DenyAll || !r.Dir {
+		if r.Deny != denylist.DenyAll || !r.Dir || !r.ExpandLinks {
 			continue
 		}
-		switch r.Holds {
-		case denylist.HoldsCredentials, denylist.HoldsHistory, denylist.HoldsPersistence:
-			out = append(out, s.linksUnder(r, r.Path, 0)...)
-		case denylist.HoldsUnknown, denylist.HoldsPrivateData, denylist.HoldsServices:
-			// No second spelling to chase: these buckets are directories of data and
-			// sockets rather than the credential stores tools symlink into.
-		}
+		out = append(out, s.linksUnder(r, r.Path, 0)...)
 	}
 	return out
 }
@@ -278,6 +281,8 @@ func (s Set) linksUnder(r denylist.Rule, dir string, depth int) []denylist.Rule 
 			// its own path and warns.
 			continue
 		}
+		// ExpandLinks stays off: a target is shielded at its own path and never re-walked,
+		// so claiming it expands would be a field the assembler contradicts.
 		out = append(out, denylist.Rule{Path: rp, Deny: denylist.DenyAll, Dir: s.fs.IsDir(rp), Holds: r.Holds, Source: r.Source})
 	}
 	for _, name := range names {

@@ -979,8 +979,8 @@ func TestHomeFollowsTheLateRelocationRows(t *testing.T) {
 	for _, want := range []Rule{
 		{Path: "/srv/composer/auth.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "COMPOSER_HOME"},
 		{Path: "/srv/rclone.conf", Deny: DenyAll, Holds: HoldsCredentials, Source: "RCLONE_CONFIG"},
-		{Path: "/srv/borg/keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_CONFIG_DIR"},
-		{Path: "/srv/borg-keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, Source: "BORG_KEYS_DIR"},
+		{Path: "/srv/borg/keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, ExpandLinks: true, Source: "BORG_CONFIG_DIR"},
+		{Path: "/srv/borg-keys", Deny: DenyAll, Dir: true, Holds: HoldsCredentials, ExpandLinks: true, Source: "BORG_KEYS_DIR"},
 		{Path: "/srv/claude/.credentials.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
 		{Path: "/srv/claude/.claude.json", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
 		{Path: "/srv/claude/.claude.json.backup", Deny: DenyAll, Holds: HoldsCredentials, Source: "CLAUDE_CONFIG_DIR"},
