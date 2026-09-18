@@ -4,6 +4,7 @@ package observe
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -168,4 +170,68 @@ func TestConcurrentTracesDoNotStealEachOthersStops(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Trace's wait loop dequeues with Wait4(-1) - ptrace has no wait-on-this-set - so it
+// reaps ANY child of the calling process that exits, not only its own tracees: the
+// embedder's own Wait on that child then gets ECHILD and the exit code is gone. That is
+// the precondition Trace's doc comment states, and nothing asserted it, which is how a
+// later reader comes to assume it away.
+//
+// Scoped to the half that is real. A sibling that is merely STOPPED is NOT at risk: a -1
+// wait reports a non-traced child's group-stop only with WUNTRACED, which this loop does
+// not pass, so the stopped sibling stays out of the tracee set and out of the cleanup
+// reap. Verified by the inverse of this test - stopping a sibling across a Trace leaves it
+// alive and still stopped.
+//
+// This is a characterization test, not a regression guard against a fix: reaping only its
+// own tracees means waiting on a set, which the kernel offers no way to do. If it ever
+// fails, the fix has landed and Trace's doc comment is what needs updating.
+func TestTraceConsumesAnUnrelatedExitedChildOfTheCaller(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+	sibling := exec.Command(sh, "-c", "exit 7")
+	if err := sibling.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the exit without reaping it, so the status is already queued when the loop's
+	// first -1 wait runs - the most deterministic ordering, since the alternative races the
+	// sibling's exit against a trace that takes milliseconds. Read through /proc rather
+	// than signalling: signal 0 still reaches a zombie, and a zombie is exactly the state
+	// being waited for. Bounded, so a sibling that never exits fails here and not later as
+	// a puzzling ECHILD.
+	deadline := time.Now().Add(10 * time.Second)
+	for !zombie(t, sibling.Process.Pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the sibling never exited, so there is no queued status for the trace to consume")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var sink bytes.Buffer
+	if _, err := Trace([]string{sh, "-c", "exit 0"}, os.Environ(), nil, &sink, &sink); err != nil {
+		t.Fatalf("Trace: %v (%s)", err, sink.String())
+	}
+
+	// The sibling exited 7, so a Wait that still had the status reports that exit - which
+	// is the failure here, and the message says so, because the precondition is that the
+	// status is gone.
+	if err := sibling.Wait(); !errors.Is(err, syscall.ECHILD) {
+		t.Errorf("the sibling's Wait returned %v, want ECHILD: the trace no longer consumed an unrelated child's status, so Trace's doc comment overstates the precondition", err)
+	}
+}
+
+// zombie reports whether pid has exited and is waiting to be reaped.
+func zombie(t *testing.T, pid int) bool {
+	t.Helper()
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		t.Fatalf("reading the sibling's state: %v", err)
+	}
+	// The state follows the comm field, which is parenthesized and may itself contain
+	// spaces, so split after its closing paren rather than on the line.
+	fields := strings.Fields(string(stat[strings.LastIndex(string(stat), ")")+1:]))
+	return len(fields) > 0 && fields[0] == "Z"
 }

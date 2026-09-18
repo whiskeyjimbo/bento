@@ -353,10 +353,15 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			return Result{}, fmt.Errorf("observe: wait: %w", err)
 		}
 
-		// Any pid the tracer waits on is an attached tracee: root, or a descendant
+		// Almost every pid the tracer waits on is an attached tracee: root, or a descendant
 		// auto-attached by the trace-clone/fork options. Track it so it is reaped when
 		// the trace ends - on the error guard or on the clean exit below; drop it again
-		// when it ends on its own.
+		// when it ends on its own. The one exception is the -1 wait's residual, an
+		// unrelated child of the CALLING process: only its EXIT can land here, since a
+		// non-traced child's group-stop is reported only with WUNTRACED, and the exit arm
+		// below drops it again in the same iteration - so a foreign pid is never carried
+		// as far as the cleanup reap's SIGKILL. Its status is consumed either way, which
+		// is the precondition Trace documents.
 		tracees[wpid] = true
 
 		// SIGSYS means a kill-mode seccomp filter refused a syscall. For the profiled
