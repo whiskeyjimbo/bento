@@ -878,8 +878,11 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	// and, when profiling, the observation report. Honoring $TMPDIR put it wherever the
 	// invoking environment pointed, including inside the user's own checkout under a
 	// write grant, where it sat live for the length of the run named in no report. The
-	// sandbox's own scratch is /tmp regardless (sandboxTmp), so this is where the rest of
-	// a run already lives.
+	// sandbox's own scratch is /tmp regardless, so this is where the rest of a run already
+	// lives. The cost is a host whose /tmp is small, noexec or read-only and that set
+	// $TMPDIR for exactly that reason: such a run now fails here, or on the degraded tier
+	// hands the target a scratch it cannot build in. That is the trade - a loud failure
+	// naming the run directory, against a silent one inside the user's checkout.
 	dir, err := os.MkdirTemp(runDirBase, "bento-run-")
 	if err != nil {
 		return sandbox{}, noop, fmt.Errorf("linux: creating run directory: %w", err)

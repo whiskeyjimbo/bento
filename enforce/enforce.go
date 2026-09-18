@@ -588,7 +588,12 @@ type Result struct {
 // or overmounted with an empty file), "read-only" (the path was on the host and stays
 // readable but cannot be written - a code-execution surface like a git hooks dir), or
 // "discarded" (the path was NOT on the host: bento materialized it for the run, and
-// nothing at it reaches the host or survives teardown).
+// removes it at teardown).
+//
+// Materialized is not the same as invisible while the run is alive. A directory one is a
+// tmpfs and the host index cannot see it, but a FILE one is a real zero-byte host file at
+// that path for the length of the run - so a target that stages its whole tree can commit
+// it, and the commit outlives the file. That is the reason this kind exists.
 //
 // "discarded" is about provenance, not about what a write does there, and the two do not
 // line up: an absent directory becomes a writable scratch mount that takes writes and

@@ -1998,3 +1998,23 @@ func TestDenialLegendNamesTheDiscardedScratch(t *testing.T) {
 		t.Errorf("a write to scratch succeeding and vanishing must be named: %q", out)
 	}
 }
+
+// The EROFS arm has to fire for a DISCARDED shield too. Every applied DenyWrite shield is
+// inside a write grant by construction, and an absent file one - .cargo/config on a fresh
+// checkout - is an empty read-only bind that answers EROFS while reporting "discarded".
+// Keyed on "read-only" alone, the one case with no pre-existing shield fell through to the
+// sentence blaming a path outside the grants, which is the reader this arm exists to stop.
+func TestDenialLegendBlamesAShieldForADiscardedFileEROFS(t *testing.T) {
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+	p := &policy.Policy{Exec: policy.ExecAll, Write: []string{"/tmp/proj"}}
+
+	var b bytes.Buffer
+	writeDenialLegend(&b, p, enforce.Result{Report: r, Shields: []enforce.ShieldApplied{
+		{Path: "/tmp/proj/.cargo/config", Kind: "discarded"},
+	}}, false)
+	if out := b.String(); !strings.Contains(out, "or a shielded path inside one") {
+		t.Errorf("a discarded file shield answers EROFS from inside the write grant, so the legend must say so: %q", out)
+	}
+}

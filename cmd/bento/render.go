@@ -486,8 +486,8 @@ func writeShieldSummary(w io.Writer, res enforce.Result) {
 		return
 	}
 	// Counted per kind rather than deriving one from the total: hidden is not the
-	// complement of read-only, since a shield on a path that does not exist yet discards
-	// writes instead of rejecting them.
+	// complement of read-only, since a shield on a path the host did not have is reported
+	// by where it came from rather than by what a write to it does.
 	byKind := map[string]int{}
 	for _, s := range res.Shields {
 		byKind[s.Kind]++
@@ -795,11 +795,20 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 			// No write grant also means no read-only shield engaged: with the whole tree
 			// bound read-only there is nothing for one to carve out of.
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - this manifest grants no write: directory")
-		case shieldsApplied(res, "read-only"):
+		case shieldsApplied(res, "read-only"), shieldsApplied(res, "discarded"):
 			// A shield inside a write grant answers EROFS from a path the grant plainly
 			// covers, so naming only the grants would send a reader to check a manifest
 			// line that is correct and conclude the sandbox is broken. This one bento does
 			// observe, unlike the read case below, so it is named rather than guessed at.
+			//
+			// Both kinds, because every applied DenyWrite shield is inside a write grant
+			// by construction and an ABSENT one still answers EROFS: a file shield the host
+			// did not have is an empty read-only bind, and it reports "discarded" now that
+			// the kind names provenance rather than writability. On a fresh checkout that
+			// is the only shield there is, so keying this on "read-only" alone sent exactly
+			// the reader this arm exists for to the wrong line. It over-fires for a
+			// discarded DIRECTORY, which takes the write instead of refusing it - harmless,
+			// because the sentence is a disjunction and its other half is still true.
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - outside the manifest's write: grants, or a shielded path inside one")
 		default:
 			fmt.Fprintln(w, "[bento]   \"Read-only file system\" - a path outside the manifest's write: grants")
@@ -829,7 +838,7 @@ func writeDenialLegend(w io.Writer, p *policy.Policy, res enforce.Result, hinted
 	if mountNSConfines && shieldsApplied(res, "discarded") {
 		fmt.Fprintln(w, "[bento] a discarded shield is a path bento created for this run because the host")
 		fmt.Fprintln(w, "[bento] did not have it: a directory takes writes and drops them at the run's end,")
-		fmt.Fprintln(w, "[bento] a file refuses them - and neither the path nor anything in it reaches the host")
+		fmt.Fprintln(w, "[bento] a file refuses them - and the path itself is removed when the run ends")
 	}
 	// The same shape one layer out, and the only writable surface a run with no write
 	// grant at all has: /tmp and /dev/shm are per-run tmpfs, so a write there succeeds and
