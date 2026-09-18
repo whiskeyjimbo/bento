@@ -191,25 +191,36 @@ func TestRunIsNotBlindedByARelocationSpelledThroughASymlink(t *testing.T) {
 	}
 }
 
-// A prune is the tool narrowing, and a count of them says it narrowed without saying
-// where. Both of the silent wrong answers this tool has - a pruned root that is the scan
-// root, a subtree hidden behind a planted marker - read as a clean home under a bare
-// number, so the report has to name every root it skipped. The name is quoted for the
-// reason a lead's is: it is a name off the walked tree, and a prune is reachable by
-// anyone who can create a directory in the home.
-func TestRunNamesThePrunedRootsItSkips(t *testing.T) {
+// A prune and an unreadable path are the tool narrowing, and a count of them says it
+// narrowed without saying where. Both of the silent wrong answers this tool has - a
+// pruned root that is the scan root, a subtree hidden behind a planted marker - read as
+// a clean home under a bare number, so the report has to name every path it skipped. The
+// name is quoted for the reason a lead's is: it is a name off the walked tree, and a
+// prune is reachable by anyone who can create a directory in the home.
+func TestRunNamesEveryPathItSkipped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 directory")
+	}
 	home := t.TempDir()
 	hostile := filepath.Join(home, "\x1b[2K\rproj")
 	if err := os.MkdirAll(filepath.Join(hostile, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	closed := filepath.Join(home, "closed")
+	if err := os.Mkdir(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
 
 	var out strings.Builder
 	if code := run(&out, &out, []string{home}); code != 0 {
 		t.Fatalf("run = %d, want 0", code)
 	}
-	if !strings.Contains(out.String(), `proj`) || !strings.Contains(out.String(), "pruned") {
+	if !strings.Contains(out.String(), "pruned    "+strconv.Quote(hostile)) {
 		t.Errorf("the pruned checkout is not named in the report; a count alone cannot tell a prune of the scan root from a clean home:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "unreadable "+strconv.Quote(closed)) {
+		t.Errorf("the unreadable directory is not named in the report; a subtree the scan never saw reads as a clean one:\n%s", out.String())
 	}
 	if strings.ContainsRune(out.String(), 0x1b) {
 		t.Errorf("a raw escape byte reached the report through a pruned path:\n%q", out.String())

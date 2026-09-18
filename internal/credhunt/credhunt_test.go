@@ -277,9 +277,9 @@ func TestHuntPrunesCheckoutsButNeverTheScanRoot(t *testing.T) {
 
 // The object store skipped by name is the ONLY narrowing a home that is itself a dotfiles
 // checkout gets - it is deliberately spared the checkout prune - so it has to be counted
-// like every other one. Uncounted, the report says "0 tree(s) pruned" on the one home
+// like every other one. Unnamed, the report says "0 tree(s) pruned" on the one home
 // where a tree went unscanned, which reads as a scan that looked everywhere.
-func TestHuntCountsTheVCSObjectStorePrune(t *testing.T) {
+func TestHuntNamesTheVCSObjectStorePrune(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestHuntCountsTheVCSObjectStorePrune(t *testing.T) {
 // A machine store is pruned as content-addressed artifacts rather than the user's own
 // files, but the prune must be visible: an operator who cannot see that the tool narrowed
 // cannot tell a clean home from a scan that skipped the interesting part.
-func TestMachineStoresArePrunedAndCounted(t *testing.T) {
+func TestMachineStoresArePrunedAndNamed(t *testing.T) {
 	home := t.TempDir()
 	cache := filepath.Join(home, ".cache")
 	plant(t, home, ".cache/pkg/some-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
@@ -370,8 +370,8 @@ func TestHuntRefusesASymlinkedHome(t *testing.T) {
 }
 
 // A directory the scan cannot list narrows it exactly as a prune does - it reports zero
-// findings under a subtree it never saw - so it has to be counted for the same reason.
-func TestUnreadableDirectoryIsCounted(t *testing.T) {
+// findings under a subtree it never saw - so it has to be named for the same reason.
+func TestUnreadableDirectoryIsNamed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a 0000 directory")
 	}
@@ -398,7 +398,7 @@ func TestUnreadableDirectoryIsCounted(t *testing.T) {
 // A file the sniff cannot open narrows the scan as squarely as a directory it cannot
 // list: the cheap signals still fire, but nothing behind the first byte was ever looked
 // at, so the lead is reported on less than it looks like.
-func TestUnopenableFileIsCounted(t *testing.T) {
+func TestUnopenableFileIsNamed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a 0000 file")
 	}
