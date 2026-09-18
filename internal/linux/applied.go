@@ -504,9 +504,17 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 		// a run with no filesystem confinement reporting Degraded while naming a mount
 		// namespace it never had.
 		if mountConfined {
-			r.Set(enforce.LayerFilesystem, enforce.Degraded,
-				"the Landlock backstop could not be applied inside the sandbox ("+why+
-					"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+			// Skipped where the probe already said Unavailable, exactly as the
+			// exec-strict arm above: Set replaces unconditionally, so writing Degraded
+			// there would UPGRADE the layer and attest a mount namespace this host was
+			// measured not to have. Nested rather than folded into the condition so the
+			// Unavailable baseline keeps the reason that earned it, instead of falling
+			// into the no-mount-namespace branch below and being told a different lie.
+			if r.StateOf(enforce.LayerFilesystem) < enforce.Unavailable {
+				r.Set(enforce.LayerFilesystem, enforce.Degraded,
+					"the Landlock backstop could not be applied inside the sandbox ("+why+
+						"); bubblewrap's mount namespace still confines the filesystem, but the second kernel layer behind it is absent")
+			}
 		} else {
 			r.Set(enforce.LayerFilesystem, enforce.Unavailable,
 				"the Landlock confinement could not be applied inside the sandbox ("+why+

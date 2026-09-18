@@ -48,8 +48,11 @@ var fuzzAppliedBases = []string{
 }
 
 // reportStates parses one report body and returns what reconcile makes of it, starting
-// from a host that probed every layer Enforced so any shortfall came from the report.
-func reportStates(t *testing.T, body string) (map[enforce.Layer]enforce.State, *enforce.ExecRecord) {
+// from a host that probed every layer at base so any shortfall came from the report.
+// The baseline is a parameter because the only-worsen invariant is a statement ABOUT it:
+// seeded Enforced, "no better than the intact run" and "no better than the baseline" are
+// the same sentence, and a reconcile that improves a worse layer passes both.
+func reportStates(t *testing.T, body string, base enforce.State) (map[enforce.Layer]enforce.State, *enforce.ExecRecord) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "applied")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -57,7 +60,7 @@ func reportStates(t *testing.T, body string) (map[enforce.Layer]enforce.State, *
 	}
 	r := enforce.Report{}
 	for _, l := range []enforce.Layer{enforce.LayerFilesystem, enforce.LayerNetwork, enforce.LayerExec, enforce.LayerExecStrict} {
-		r.Add(l, enforce.Enforced, probeReason)
+		r.Add(l, base, probeReason)
 	}
 	a := parseApplied(openReport(t, path))
 	a.reconcile(&r, true, true, true, 125)
@@ -81,32 +84,46 @@ func FuzzParseAppliedNeverOverClaims(f *testing.F) {
 	// The duplicate-key seeds land AHEAD of the marker, where the first-wins guards are:
 	// spliced behind it the same bytes are only the tampering stance, which the
 	// post-marker seeds below already pose.
-	f.Add(1, strings.Index(fuzzAppliedBases[1], launcher.AppliedMarker), []byte("landlock "+launcher.AppliedYes+"\n"))
-	f.Add(2, strings.Index(fuzzAppliedBases[2], launcher.AppliedMarker), []byte("landlock "+launcher.AppliedYes+"\n"))
-	f.Add(2, strings.Index(fuzzAppliedBases[2], launcher.AppliedMarker), []byte("exec-filter "+launcher.AppliedExecStrict+"\n"))
-	f.Add(3, len(fuzzAppliedBases[3]), []byte(`exec-ran 9 "/bin/true" "true"`+"\n"))
-	f.Add(3, len(fuzzAppliedBases[3]), []byte(launcher.AppliedExecRecordMarker+"\n"))
-	f.Add(3, len(fuzzAppliedBases[3])-1, []byte("exec-ra"))
-	f.Add(4, len(fuzzAppliedBases[4]), []byte(launcher.AppliedTargetUnreached+" \"forged\"\n"))
-	f.Add(0, 5, []byte("\x00\xff"))
+	f.Add(1, strings.Index(fuzzAppliedBases[1], launcher.AppliedMarker), []byte("landlock "+launcher.AppliedYes+"\n"), 0)
+	f.Add(2, strings.Index(fuzzAppliedBases[2], launcher.AppliedMarker), []byte("landlock "+launcher.AppliedYes+"\n"), 0)
+	f.Add(2, strings.Index(fuzzAppliedBases[2], launcher.AppliedMarker), []byte("exec-filter "+launcher.AppliedExecStrict+"\n"), 0)
+	f.Add(3, len(fuzzAppliedBases[3]), []byte(`exec-ran 9 "/bin/true" "true"`+"\n"), 0)
+	f.Add(3, len(fuzzAppliedBases[3]), []byte(launcher.AppliedExecRecordMarker+"\n"), 0)
+	f.Add(3, len(fuzzAppliedBases[3])-1, []byte("exec-ra"), 0)
+	f.Add(4, len(fuzzAppliedBases[4]), []byte(launcher.AppliedTargetUnreached+" \"forged\"\n"), 0)
+	f.Add(0, 5, []byte("\x00\xff"), 0)
 	// The record marker spelled inside a quoted detail rather than on a line of its own.
 	// The report that results over-claims nothing - one recorder, one honestly observed
 	// exec - so this is here to keep the oracle from measuring the record against a marker
 	// the stage never wrote.
-	f.Add(3, strings.Index(fuzzAppliedBases[3], "\n"+`exec-ran`), []byte(` "`+launcher.AppliedExecRecordMarker+`"`))
+	f.Add(3, strings.Index(fuzzAppliedBases[3], "\n"+`exec-ran`), []byte(` "`+launcher.AppliedExecRecordMarker+`"`), 0)
+	// An Unavailable baseline under the Landlock-failure base: the host probed that
+	// nothing could confine the filesystem, and reconcile must not hand back a partial
+	// guarantee it never had. Seeded rather than left to the fuzzer because `go test`
+	// without -fuzz runs the corpus alone.
+	f.Add(1, 0, []byte(nil), 2)
 
-	f.Fuzz(func(t *testing.T, baseIdx, at int, junk []byte) {
+	f.Fuzz(func(t *testing.T, baseIdx, at int, junk []byte, baseState int) {
 		base := fuzzAppliedBases[((baseIdx%len(fuzzAppliedBases))+len(fuzzAppliedBases))%len(fuzzAppliedBases)]
 		at = ((at % (len(base) + 1)) + (len(base) + 1)) % (len(base) + 1)
 		corrupted := base[:at] + string(junk) + base[at:]
+		states := []enforce.State{enforce.Enforced, enforce.Degraded, enforce.Unavailable}
+		baseline := states[((baseState%len(states))+len(states))%len(states)]
 
-		intact, _ := reportStates(t, base)
-		got, rec := reportStates(t, corrupted)
+		intact, _ := reportStates(t, base, baseline)
+		got, rec := reportStates(t, corrupted, baseline)
 
 		// States are ordered by severity - Enforced < Degraded < Unavailable - so "no
 		// better" is a numeric floor. A corruption may worsen a layer freely; it may
 		// never buy one back.
 		for layer, want := range intact {
+			// The floor the baseline itself sets. The comparison above is against the
+			// intact run from the SAME baseline, so a reconcile arm that improves a
+			// worse-than-Enforced layer improves both sides equally and slips through;
+			// only the baseline can catch it. reconcile only ever worsens.
+			if got[layer] < baseline {
+				t.Fatalf("reconcile improved %v from the %v baseline to %v:\n%q", layer, baseline, got[layer], corrupted)
+			}
 			if got[layer] < want {
 				t.Fatalf("splicing %q at %d improved %v from %v to %v - the report claims a fence the intact one does not:\n%q",
 					junk, at, layer, want, got[layer], corrupted)
@@ -166,7 +183,7 @@ func execRanLinesBeforeTheRecordMarker(report string) int {
 func TestParseAppliedNeverOverClaimsOnTheBases(t *testing.T) {
 	seen := map[string]int{}
 	for i, base := range fuzzAppliedBases {
-		states, rec := reportStates(t, base)
+		states, rec := reportStates(t, base, enforce.Enforced)
 		// The record is part of the key because two bases may agree on every layer and
 		// still pose different halves of the oracle - the exec-record base reconciles
 		// fully enforced and is there for the floor below the layers.
