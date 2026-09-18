@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -162,5 +163,69 @@ func TestSetupFailureNamesTheWriteDirItCreated(t *testing.T) {
 	// Nothing ran, so bwrap created no mount point and the reclaim has nothing to report.
 	if strings.Contains(stderr.String(), "could not reclaim") {
 		t.Errorf("a run that never launched must not report unreclaimed shield mount points; stderr was %q", stderr.String())
+	}
+}
+
+// A cancel that lands before the wrapper starts is the other half of the same cell: the
+// directory is on the host, no target ever used it, and the run returns an error. The
+// runCmd seam is how the suite produces that arm - it is the only way to get a return
+// with cmd.ProcessState nil, which is what the cancel arm reads as "never started".
+func TestCancelBeforeLaunchNamesTheWriteDirItCreated(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "build", "out")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	orig := runCmd
+	runCmd = func(*exec.Cmd, func(int)) error { return context.Canceled }
+	t.Cleanup(func() { runCmd = orig })
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{out}}
+	var stderr bytes.Buffer
+	if _, err := sandboxEnforcer(t).Run(ctx, p, enforce.Process{Stderr: &stderr}, enforce.RunOptions{}); err == nil {
+		t.Fatal("a cancelled context must fail the run")
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("the premise of the test is that the directory is created and kept: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "\n  "+out+"\n") {
+		t.Errorf("a run cancelled before the wrapper started must name the host directory it left behind; stderr was %q, want a line naming %s", stderr.String(), out)
+	}
+}
+
+// prepareWriteDirs creates one grant at a time, so a refusal on a later grant returns
+// with an earlier grant's directory already on the host - before any of the five later
+// steps the sibling test covers, and on preflightGrants' own error path.
+func TestPreflightFailureNamesTheWriteDirItAlreadyCreated(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	made := filepath.Join(dir, "a-created")
+	// A regular file where a write grant names a directory: prepareWriteDirs refuses it.
+	refused := filepath.Join(dir, "b-refused")
+	if err := os.WriteFile(refused, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Read: []string{dir}, Write: []string{made, refused}}
+	var stderr bytes.Buffer
+	if _, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{Stderr: &stderr}, enforce.RunOptions{}); err == nil {
+		t.Fatal("a write grant naming a regular file must fail the run")
+	}
+	if _, err := os.Stat(made); err != nil {
+		t.Skipf("the refusal landed before the first grant was created, so there is no residue to report: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "\n  "+made+"\n") {
+		t.Errorf("a preflight refusal must name the directory it already created; stderr was %q, want a line naming %s", stderr.String(), made)
 	}
 }

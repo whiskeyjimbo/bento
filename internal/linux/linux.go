@@ -111,7 +111,16 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	}
 	defer cleanup()
 
-	preflight, err := preflightGrants(sb, p, opts.AcceptAliasesUnder)
+	// Registered before the call, not after it: prepareWriteDirs creates one grant's
+	// directory at a time, so a refusal on a later grant returns with an earlier one
+	// already on the host - and preflightGrants hands those back on its error path too.
+	var preflight preflighted
+	defer func() {
+		if err != nil && !launched {
+			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
+		}
+	}()
+	preflight, err = preflightGrants(sb, p, opts.AcceptAliasesUnder)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -133,16 +142,6 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
 	defer func() {
 		warnResidue(proc.Stderr, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
-	}()
-
-	// A failure between here and the launch below returns before the target ever runs,
-	// leaving the directories prepareWriteDirs made on the host for a run that did not
-	// happen. They are not reclaimed - the manifest named them and an enforced run of it
-	// creates them again - but nothing in the Result names them either, so this does.
-	defer func() {
-		if err != nil && !launched {
-			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
-		}
 	}()
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
@@ -247,8 +246,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// Only when the run was actually wrapped in a scope: unwrapped, there is no scope to
 	// read and the report already claims nothing about the limits.
 	var scoped scopeLimits
-	launched = true
 	runErr := runCmd(cmd, func(pid int) {
+		// Only reached once Start succeeded, which is what separates a setup failure from
+		// a run: a cancel that arrives first, or a wrapper that will not exec, leaves the
+		// write-grant directory behind with no target ever having used it.
+		launched = true
 		if exe != bwrap {
 			scoped = attestScopeLimits(pid)
 		}
@@ -697,7 +699,9 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 	// made apart from one the user already had.
 	created := absentWrites(writes)
 	if err := prepareWriteDirs(p, sb); err != nil {
-		return preflighted{}, err
+		// The list rides out with the error: it creates one grant at a time, so a
+		// refusal on a later grant leaves an earlier grant's directory on the host.
+		return preflighted{createdWrites: created}, err
 	}
 	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted, createdWrites: created}, nil
 }

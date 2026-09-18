@@ -579,7 +579,7 @@ func insideAWriteGrant(path string, writes []string) bool {
 // Best effort throughout: a kill before this runs leaves the artifact, as before.
 //
 // The whole cleanup under one bound rather than each Lstat, because the paths are many
-// and a bound per call would still block for hours. It runs on a defer on all three entry
+// and a bound per call would still block for hours. It runs on a defer on both bwrap entry
 // paths, after the target has exited - worst on Profile, where it is the last thing
 // between the observation and the caller - so a write grant whose mount died during the
 // run otherwise holds the process forever with the sandbox already torn down. An expiry
