@@ -90,16 +90,22 @@ var tierProbes = []tierProbe{
 		// the run when the residual is live - is exercised by
 		// TestRunDegradedRefusesWithoutTheRealFences/capability-bound, which no arm here
 		// can reach without privilege.
-		why:      "bv2-7nv8y / grid row 10: --cap-drop ALL empties it on the bwrap tier; the degraded tier attempts the drop, cannot make it, and refuses a privileged run instead",
+		// The bwrap cell is "empty" on this arm whether or not --cap-drop ALL is passed:
+		// bwrap applies that flag only when running privileged, and an unprivileged bwrap
+		// empties the bounding set by default. So the row measures the SET, which is what
+		// the differential is about, and not the flag that would empty it on a privileged
+		// host - which nothing here can reach.
+		why:      "bv2-7nv8y / grid row 10: the bwrap tier leaves it empty; the degraded tier attempts the drop, cannot make it, and refuses a privileged run instead",
 		unfenced: "nonempty",
 		degraded: "nonempty",
 		bwrap:    "empty",
 	},
 	{
 		name: "inet-socket",
-		// bwrap reads "permitted" and that is not a scandal: --unshare-net lives in
-		// baseFlags, not in the namespaceFlags/sessionFlags set this arm models, so the
-		// real bwrap tier's network fence is out of the arm's scope by construction. What
+		// bwrap reads "permitted" and that is not a scandal: --unshare-net is appended by
+		// the network layer (internal/linux/args.go), not carried in the
+		// namespaceFlags/sessionFlags set this arm models, so the real bwrap tier's
+		// network fence is out of the arm's scope by construction. What
 		// the row pins is the other side - that the degraded tier's substitute is live.
 		why:      "grid row 2: the degraded tier has no netns, so BlockEgress is the whole IP-egress fence; socket(2) is its chokepoint",
 		unfenced: "permitted",
@@ -139,7 +145,7 @@ var tierProbes = []tierProbe{
 	},
 	{
 		name:     "tty-inject-ioctl",
-		why:      "bv2-lpuue: what the degraded substitute DOES cover, pinned so a widening or a regression is visible",
+		why:      "bv2-lpuue: what the degraded substitute DOES cover, pinned so a widening or a regression is visible; the bwrap cell is stated rather than measured (runTierProbes) because --new-session leaves no terminal to try the ioctl on",
 		hostFact: "a controlling terminal",
 		unfenced: "permitted",
 		degraded: "denied",
@@ -268,8 +274,13 @@ func runTierArm(t *testing.T, arm, key string) map[string]string {
 		//
 		// The list is hand-copied because namespaceFlags is unexported in internal/linux
 		// and this package cannot import it - the dependency runs the other way - so the
-		// arm cannot be derived from it. What keeps it honest is that every flag is
-		// load-bearing for a row: drop one and its row reads the unfenced value.
+		// arm cannot be derived from it. Five of the seven flags are pinned by a row that
+		// reads the unfenced value if the flag goes missing: --unshare-ipc by sysv-ipc,
+		// --unshare-pid, --unshare-uts and --unshare-cgroup by their namespace rows, and
+		// --new-session by controlling-terminal. The other two cannot be pinned from an
+		// unprivileged run and are carried for fidelity to namespaceFlags: bwrap creates a
+		// user namespace without --unshare-user, and empties the bounding set without
+		// --cap-drop ALL, which it applies only when privileged.
 		cmd.Args = append([]string{
 			bwrap, "--dev-bind", "/", "/",
 			"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup",
@@ -374,9 +385,12 @@ func runTierProbes() {
 		tty.Close()
 		return
 	}
-	// No controlling terminal AND no way to tell "bwrap detached it" from "this host
-	// never had one" - so the arm that had none to begin with reports n/a and the rows
-	// are skipped rather than asserted against an absence.
+	// With the terminal gone there is nothing left to measure the injection ioctl on, so
+	// the bwrap arm's two cells are STATED consequences of --new-session rather than probe
+	// results - the row that can go red for the bwrap arm is controlling-terminal, and
+	// tty-inject-ioctl's teeth are all in its degraded cell. An arm that had no terminal to
+	// begin with cannot tell "bwrap detached it" from "this host never had one", so it
+	// reports n/a; reexecUnderTerminal makes that unreachable, and the table fails on it.
 	if os.Getenv(sentinelTierArm) == armBwrap {
 		report("controlling-terminal", "detached")
 		report("tty-inject-ioctl", "permitted")
