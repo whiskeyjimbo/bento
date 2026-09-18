@@ -118,9 +118,10 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// Registered before the call for the reason Run's twin is: this creates one grant's
 	// directory at a time, so a refusal on a later grant returns with an earlier one
 	// already on the host, and the five failable steps between here and the launch each
-	// return with the whole set standing. The guard is launched alone rather than Run's
-	// err != nil && !launched: every refusal on this path returns through an err that
-	// shadows the named one, and a run that never launched never returns nil either way.
+	// return with the whole set standing. The guard is launched alone because no arm of
+	// this function returns a nil error with launched false - the success arm requires
+	// runCmd to have returned nil, and runCmd calls back only once Start succeeded - so
+	// testing the error as well, as Run does, would decide nothing.
 	var launched bool
 	createdWrites, err := prepareWriteDirs(p, sb)
 	defer func() {

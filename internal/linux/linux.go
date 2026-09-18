@@ -717,9 +717,11 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 //
 // The teardown invariant is one-sided: leaving a path bento cannot prove it created is
 // the safe direction, leaving one it did create unreclaimed AND unmentioned is not.
-// enforce.Result carries no field for post-run hygiene, and worsening a confinement
-// layer for it would report a shortfall on a run whose confinement in fact held - so
-// the operator's stderr is the channel.
+// Worsening a confinement layer for it would report a shortfall on a run whose
+// confinement in fact held, so this is not a layer state - it is the operator's stderr,
+// which is the right channel for a CLI and the wrong one for an embedder that passed no
+// terminal at all. recordResidue writes it to enforce.Result.Residue as well, for that
+// caller; the two are one account on two channels, not two facts.
 func warnResidue(w io.Writer, what string, paths []string) {
 	if w == nil || len(paths) == 0 {
 		return
@@ -793,7 +795,9 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) (created []string, err error
 		case os.IsNotExist(err):
 			// Recorded before the MkdirAll, not after it answers: a MkdirAll that fails
 			// partway still leaves the parents it managed to make, and those are exactly
-			// what an operator is otherwise never told about.
+			// what an operator is otherwise never told about. It over-names when the
+			// MkdirAll makes no progress at all, which is the safe side of the one-sided
+			// invariant warnResidue states.
 			created = append(created, w)
 			// 0700: only the invoking user's own target writes here (bwrap unshares
 			// the user namespace without remapping the uid), so nothing needs group
