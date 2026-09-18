@@ -206,3 +206,37 @@ Not filed, with reasons:
   WHEN-axis candidate for a later grid, not a concurrency finding.
 - Fuzz targets for landlock, seccomp, i386, backend and cmd/*: no cheap in-process oracle.
 - Both exec dispatch paths already refuse a relative argv[0] (launcher.go:1040, seccomp_linux.go:157).
+
+## Sixth sweep, 2026-09-18
+
+Five rounds have taken the strong mirror pairs and the enums with many call sites, so this
+sweep went after axes the earlier ones did not use: teardown and termination as a WHEN axis,
+the two board items that ask for a grid by name and nobody has picked, a tree-wide `= iota`
+count (earlier sweeps counted enums in `internal/` and the frontends, not everywhere), and
+cross-package degradation flags in `trust`.
+
+| # | Candidate | Signals | Invariant (one-sided) | Grid shape | Fit | Route |
+|---|-----------|---------|----------------------|------------|-----|-------|
+| 31 | Teardown and reclaim x termination mode x tier (`internal/linux/shields.go` createdShields/removeCreatedShields, `internal/linux/linux.go` and `degraded.go` cancel arms, `internal/launcher` leaked-group sweep, scratch writes) | New axis. 16 fixes on shields.go alone and a long one-at-a-time run of `fix(cancel)`/`fix(degraded)`/`harden(launcher)` commits, each closing one termination mode; three open beads name single cells (bv2-ntncf, bv2-dyz92, bv2-2dpgj) | Teardown may leave behind only what it can prove bento did not create; it must never leave a bento-created artifact inside the checkout unreclaimed and unreported, and never report a discarded write as applied | termination mode (clean exit, target error, setup failure, cancel before start, cancel mid-run, SIGKILL of bento, SIGKILL of the target) x artifact class (materialized file shields, created mount-point dirs, scratch writes, leaked process groups, proxy/recorder) x tier (bwrap, degraded) - collapse tier where the artifact is tier-bound, ~30 | Strong. States, not interleavings: a WHEN axis, not a `concurrency-audit` | grid |
+| 32 | Limits probe internals vs reported limit state (`internal/linux/limits.go`: cacheProbe, measureScope, measureDelegatedControllers, hostSafetyDelegationState, cpuDelegationState, unifiedCgroupReadable, abandonedProbeReason) | Carried: bv2-03sfk, nominated 2026-08-17, never picked. 39 commits on limits.go; `(T, bool)` caches and `known bool` threaded through every helper | A limit may be reported UNENFORCED when it was in fact enforced; it must never be reported enforced when the probe was unknown, timed out, the cgroup was unreadable, or the controller was undelegated | limit kind (3) x probe outcome (delegated, undelegated, controllers unknown, cgroup unreadable, timed out or abandoned, cached from an earlier run) ~18 | Good | grid, scoped strictly BELOW the layer boundary: `state-grid-admission.md` (posture x layer state, incl. requested limit) and `state-grid-layer-consumers.md` own the layer above. The doc bv2-03sfk tells a reviewer to read first, `state-grid-layer-attestation-2026-08-16.md`, is gone from the tree - strip that instruction |
+| 33 | Launcher restriction sequence, bwrap tier vs degraded (`internal/launcher/launcher.go` vs `degraded.go` RunDegraded/degradedPrerequisites/restrictDegraded) | Carried: bv2-76t24, nominated 2026-08-17, never picked. The mirror is named in the code (degraded.go:97, :135 "Order mirrors the bwrap launcher"); 35 `fix(launcher)` in 60 days, and eight since 2026-09-17 alone (/dev fence, bwrap resolution, new session) | The degraded tier may drop a restriction the bwrap tier applies, but only where the absent bwrap structurally forces it and the applied report records the drop; never a shared restriction applied in an order that leaves a window the bwrap tier does not have | restriction (~8) x state (applied, dropped and recorded, dropped silently or misordered) ~24 | Good. `threat-model-launcher.md` (2026-09-17) covered attacker capability against this area, not the restriction-by-restriction parity; the two are complementary per Phase 0 | grid. Both scope-boundary docs the bead cites, `state-grid-launcher-encode-parity.md` and `state-grid-applied-report-wire.md`, are gone - strip that instruction too |
+| 34 | `trust.groupReach` and the facts built on it x consumers (`trust/accounts.go`, `trust/trust.go`, `internal/linux/limits.go`, `internal/linux/scopeattest.go`) | New: a deliberately three-valued degradation flag (`groupUnknown` is the zero value on purpose, accounts.go:19-21) read in two packages outside its own; the classic empty-because-unasked shape, which is the shape bv2-hqqlp and the gate-unknowns grid both turned out to be | No consumer reads `groupUnknown` as `groupPrivate`: a group nothing could be learned about never presents as proven to hold nobody | flag value (3) x fact built on it (foreign owner, shared-group write, scope attestation, limits delegation) x consumer form ~18 | Medium: small surface, but the invariant is sharp and one-sided | grid, small |
+
+Declined this sweep, with reasons:
+- Tree-wide `= iota` turned up three enums no earlier sweep names - `journalVerdict`
+  (journal.go:66), `convergeStop` (converge.go:186), `grantChoice` (prompt.go:15). All three
+  are read essentially in their own file (journal 37 of 40 references, converge 24 of 28,
+  prompt 7 of 11). One dimension, linear flow: ordinary review, not a grid. `convergeStop`
+  pairs with open bv2-mfvki, which is one bead, not a row.
+- Exit codes (`bentoFailed` 125, `postureShortfall` 124, passthrough) x command. Nothing
+  branches on an exit code except render.go's hint heuristics and profile.go:1411 - emission
+  plus documentation for CI wrappers. The hint half was already declined twice (third and
+  fourth outcomes, R16 and "documented choices"). bv2-uyx1h is a bead, not a grid.
+- `internal/denylist` stays parked behind open P1 bv2-h7k3b, unchanged from rows 24 and 30 -
+  but it is 52 fix commits in 60 days, the second-highest scope in the repo, and the only
+  reason it is unexamined is that one undecided bead. Deciding bv2-h7k3b may be worth more
+  than a fourth grid.
+- `proxy.ipClass` x nat64: proxy was routed to `failure-modes` twice and that run is spent
+  (`docs/failure-modes/`); bv2-khpb1 is the open cell.
+- `namespaceProbe` (probe.go, 25 of 27 references): the consuming half is what
+  `state-grid-layer-consumers.md` already walked.
