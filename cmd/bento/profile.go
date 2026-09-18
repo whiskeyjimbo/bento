@@ -64,11 +64,14 @@ func newProfileCmd() *cobra.Command {
 			"stamp on the file is dropped - so profile says what it changed, and it\n" +
 			"refuses a manifest at --out written for a different program rather than\n" +
 			"leaving one that names one script and grants what another did.\n\n" +
-			"Converging that way needs a run that gets FURTHER each round, so a dependency the\n" +
-			"program needs in order to exec at all is not discoverable this way: profiling records\n" +
-			"attempted opens, and a program that never starts never attempts the rest of what it\n" +
-			"needs. Granting what the proposal shows then produces a byte-identical proposal, round\n" +
-			"after round. That seed grant - a toolchain's own installation, say - is hand-built.\n\n" +
+			"Converging that way needs a run that gets FURTHER each round. A grant accepted at the\n" +
+			"prompt is mounted for the rounds after it, so on a terminal the program does proceed;\n" +
+			"without one, a round mounts nothing and grants only accumulate in the file. A\n" +
+			"dependency the program needs in order to exec at all is then not discoverable this\n" +
+			"way: profiling records attempted opens, and a program that never starts never attempts\n" +
+			"the rest of what it needs, so re-profiling reproduces the proposal byte for byte,\n" +
+			"round after round. That seed grant - a toolchain's own installation, say - has to be\n" +
+			"hand-built, or granted at the prompt.\n\n" +
 			"On a terminal, an existing manifest at --out that is currently approved for\n" +
 			"this same script is resumed: its grants are listed and mounted from the first\n" +
 			"round instead of being asked again, so quitting mid-session and re-running\n" +

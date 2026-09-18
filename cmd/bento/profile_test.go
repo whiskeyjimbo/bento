@@ -1863,8 +1863,12 @@ func TestProfileHelpBoundsTheConvergencePromise(t *testing.T) {
 	}
 	for _, want := range []string{
 		"needs a run that gets FURTHER each round",
-		"exec at all is not discoverable this way",
-		"byte-identical proposal",
+		"exec at all is then not discoverable this",
+		"byte for byte",
+		// The qualification is the whole point: a grant accepted at the prompt IS mounted
+		// for the rounds after it, so the stall is the no-terminal case and saying it
+		// unconditionally would contradict the resume paragraph below it.
+		"without one, a round mounts nothing",
 	} {
 		if !strings.Contains(long, want) {
 			t.Errorf("profile --help must say %q, or the convergence advice reads as unconditional;\ngot:\n%s", want, long)

@@ -1011,10 +1011,12 @@ func TestValidateRelocatableExitStatusAmbiguityIsDocumented(t *testing.T) {
 	if missingErr == nil {
 		t.Fatal("a missing manifest must fail")
 	}
-	// Neither carries a code of its own, so both reach main's bentoFailed. If one grows
-	// an exitError the statuses have parted and the help below is wrong.
-	var ee *exitError
-	if errors.As(pinnedErr, &ee) != errors.As(missingErr, &ee) {
+	// Neither carries a code of its own, so both reach main's bentoFailed. Codes are
+	// compared, not merely their presence: two exitErrors with different codes have parted
+	// the statuses just as surely as one, and the help below would then be wrong.
+	var pinnedEE, missingEE *exitError
+	pinnedCoded, missingCoded := errors.As(pinnedErr, &pinnedEE), errors.As(missingErr, &missingEE)
+	if pinnedCoded != missingCoded || (pinnedCoded && pinnedEE.code != missingEE.code) {
 		t.Fatalf("the two refusals no longer share an exit status; the help must be updated: pinned=%v missing=%v", pinnedErr, missingErr)
 	}
 
