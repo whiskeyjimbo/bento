@@ -32,7 +32,7 @@ const maxFileSize = 64 << 10
 // machineStores are the package and build caches under home. They hold content-addressed
 // artifacts rather than the user's own files, so a shape hit inside one is never an entry
 // the deny-list would gain - and the Go module cache writes 0600, which on its own
-// accounted for the great majority of a real home's hits. Hunt reports how many it pruned
+// accounted for the great majority of a real home's hits. Hunt names every root it pruned
 // so this stays visible rather than becoming a silent suppression list.
 func machineStores(home string) []string {
 	rel := []string{".cache", "go/pkg/mod", ".go/pkg/mod", ".cargo/registry", ".npm", ".m2/repository", ".gradle/caches"}
@@ -146,7 +146,19 @@ func run(stdout, stderr io.Writer, homes []string) int {
 		for _, d := range dense {
 			fmt.Fprintf(stdout, "  %-70q %d hits, not listed - an installed-tool tree? add it to machineStores\n", d.prefix+"/...", d.count)
 		}
-		fmt.Fprintf(stdout, "%d lead(s) and %d dense tree(s) under %q that no shield covers (%d tree(s) pruned, %d path(s) unreadable)\n\n", len(leads), len(dense), h, pruned, unreadable)
+		// Named rather than counted, and every one of them listed: a count says the scan
+		// narrowed without saying where, and where is the whole question - a pruned root
+		// that IS the scan root, or a subtree hidden behind a marker someone planted, is
+		// indistinguishable from a clean home under a number. Unlisted is the one thing
+		// these must not be; folding them the way summarize folds a dense tree would put
+		// the narrowing back behind a count, which is what this exists to undo.
+		for _, p := range pruned {
+			fmt.Fprintf(stdout, "  pruned    %q\n", p)
+		}
+		for _, p := range unreadable {
+			fmt.Fprintf(stdout, "  unreadable %q\n", p)
+		}
+		fmt.Fprintf(stdout, "%d lead(s) and %d dense tree(s) under %q that no shield covers (%d tree(s) pruned, %d path(s) unreadable)\n\n", len(leads), len(dense), h, len(pruned), len(unreadable))
 	}
 	fmt.Fprintln(stdout, "These are LEADS, not gaps: read each one and decide whether it belongs in denylist.go.")
 	fmt.Fprintln(stdout, "A name/suffix hit alone is weak; private-mode plus a content shape is close to certain.")

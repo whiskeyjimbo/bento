@@ -155,7 +155,7 @@ func TestIndexedHuntMatchesLinear(t *testing.T) {
 	if len(found) == 0 {
 		t.Fatal("the planted credential was not found at all")
 	}
-	t.Logf("findings: %d, pruned: %d", len(found), pruned)
+	t.Logf("findings: %d, pruned: %d", len(found), len(pruned))
 	for _, f := range found {
 		if strings.Contains(f.Path, "/.ssh/") {
 			t.Errorf("a file under the shielded ~/.ssh was reported: %v", names)

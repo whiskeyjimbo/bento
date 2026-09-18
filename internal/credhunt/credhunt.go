@@ -116,9 +116,9 @@ type Options struct {
 	// files 0600, which measured as 64319 of 74835 hits on one developer home. Left in,
 	// the report is unreadable, which for a hunting tool is the same as not working.
 	//
-	// It is a prune, not a suppression: Hunt reports how many it applied, so the operator
-	// sees the tool narrowed and can shorten the list. A silent suppression list here is
-	// exactly what would hide the findings this exists to surface.
+	// It is a prune, not a suppression: Hunt names every root it applied one to, so the
+	// operator sees where the tool narrowed and can shorten the list. A silent suppression
+	// list here is exactly what would hide the findings this exists to surface.
 	MachineStores []string
 	// MaxFileSize bounds the content sniff: it is how many bytes of a file's head are
 	// read, never a size a file must be under to be looked at. Reading a multi-gigabyte
@@ -143,15 +143,20 @@ type Options struct {
 // A file it cannot stat or read is skipped rather than failing the walk. That is the one
 // place this tool swallows an error on purpose: it runs over a live home where an
 // unreadable socket, a dangling link or a root-owned file is ordinary, and aborting the
-// hunt on the first of them would report nothing at all. It is counted, for the reason a
+// hunt on the first of them would report nothing at all. It is named, for the reason a
 // prune is: a subtree the scan could not look into reports zero findings, which reads
 // exactly like a clean one unless the operator is told the scan narrowed. A name that is
-// simply gone is not counted - a file deleted between the readdir and the stat, ordinary
-// on a live home, narrowed nothing and inflating the count with those would make it the
-// churn of the home rather than what the scan could not see.
-func Hunt(opts Options) ([]Finding, int, int, error) {
+// simply gone is not named - a file deleted between the readdir and the stat, ordinary
+// on a live home, narrowed nothing and listing those would make the report the churn of
+// the home rather than what the scan could not see.
+//
+// The second and third results are, in order, the roots pruned and the paths that could
+// not be read. Both are paths rather than counts: a count tells the operator the scan
+// narrowed but not where, which for the two failures this tool exists to avoid - a scan
+// root pruned away, a subtree hidden behind a planted marker - is the same as silence.
+func Hunt(opts Options) ([]Finding, []string, []string, error) {
 	var out []Finding
-	pruned, unreadable := 0, 0
+	var pruned, unreadable []string
 	// Cleaned once, and every comparison below is against this rather than the caller's
 	// spelling. The walk asks whether an entry IS the root and whether its parent is, and
 	// filepath.Dir hands back a cleaned path: a root spelled with a trailing separator
@@ -174,7 +179,7 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 	err := filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				unreadable++
+				unreadable = append(unreadable, path)
 			}
 			// The root is the exception to the skip-and-continue rule below: a home that
 			// cannot be walked yields zero findings, which reads as a clean home. That is
@@ -223,7 +228,7 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 			// loose blobs under names that carry no shape at all, so it contributes only
 			// noise. denylist's alias scan makes the same narrowing for the same reason.
 			if n := d.Name(); n == ".git" || n == ".hg" || n == ".svn" {
-				pruned++
+				pruned = append(pruned, path)
 				return fs.SkipDir
 			}
 			// A source checkout is workspace surface, not home-shield surface: bento
@@ -233,11 +238,11 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 			// checkout is common, and pruning there scans nothing and reports a clean
 			// home - a silent wrong answer, the failure this tool exists to avoid.
 			if path != home && isCheckout(path) {
-				pruned++
+				pruned = append(pruned, path)
 				return fs.SkipDir
 			}
 			if slices.Contains(stores, path) {
-				pruned++
+				pruned = append(pruned, path)
 				return fs.SkipDir
 			}
 			return nil
@@ -250,13 +255,13 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 		info, statErr := d.Info()
 		if statErr != nil {
 			if !errors.Is(statErr, fs.ErrNotExist) {
-				unreadable++
+				unreadable = append(unreadable, path)
 			}
 			return nil
 		}
 		signals, opened := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home)
 		if !opened {
-			unreadable++
+			unreadable = append(unreadable, path)
 		}
 		if len(signals) > 0 {
 			out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
@@ -264,7 +269,7 @@ func Hunt(opts Options) ([]Finding, int, int, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, nil, nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, pruned, unreadable, nil

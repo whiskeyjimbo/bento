@@ -288,8 +288,8 @@ func TestHuntCountsTheVCSObjectStorePrune(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned != 1 {
-		t.Errorf("pruned = %d, want 1; a prune the operator cannot see is a suppression", pruned)
+	if len(pruned) != 1 {
+		t.Errorf("pruned = %v, want 1; a prune the operator cannot see is a suppression", pruned)
 	}
 }
 
@@ -309,8 +309,8 @@ func TestMachineStoresArePrunedAndCounted(t *testing.T) {
 	if got := paths(found); !slices.Equal(got, []string{kept}) {
 		t.Errorf("findings = %v, want only %s - the machine store must be pruned", got, kept)
 	}
-	if pruned != 1 {
-		t.Errorf("pruned = %d, want 1; a prune the operator cannot see is a suppression", pruned)
+	if len(pruned) != 1 {
+		t.Errorf("pruned = %v, want 1; a prune the operator cannot see is a suppression", pruned)
 	}
 }
 
@@ -390,8 +390,8 @@ func TestUnreadableDirectoryIsCounted(t *testing.T) {
 	if len(found) != 0 {
 		t.Fatalf("findings = %v, want none - the subtree is unreadable", paths(found))
 	}
-	if unreadable != 1 {
-		t.Errorf("unreadable = %d, want 1; a scan that could not look must not read as a clean home", unreadable)
+	if len(unreadable) != 1 {
+		t.Errorf("unreadable = %v, want 1; a scan that could not look must not read as a clean home", unreadable)
 	}
 }
 
@@ -415,8 +415,8 @@ func TestUnopenableFileIsCounted(t *testing.T) {
 	if got := paths(found); !slices.Equal(got, []string{shut}) {
 		t.Fatalf("findings = %v, want %s on its name alone", got, shut)
 	}
-	if unreadable != 1 {
-		t.Errorf("unreadable = %d, want 1; the content sniff never read this file", unreadable)
+	if len(unreadable) != 1 {
+		t.Errorf("unreadable = %v, want 1; the content sniff never read this file", unreadable)
 	}
 }
 
@@ -434,8 +434,8 @@ func TestAVanishedFileIsNotCountedUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(found) != 0 || unreadable != 0 {
-		t.Errorf("Hunt = %v, unreadable %d; a dangling link is neither a finding nor a blind spot", paths(found), unreadable)
+	if len(found) != 0 || len(unreadable) != 0 {
+		t.Errorf("Hunt = %v, unreadable %v; a dangling link is neither a finding nor a blind spot", paths(found), unreadable)
 	}
 }
 
