@@ -584,21 +584,46 @@ func insideAWriteGrant(path string, writes []string) bool {
 // between the observation and the caller - so a write grant whose mount died during the
 // run otherwise holds the process forever with the sandbox already torn down. An expiry
 // leaves the artifact, which is what a kill here already does.
-func removeCreatedShields(dirs, files []string) {
-	_, _ = bounded("the cleanup of the shield mount points", func() (struct{}, error) {
+//
+// Best effort is not the same as silent. Every skip above is deliberate and stays -
+// leaving a path bento cannot prove it created is the safe direction - but a caller that
+// learns nothing cannot say a mount point survived inside the user's checkout. The
+// returned paths are exactly those still standing, deepest first as dirs arrives, and an
+// empty return is the only thing that means the host is clean.
+//
+// On an expiry the closure is abandoned rather than cancelled, so nothing it computed can
+// be read back without racing it: every input path is reported instead, which is the
+// honest answer when the reclaim's progress is unknown.
+func removeCreatedShields(dirs, files []string) []string {
+	left, err := bounded("the cleanup of the shield mount points", func() ([]string, error) {
+		var left []string
 		for _, f := range files {
-			if fi, err := shieldLstat(f); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+			// An absent path is a clean outcome, not a residue: bwrap never created it,
+			// which is what a setup failure before the launch leaves. Only a path that is
+			// still there, or one the host could not answer for, is unaccounted.
+			if fi, err := shieldLstat(f); os.IsNotExist(err) {
+				continue
+			} else if err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+				left = append(left, f)
 				continue
 			}
-			os.Remove(f)
+			if err := os.Remove(f); err != nil {
+				left = append(left, f)
+			}
 		}
 		// dirs is deepest first, so the mount points inside an intermediate directory are
 		// gone by the time it is tried.
 		for _, d := range dirs {
-			_ = syscall.Rmdir(d)
+			if err := syscall.Rmdir(d); err != nil && !os.IsNotExist(err) {
+				left = append(left, d)
+			}
 		}
-		return struct{}{}, nil
+		return left, nil
 	})
+	if err != nil {
+		return slices.Concat(files, dirs)
+	}
+	return left
 }
 
 // shieldLstat is behind a var for autoExecStat's reason: the mount the bound above exists

@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -47,7 +48,10 @@ var _ enforce.Enforcer = (*Enforcer)(nil)
 // inside it. A non-zero exit from the target is returned in the Result; err is
 // reserved for a failure to build or start the sandbox, so a script that merely
 // fails is never confused with a sandbox that did not hold.
-func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (enforce.Result, error) {
+func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (res enforce.Result, err error) {
+	// launched separates a setup failure from a run whose target actually started; the
+	// deferred residue report below is only about the former.
+	var launched bool
 	// enforce.Run validates before it gets here, but this is an exported entry point an
 	// embedder can call directly - as Profile already does for the same reason.
 	if err := p.Validate(); err != nil {
@@ -127,7 +131,19 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// .git/hooks). Remove those after the run so the sandbox leaves no artifact; see
 	// removeCreatedShields for why this is safe and best-effort.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
-	defer removeCreatedShields(shieldDirs, shieldFiles)
+	defer func() {
+		warnResidue(proc.Stderr, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+	}()
+
+	// A failure between here and the launch below returns before the target ever runs,
+	// leaving the directories prepareWriteDirs made on the host for a run that did not
+	// happen. They are not reclaimed - the manifest named them and an enforced run of it
+	// creates them again - but nothing in the Result names them either, so this does.
+	defer func() {
+		if err != nil && !launched {
+			warnResidue(proc.Stderr, "write-grant directories it created for a run that did not start", preflight.createdWrites)
+		}
+	}()
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
 	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox
@@ -231,6 +247,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// Only when the run was actually wrapped in a scope: unwrapped, there is no scope to
 	// read and the report already claims nothing about the limits.
 	var scoped scopeLimits
+	launched = true
 	runErr := runCmd(cmd, func(pid int) {
 		if exe != bwrap {
 			scoped = attestScopeLimits(pid)
@@ -612,6 +629,9 @@ type preflighted struct {
 	// bookkeeping compares against.
 	optIns  []shield.OptIn
 	aliases []credentialAlias
+	// createdWrites are the write grants prepareWriteDirs created on the host for this
+	// run, so a setup failure before the target starts can name what it left there.
+	createdWrites []string
 }
 
 // createdShields names the shield mount points bwrap will create on the host for this
@@ -624,6 +644,11 @@ func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
 // for it, in that order: the full grant-safety set and the alias scan run before
 // prepareWriteDirs, so a to-be-refused grant never leaves behind a directory that was
 // created for it. compile re-runs checkGrants as its own guard.
+//
+// The ordering covers the refusals named here and nothing beyond them. Several steps
+// after this function returns can still fail before the target runs, and the directory
+// is already on the host by then; Run names it on stderr rather than reclaiming it,
+// since the manifest asked for it and an enforced run creates it again.
 //
 // Both bwrap tiers - the enforced run and the profiling run - go through here. Profiling
 // needs it for exactly the same reason Run does: the profiled target is untrusted by
@@ -668,10 +693,45 @@ func preflightGrants(sb sandbox, p *policy.Policy, acceptAliasesUnder []string) 
 		return preflighted{}, err
 	}
 
+	// Recorded before the MkdirAll, because afterwards nothing tells a directory bento
+	// made apart from one the user already had.
+	created := absentWrites(writes)
 	if err := prepareWriteDirs(p, sb); err != nil {
 		return preflighted{}, err
 	}
-	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted}, nil
+	return preflighted{reads: reads, writes: writes, optIns: optIns, aliases: accepted, createdWrites: created}, nil
+}
+
+// absentWrites names the write grants that do not exist on the host yet, which are the
+// ones prepareWriteDirs is about to create. A stat that could not answer is not counted:
+// the teardown invariant names only what bento can prove it created. Missing parents
+// MkdirAll creates alongside the grant are not named separately - the grant is the path
+// the manifest asked for and the one an operator looks for.
+func absentWrites(writes []string) []string {
+	var absent []string
+	for _, w := range writes {
+		if _, err := bounded("the stat of "+w, func() (os.FileInfo, error) { return os.Stat(w) }); os.IsNotExist(err) {
+			absent = append(absent, w)
+		}
+	}
+	return absent
+}
+
+// warnResidue names host paths a run left behind, on the caller's own stderr.
+//
+// The teardown invariant is one-sided: leaving a path bento cannot prove it created is
+// the safe direction, leaving one it did create unreclaimed AND unmentioned is not.
+// enforce.Result carries no field for post-run hygiene, and worsening a confinement
+// layer for it would report a shortfall on a run whose confinement in fact held - so
+// the operator's stderr is the channel.
+func warnResidue(w io.Writer, what string, paths []string) {
+	if w == nil || len(paths) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "bento: %s:\n", what)
+	for _, p := range paths {
+		fmt.Fprintf(w, "  %s\n", p)
+	}
 }
 
 // prepareWriteDirs makes each granted write directory exist on the host before it
