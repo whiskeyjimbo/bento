@@ -553,7 +553,7 @@ func Home(home string) []Rule {
 	}{
 		{HoldsCredentials, true, credentialAnchorDirs},
 		{HoldsPrivateData, false, bulkStoreDirs},
-		{HoldsPrivateData, true, farmManagedConfigDirs},
+		{HoldsPrivateData, true, farmManagedSecretDirs},
 		{HoldsHistory, true, historyDirs},
 		{HoldsPersistence, true, persistenceDirs},
 		{HoldsServices, false, serviceDirs},
@@ -2444,26 +2444,32 @@ var walletKeyPaths = []string{
 	".dashcore/wallet.dat",
 }
 
-// farmManagedConfigDirs are bulkStoreDirs' siblings in every respect but one: they are
-// configuration directories rather than trees of content, so the per-launch walk the
-// expansion costs is a handful of stats and bulkStoreDirs' objection does not reach them.
-// Their comments below say what they hold, and ~/.config is a tree stow, chezmoi and yadm
-// replace wholesale with links into a farm - which leaves the contents readable at the
-// farm path unless the shield follows the link.
+// farmManagedSecretDirs are bulkStoreDirs' siblings in every respect but one: they are
+// small enough to walk, so the per-launch walk the expansion costs is a handful of stats
+// and bulkStoreDirs' objection does not reach them. Their comments below say what they
+// hold, and a dotfile farm - stow, chezmoi, yadm - replaces a managed path wholesale with
+// a link into the farm, which leaves the contents readable at the farm path unless the
+// shield follows the link.
 //
 // The membership rule, stated as the list actually draws it so that the next entry lands
-// consistently: under ~/.config, holding a password or a private key, and not belonging to
-// a mail, browser, Electron-messenger or full-node program. That last clause is the
-// ragged part - it excludes ~/.config/evolution and ~/.config/geary, which are small
-// config stores whose bulk halves live under ~/.local/share, and it says nothing about
-// the small secret-bearing stores outside ~/.config (~/.nicotine, ~/.local/share/dino,
-// ~/.local/share/Mumble's copy of the same certificate). Widening to either is a decision
-// on its own evidence, not an oversight to be quietly corrected here.
+// consistently: holds a password or a private key, and holds few enough entries that
+// linksUnder's recursive walk of it is bounded by the program rather than by how long the
+// user has run it. Location is not the test. The list began under ~/.config because that
+// is the tree a farm most often takes wholesale, but a farm manages whichever dotfiles
+// the user gave it, and a store's file count is what the expansion actually pays for.
+//
+// So the exclusions are counted, not placed. Excluded on count: a mail store, a browser
+// profile, an Electron messenger, chain data - and ~/.local/share/dino (received file
+// transfers under files/ beside the archive) and ~/.local/share/profanity (chatlogs
+// nested per account per day), whose secrets are real but sit in trees that grow without
+// bound. Their config halves are here; the trees stay in bulkStoreDirs. Excluded as
+// pointless: a ~/.cache sibling, which a farm does not manage and which holds a copy
+// rather than the original.
 //
 // HoldsPrivateData, like the list they came from: the bucket picks a callout's wording
 // and relabelling a chat client's password store as a credential store to buy it an
 // expansion is the coupling ExpandLinks exists to undo.
-var farmManagedConfigDirs = []string{
+var farmManagedSecretDirs = []string{
 	".config/profanity",                 // XMPP console client account config
 	".config/gajim",                     // XMPP: saved account passwords
 	".config/psi",                       // XMPP (Psi/Psi+): account passwords and OTR keys
@@ -2479,6 +2485,23 @@ var farmManagedConfigDirs = []string{
 	// so the boundary cannot be drawn there (see the note on credentialName).
 	".config/Nextcloud",
 	".config/Seafile",
+
+	// Secret-bearing stores outside ~/.config, admitted on the same count test. Each is a
+	// program's own config or key store, not a tree that grows with use.
+	".nicotine",                // Soulseek client: the account password in its config
+	".local/share/Mumble",      // data store beside the .config/Mumble certificate above
+	".local/share/data/Mumble", // legacy Qt location for the same
+	// hashcat's potfile is recovered plaintext passwords - the cracked output, as
+	// sensitive as any store here. Large as a file, but a handful of entries.
+	".hashcat",
+	".local/share/hashcat",
+
+	// Config halves whose bulk halves stay in bulkStoreDirs: the program is mail or a full
+	// node, but the store named here is the account config, and the count test is about
+	// the store rather than the program.
+	".config/evolution", // account config; the message store is .local/share/evolution
+	".config/geary",     // same, beside .local/share/geary
+	".config/Bitcoin",   // Bitcoin-Qt QSettings; the chain data is ~/.bitcoin
 }
 
 // bulkStoreDirs are shielded because they hold secrets, but hold far too many files to
@@ -2489,14 +2512,13 @@ var farmManagedConfigDirs = []string{
 //
 // The split is by what the alias scan can enumerate, not by severity, so the bucket is
 // mixed on that axis: chain data and mail sit beside stores whose whole point is a saved
-// password (~/.nicotine, ~/.local/share/dino's OMEMO identity keys). The callouts name
-// the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
-// promising the reader nothing here is a credential.
+// key (~/.local/share/dino's OMEMO identity keys, under the file transfers it stores
+// beside them). The callouts name the bucket, so HoldsPrivateData's exposure clause
+// carries that floor rather than promising the reader nothing here is a credential.
 var bulkStoreDirs = []string{
 	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
 	// that carry reset links and 2FA codes.
 	".thunderbird",
-	".config/evolution",
 	".evolution", // pre-3.6 Evolution store, still present on upgraded systems
 	".mail",      // mutt/notmuch maildir; message bodies and cached credentials
 	".Mail",      // same, capitalized variant used by some setups
@@ -2528,7 +2550,6 @@ var bulkStoreDirs = []string{
 	".cache/mutt", // cached message bodies
 	".local/share/evolution",
 	".cache/evolution",
-	".config/geary",
 	".local/share/geary",
 	".cache/geary",
 
@@ -2547,18 +2568,12 @@ var bulkStoreDirs = []string{
 	".cache/Psi",               //
 	".local/share/telepathy",   // accounts.cfg holds the connection-manager passwords
 	".cache/telepathy",         //
-	".nicotine",                // Soulseek client: the account password in its config
 	".local/share/linphone",    // call history and account state
-	".local/share/Mumble",      // Mumble's data store beside the certificate config
-	".local/share/data/Mumble", // legacy Qt location for the same
 	".parsec",                  // remote-desktop client, the class remmina/anydesk already covers
-	// hashcat's potfile is recovered plaintext passwords - the cracked output, which is
-	// as sensitive as any store above.
-	".hashcat",
-	".local/share/hashcat",
+	// hashcat's cached copy; the potfile itself is in farmManagedSecretDirs.
 	".cache/hashcat",
 
-	// The state trees of the cloud-sync clients whose config sits in farmManagedConfigDirs,
+	// The state trees of the cloud-sync clients whose config sits in farmManagedSecretDirs,
 	// plus Dropbox's whole pair. Never the synced document folders (~/Nextcloud, ~/Seafile)
 	// - those are user data, not secrets, and bento does not shield documents.
 	".local/share/Nextcloud",
@@ -2598,7 +2613,6 @@ var bulkStoreDirs = []string{
 	// Full-node wallet clients: the spending keys anchor via walletKeyPaths, but the data
 	// directory as a whole is chain data.
 	".bitcoin",
-	".config/Bitcoin",
 	".ethereum",
 	".dashcore",
 }
