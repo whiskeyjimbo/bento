@@ -553,6 +553,7 @@ func Home(home string) []Rule {
 	}{
 		{HoldsCredentials, true, credentialAnchorDirs},
 		{HoldsPrivateData, false, bulkStoreDirs},
+		{HoldsPrivateData, true, farmManagedConfigDirs},
 		{HoldsHistory, true, historyDirs},
 		{HoldsPersistence, true, persistenceDirs},
 		{HoldsServices, false, serviceDirs},
@@ -2449,6 +2450,29 @@ var walletKeyPaths = []string{
 // password (~/.config/gajim, ~/.config/Mumble's client certificate). The callouts name
 // the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
 // promising the reader nothing here is a credential.
+// farmManagedConfigDirs are bulkStoreDirs' siblings in every respect but one: they are
+// configuration directories, small enough to walk on every launch, so the expansion that
+// bulkStoreDirs cannot afford is affordable here. Their comments below say what they
+// hold, and ~/.config is precisely the tree stow, chezmoi and yadm replace wholesale with
+// links into a farm - which leaves the contents readable at the farm path unless the
+// shield follows the link.
+//
+// HoldsPrivateData, like the list they came from: the bucket picks a callout's wording
+// and relabelling a chat client's password store as a credential store to buy it an
+// expansion is the coupling ExpandLinks exists to undo.
+var farmManagedConfigDirs = []string{
+	".config/profanity",                 // XMPP console client account config
+	".config/gajim",                     // XMPP: saved account passwords
+	".config/psi",                       // XMPP (Psi/Psi+): account passwords and OTR keys
+	".config/psi+",                      // the fork, same store
+	".config/telepathy-account-widgets", // accounts.cfg holds the connection-manager passwords
+	".config/linphone",                  // SIP account auth password
+	".config/Mumble",                    // Mumble client certificate INCLUDING its private key
+	".config/kdeconnect",                // device pairing RSA key and trusted-device list
+	".config/Nextcloud",                 // cloud-sync client config: the account token it authenticates with
+	".config/Seafile",                   //
+}
+
 var bulkStoreDirs = []string{
 	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
 	// that carry reset links and 2FA codes.
@@ -2493,32 +2517,24 @@ var bulkStoreDirs = []string{
 	// plaintext on disk - the same rule that admits pidgin/weechat/irssi above, applied to
 	// the protocols they do not cover. Hidden whole rather than per-file: each store also
 	// carries the message archive, and there is no in-sandbox need for either half.
-	".local/share/dino",                 // XMPP: OMEMO identity keys plus account passwords
-	".config/profanity",                 // XMPP console client account config
-	".local/share/profanity",            // its account/OTR key store
-	".config/gajim",                     // XMPP: saved account passwords
-	".local/share/gajim",                //
-	".cache/gajim",                      //
-	".config/psi",                       // XMPP (Psi/Psi+): account passwords and OTR keys
-	".config/psi+",                      //
-	".local/share/psi",                  //
-	".local/share/psi+",                 //
-	".local/share/Psi",                  // firejail carries both spellings; Qt picked either
-	".cache/psi",                        //
-	".cache/Psi",                        //
-	".local/share/telepathy",            // accounts.cfg holds the connection-manager passwords
-	".config/telepathy-account-widgets", //
-	".cache/telepathy",                  //
-	".nicotine",                         // Soulseek client: the account password in its config
-	".linphonerc",                       // SIP account auth password
-	".linphone-history.db",              // call history alongside it
-	".config/linphone",                  //
-	".local/share/linphone",             //
-	".config/Mumble",                    // Mumble client certificate INCLUDING its private key
-	".local/share/Mumble",               //
-	".local/share/data/Mumble",          // legacy Qt location for the same
-	".config/kdeconnect",                // device pairing RSA key and trusted-device list
-	".parsec",                           // remote-desktop client, the class remmina/anydesk already covers
+	".local/share/dino",        // XMPP: OMEMO identity keys plus account passwords
+	".local/share/profanity",   // its account/OTR key store
+	".local/share/gajim",       // the message archive beside the config store above
+	".cache/gajim",             //
+	".local/share/psi",         // same, for Psi/Psi+
+	".local/share/psi+",        //
+	".local/share/Psi",         // firejail carries both spellings; Qt picked either
+	".cache/psi",               //
+	".cache/Psi",               //
+	".local/share/telepathy",   // accounts.cfg holds the connection-manager passwords
+	".cache/telepathy",         //
+	".nicotine",                // Soulseek client: the account password in its config
+	".linphonerc",              // SIP account auth password
+	".linphone-history.db",     // call history alongside it
+	".local/share/linphone",    // call history and account state
+	".local/share/Mumble",      // Mumble's data store beside the certificate config
+	".local/share/data/Mumble", // legacy Qt location for the same
+	".parsec",                  // remote-desktop client, the class remmina/anydesk already covers
 	// hashcat's potfile is recovered plaintext passwords - the cracked output, which is
 	// as sensitive as any store above.
 	".hashcat",
@@ -2531,9 +2547,7 @@ var bulkStoreDirs = []string{
 	// Deliberately not given a credentialName token: the classifier matches on path
 	// components, and every token that catches .config/Nextcloud also catches ~/Nextcloud,
 	// so the boundary cannot be drawn there (see the note on credentialName).
-	".config/Nextcloud",
 	".local/share/Nextcloud",
-	".config/Seafile",
 	".dropbox",
 	".dropbox-dist",
 
