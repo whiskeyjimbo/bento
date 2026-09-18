@@ -1774,6 +1774,16 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // relocated one at once, and naming whichever the scan reached first would attribute the
 // shield to an arbitrary variable - so a surface that tells an operator which variable
 // put a shield somewhere must read the rules, not ask this.
+//
+// Holds is the third, and the one a caller is most likely to read off the result without
+// noticing: two rules can tie on Deny and Dir and still disagree about what the path
+// holds, so the bucket that comes back is slice order. The scan is deterministic, so this
+// is not a run-to-run flip; two rule sets that shield the same paths - a relocation moving
+// a store onto a default rule's path, a caller deny landing on a built-in - can describe
+// them differently. The cost is bounded to a callout's WORDING: nothing about how a rule
+// is enforced reads Holds, which is why ExpandLinks is declared per rule rather than
+// derived from it. A surface naming what lifting a shield exposes must therefore say
+// which rule it is describing and read Holds off that rule, not ask this for it.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
