@@ -2575,19 +2575,19 @@ var bulkStoreDirs = []string{
 	// plaintext on disk - the same rule that admits pidgin/weechat/irssi above, applied to
 	// the protocols they do not cover. Hidden whole rather than per-file: each store also
 	// carries the message archive, and there is no in-sandbox need for either half.
-	".local/share/dino",        // XMPP: OMEMO identity keys plus account passwords
-	".local/share/profanity",   // its account/OTR key store
-	".local/share/gajim",       // the message archive beside the config store above
-	".cache/gajim",             //
-	".local/share/psi",         // same, for Psi/Psi+
-	".local/share/psi+",        //
-	".local/share/Psi",         // firejail carries both spellings; Qt picked either
-	".cache/psi",               //
-	".cache/Psi",               //
-	".local/share/telepathy",   // accounts.cfg holds the connection-manager passwords
-	".cache/telepathy",         //
-	".local/share/linphone",    // call history and account state
-	".parsec",                  // remote-desktop client, the class remmina/anydesk already covers
+	".local/share/dino",      // XMPP: OMEMO identity keys plus account passwords
+	".local/share/profanity", // its account/OTR key store
+	".local/share/gajim",     // the message archive beside the config store above
+	".cache/gajim",           //
+	".local/share/psi",       // same, for Psi/Psi+
+	".local/share/psi+",      //
+	".local/share/Psi",       // firejail carries both spellings; Qt picked either
+	".cache/psi",             //
+	".cache/Psi",             //
+	".local/share/telepathy", // accounts.cfg holds the connection-manager passwords
+	".cache/telepathy",       //
+	".local/share/linphone",  // call history and account state
+	".parsec",                // remote-desktop client, the class remmina/anydesk already covers
 	// hashcat's cached copy; the potfile itself is in farmManagedSecretDirs.
 	".cache/hashcat",
 
