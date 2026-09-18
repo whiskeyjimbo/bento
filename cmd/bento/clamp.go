@@ -398,6 +398,11 @@ func homeRoot(path string) (string, bool) {
 // on their own, so dropping the umbrella loses nothing real. It mutates p and returns
 // the shielded, degraded-tier-refused, over-broad read, and over-broad write paths to
 // warn about.
+// Every clamp here drops a grant for a reason it can name to the reviewer, and none of
+// them bounds the proposal's SIZE. That is deliberate: a proposal too large to write is
+// refused by manifest.Marshal, loudly and with nothing written, whereas a count or
+// length cap would silently hand back a manifest missing grants the run needs - a wrong
+// answer returned politely, and one the reviewer would debug as a denial at run time.
 func clampProposal(p *policy.Policy) (shielded []shieldGrant, writeShielded, aboveWriteShield, broadReads, broadWrites []string, refused []refusedGrant) {
 	// A set the host cannot anchor at all - not merely an unusable $HOME, which drops to
 	// the passwd home - leaves the proposal unclamped: there are no shields to clamp
