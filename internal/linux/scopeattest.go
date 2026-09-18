@@ -53,7 +53,8 @@ import (
 // How often a fast target produces an unsampled reading: 0 of 100 runs of `/bin/true` under
 // a full set of limits on a healthy user manager (measured). The sample is taken from the
 // WRAPPER's pid, and systemd-run lives in the scope until the target exits, so it is not
-// racing the target the way the pid alone suggests - it is the manager that has to be slow.
+// racing the target the way the pid alone suggests - it is the manager that has to be slow,
+// or the wrapper has to be gone before the first poll lands (the `gone` arm below).
 // So worsening on an unsampled reading costs the measured case nothing, and it is the
 // conservative direction the invariant allows in any event: a run reported unenforced when
 // it was in fact bounded is a miss, a run reported enforced on no evidence is the bug.

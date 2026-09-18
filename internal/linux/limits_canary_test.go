@@ -23,17 +23,24 @@ func TestMeasureScopeBoundsItsCanary(t *testing.T) {
 
 	// Past the 5s bound plus the 1s WaitDelay, well short of the 30s the canary sleeps.
 	const bound = 10 * time.Second
-	v, ok := within(t, bound, func() scopeVerdict {
+	// The result is carried out of the abandoned goroutine rather than asserted inside it:
+	// on the failure path that goroutine outlives the test, and a t.Error from there is a
+	// panic on top of the real assertion.
+	type verdict struct {
+		v        scopeVerdict
+		answered bool
+	}
+	got, ok := within(t, bound, func() verdict {
 		v, answered := measureScope(context.Background())
-		if answered {
-			t.Error("measureScope answered from a probe whose scope was never created")
-		}
-		return v
+		return verdict{v, answered}
 	})
 	if !ok {
 		t.Fatalf("measureScope was still blocked after %s on a canary that never returns; its documented bound is %s", bound, scopeProbeTimeout)
 	}
-	if v.reason == "" {
+	if got.answered {
+		t.Error("measureScope answered from a probe whose scope was never created")
+	}
+	if got.v.reason == "" {
 		t.Error("measureScope gave no reason for a host whose scope probe failed")
 	}
 	if got := ProbeDeadlines() - before; got != 1 {

@@ -217,8 +217,15 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// why the prerequisite gate above is its own refusal in the first place. The target has
 	// already run by now, so this does not prevent the unbounded run - it prevents a
 	// manifest being synthesized from one, which is the part still worth stopping.
-	if missing := unattestedScopeCaps(p.Limits, attested); len(missing) > 0 {
-		return profile.Observation{}, fmt.Errorf("the scope this profiling run was given cannot be shown to have carried the requested %s limit(s), so the untrusted target may have run unbounded and this observation must not be vouched for: systemd accepts a property for a controller it does not delegate and silently does not apply it, which is what the pre-run check cannot see once its reading has gone stale",
+	//
+	// Skipped for a run the caller abandoned: a cancel SIGKILLs the wrapper, and a wrapper
+	// killed before it was ever seen in a scope leaves the same unsampled reading a manager
+	// that never created one does - so blaming delegation there would send an operator
+	// after a host that is fine for a run they stopped themselves. Same guard Run takes on
+	// its own cancel arm.
+	if missing := unattestedScopeCaps(p.Limits, attested); len(missing) > 0 &&
+		!(ctx.Err() != nil && killedByCancel(cmd.ProcessState)) {
+		return profile.Observation{}, fmt.Errorf("linux: the scope this profiling run was given cannot be shown to have carried the requested %s limit(s), so the untrusted target may have run unbounded and this observation must not be vouched for: systemd accepts a property for a controller it does not delegate and silently does not apply it, which is what the pre-run check cannot see once its reading has gone stale",
 			strings.Join(missing, ", "))
 	}
 
