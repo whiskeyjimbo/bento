@@ -183,6 +183,13 @@ func (h Holds) Code() string {
 // HoldsByCode reads a Code back, for a frontend turning what a backend reported into the
 // prose of Noun and Exposure. An unrecognized code reads as HoldsUnknown, whose wording
 // is true of every shielded path.
+//
+// That collapses a garbled code into a genuine "not established", and the return value
+// stays a single Holds anyway: the only producer of the codes this reads is Code() itself
+// (internal/linux stamps enforce.ShieldedGrant.Holds from it, and nothing decodes a grant
+// from a wire or a file), so an unrecognized code is unconstructible and a caller that
+// branched on the difference would be branching on a state nothing can reach. The machine
+// channel never collapses regardless - the JSON envelope carries the raw code through.
 func HoldsByCode(code string) Holds {
 	for _, h := range []Holds{HoldsCredentials, HoldsPrivateData, HoldsHistory, HoldsPersistence, HoldsServices} {
 		if h.Code() == code {
