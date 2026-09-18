@@ -1850,3 +1850,24 @@ func TestPrintListedDirGrantsCallsOutAListing(t *testing.T) {
 		t.Errorf("the grant was dropped; a listing needs it to run")
 	}
 }
+
+// The convergence advice holds for a run that progresses; it does not for a program that
+// cannot exec at all, because profiling records attempted opens and a program that never
+// starts attempts nothing further. A reader who believes the unqualified promise profiles
+// the same script four times waiting for a proposal that will never change, so the help
+// has to name the case the advice excludes alongside the advice itself.
+func TestProfileHelpBoundsTheConvergencePromise(t *testing.T) {
+	long := newProfileCmd().Long
+	if !strings.Contains(long, "profile again to converge") {
+		t.Fatalf("the convergence advice moved; this guard is about the qualification beside it:\n%s", long)
+	}
+	for _, want := range []string{
+		"needs a run that gets FURTHER each round",
+		"exec at all is not discoverable this way",
+		"byte-identical proposal",
+	} {
+		if !strings.Contains(long, want) {
+			t.Errorf("profile --help must say %q, or the convergence advice reads as unconditional;\ngot:\n%s", want, long)
+		}
+	}
+}
