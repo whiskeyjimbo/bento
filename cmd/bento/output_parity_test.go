@@ -332,18 +332,15 @@ func parityValidateStamped(t *testing.T) (string, map[string]any) {
 	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil {
 		t.Fatal(err)
 	}
-	doc, mt, err := loadDocument(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var human bytes.Buffer
-	warnStampAtRisk(&human, doc, mt)
+	// Through the command rather than the writer: this row's fact lands on stderr, and a
+	// fixture that calls warnStampAtRisk itself stays green when validate stops calling it.
+	_, human, _ := runCapturingOutput(t, newValidateCmd(), path)
 	out, _ := runCapturingStdout(t, newValidateCmd(), "--json", path)
 	var machine map[string]any
 	if err := json.Unmarshal([]byte(out), &machine); err != nil {
 		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
 	}
-	return human.String(), machine
+	return human, machine
 }
 
 // parityDoctorRelocated is the host the ordinary doctor fixture cannot be: a $HOME inside

@@ -54,14 +54,26 @@ func TestValidateShowsLimits(t *testing.T) {
 // interaction lives - means capturing the real file.
 func runCapturingStdout(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	t.Helper()
+	out, _, err := runCapturingOutput(t, cmd, args...)
+	return out, err
+}
+
+// runCapturingOutput also returns what the command wrote to cobra's error writer, so a
+// fact that lands only on stderr - the trust warnings validate raises through
+// cmd.ErrOrStderr - can be asserted against the real command instead of by calling its
+// writer directly. Only that writer: a command printing to os.Stderr itself is not
+// captured here.
+func runCapturingOutput(t *testing.T, cmd *cobra.Command, args ...string) (string, string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
+	var stderr bytes.Buffer
 	cmd.SetArgs(args)
 	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+	cmd.SetErr(&stderr)
 
 	// Deferred because Execute does not always return: a panicking RunE would otherwise
 	// leave os.Stdout hijacked for the rest of the package. In its own scope so the read
@@ -80,7 +92,7 @@ func runCapturingStdout(t *testing.T, cmd *cobra.Command, args ...string) (strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(out), runErr
+	return string(out), stderr.String(), runErr
 }
 
 // Pinned because the damage is silent: nothing fails, the output simply stops. The panic
