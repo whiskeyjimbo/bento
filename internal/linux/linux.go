@@ -527,10 +527,11 @@ func noteRefusedAtCapacity(r *enforce.Report, refusals int) {
 // degraded network layer on the strength of a broken channel.
 //
 // Deadlined, because the sandbox is not always dead when the command this run waited
-// on is. Under the limits wrapper the process reaped is systemd-run, and a cancelled
-// run can leave bwrap orphaned with the bridge still holding the write end - an
-// undeadlined read would then block until a runaway target exited, turning a cancelled
-// run into a hang. On every ordinary path the pid namespace has already collapsed and
+// on is. `systemd-run --user --scope` execs in place (measured), so even under the
+// limits wrapper the process reaped is bwrap itself - but a cancel that kills it does
+// not synchronously reap everything holding the write end, and an undeadlined read
+// would then block on a straggler rather than on the bridge, turning a cancelled run
+// into a hang. On every ordinary path the pid namespace has already collapsed and
 // EOF is immediate, so the bound is never approached.
 func bridgeReportedDeath(r *os.File) bool {
 	if r == nil {

@@ -120,8 +120,18 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		// the rare cause the common wording hides, sending an operator to debug a user
 		// manager that is fine. Running the canary bare separates them, and only here: this
 		// is the failure path, so a healthy host pays nothing for it.
+		// Bounded like every other probe subprocess in this package. It is the failure
+		// path, so it is reached exactly on the host that is already unhealthy, and a
+		// caller with no deadline of its own - Probe, on the hot path of every run - would
+		// otherwise be held for as long as the canary takes, with nothing for
+		// noteProbeDeadline to count.
 		canary := trueBinary()
-		cerr := exec.CommandContext(ctx, canary).Run()
+		cctx, ccancel := context.WithTimeout(ctx, scopeProbeTimeout)
+		ccmd := exec.CommandContext(cctx, canary)
+		ccmd.WaitDelay = probeWaitDelay
+		cerr := ccmd.Run()
+		noteProbeDeadline(ctx, cctx)
+		ccancel()
 		// Re-read, because the caller can give up between the check above and this run: a
 		// killed canary is not a canary that will not run, and blaming it would be the same
 		// misattribution one branch down.
