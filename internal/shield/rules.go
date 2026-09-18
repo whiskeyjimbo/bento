@@ -228,7 +228,8 @@ func coveredByAnother(path string, roots []string) bool {
 // where it points.
 //
 // Which stores those are is the deny-list's declaration, not this package's inference:
-// rule.ExpandLinks alone decides, so the callout bucket a rule carries can be reworded
+// rule.ExpandLinks decides it among the DenyAll directory rules, so the callout bucket
+// a rule carries can be reworded
 // without moving what the sandbox binds. A store that should be walked and is not is a
 // missing flag in denylist.go, never a case to add here.
 //

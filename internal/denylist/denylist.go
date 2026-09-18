@@ -113,7 +113,7 @@ type Rule struct {
 	// Left off a store that a farm manages, the store's contents are reachable by
 	// naming the farm path instead - a read grant there is honored with no callout.
 	// Set on a bulk store (mail, browser profiles, chain data), every launch pays a
-	// recursive walk of it and the alias scan trips on hardlinked messages; see
+	// recursive walk of it and each link's target becomes an alias-scan root; see
 	// bulkStoreDirs.
 	ExpandLinks bool
 	// Source names the environment variable that put the shield at this path, and is
@@ -2439,23 +2439,21 @@ var walletKeyPaths = []string{
 	".dashcore/wallet.dat",
 }
 
-// bulkStoreDirs are shielded because they hold secrets, but hold far too many files to
-// enumerate on every launch - and some are routinely hardlinked by the tools that manage
-// them (mail sync deduplicates identical messages), which would trip the alias scan on a
-// message rather than a credential. A saved mail password or browser login inside one of
-// these is therefore not an alias anchor; the tree is still hidden from the sandbox.
-//
-// The split is by what the alias scan can enumerate, not by severity, so the bucket is
-// mixed on that axis: chain data and mail sit beside stores whose whole point is a saved
-// password (~/.config/gajim, ~/.config/Mumble's client certificate). The callouts name
-// the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
-// promising the reader nothing here is a credential.
 // farmManagedConfigDirs are bulkStoreDirs' siblings in every respect but one: they are
-// configuration directories, small enough to walk on every launch, so the expansion that
-// bulkStoreDirs cannot afford is affordable here. Their comments below say what they
-// hold, and ~/.config is precisely the tree stow, chezmoi and yadm replace wholesale with
-// links into a farm - which leaves the contents readable at the farm path unless the
-// shield follows the link.
+// configuration directories rather than trees of content, so the per-launch walk the
+// expansion costs is a handful of stats and bulkStoreDirs' objection does not reach them.
+// Their comments below say what they hold, and ~/.config is a tree stow, chezmoi and yadm
+// replace wholesale with links into a farm - which leaves the contents readable at the
+// farm path unless the shield follows the link.
+//
+// The membership rule, stated as the list actually draws it so that the next entry lands
+// consistently: under ~/.config, holding a password or a private key, and not belonging to
+// a mail, browser, Electron-messenger or full-node program. That last clause is the
+// ragged part - it excludes ~/.config/evolution and ~/.config/geary, which are small
+// config stores whose bulk halves live under ~/.local/share, and it says nothing about
+// the small secret-bearing stores outside ~/.config (~/.nicotine, ~/.local/share/dino,
+// ~/.local/share/Mumble's copy of the same certificate). Widening to either is a decision
+// on its own evidence, not an oversight to be quietly corrected here.
 //
 // HoldsPrivateData, like the list they came from: the bucket picks a callout's wording
 // and relabelling a chat client's password store as a credential store to buy it an
@@ -2469,10 +2467,26 @@ var farmManagedConfigDirs = []string{
 	".config/linphone",                  // SIP account auth password
 	".config/Mumble",                    // Mumble client certificate INCLUDING its private key
 	".config/kdeconnect",                // device pairing RSA key and trusted-device list
-	".config/Nextcloud",                 // cloud-sync client config: the account token it authenticates with
-	".config/Seafile",                   //
+	// Cloud-sync client CONFIGURATION - the account token the client authenticates with -
+	// never the synced document folders (~/Nextcloud, ~/Seafile), which are user data.
+	// Deliberately not given a credentialName token: the classifier matches on path
+	// components, and every token that catches .config/Nextcloud also catches ~/Nextcloud,
+	// so the boundary cannot be drawn there (see the note on credentialName).
+	".config/Nextcloud",
+	".config/Seafile",
 }
 
+// bulkStoreDirs are shielded because they hold secrets, but hold far too many files to
+// enumerate on every launch - and some are routinely hardlinked by the tools that manage
+// them (mail sync deduplicates identical messages), which would trip the alias scan on a
+// message rather than a credential. A saved mail password or browser login inside one of
+// these is therefore not an alias anchor; the tree is still hidden from the sandbox.
+//
+// The split is by what the alias scan can enumerate, not by severity, so the bucket is
+// mixed on that axis: chain data and mail sit beside stores whose whole point is a saved
+// password (~/.nicotine, ~/.local/share/dino's OMEMO identity keys). The callouts name
+// the bucket, so HoldsPrivateData's exposure clause carries that floor rather than
+// promising the reader nothing here is a credential.
 var bulkStoreDirs = []string{
 	// Mail clients: saved IMAP/SMTP passwords in the profile store, and message bodies
 	// that carry reset links and 2FA codes.
@@ -2541,12 +2555,9 @@ var bulkStoreDirs = []string{
 	".local/share/hashcat",
 	".cache/hashcat",
 
-	// Cloud-sync client CONFIGURATION: the account tokens the client authenticates with.
-	// Only the config and state trees, never the synced document folders (~/Nextcloud,
-	// ~/Seafile) - those are user data, not secrets, and bento does not shield documents.
-	// Deliberately not given a credentialName token: the classifier matches on path
-	// components, and every token that catches .config/Nextcloud also catches ~/Nextcloud,
-	// so the boundary cannot be drawn there (see the note on credentialName).
+	// The state trees of the cloud-sync clients whose config sits in farmManagedConfigDirs,
+	// plus Dropbox's whole pair. Never the synced document folders (~/Nextcloud, ~/Seafile)
+	// - those are user data, not secrets, and bento does not shield documents.
 	".local/share/Nextcloud",
 	".dropbox",
 	".dropbox-dist",
