@@ -1101,3 +1101,105 @@ func gridDiff(got []Candidate, want []string) string {
 	}
 	return fmt.Sprintf("candidates = %v, want %v", have, want)
 }
+
+// FuzzUpstreamParsersStayInScope covers the three functions that read attacker-irrelevant
+// but upstream-controlled text: the two third-party profile parsers, and SplitByScope,
+// which is a total partition and therefore free to assert exactly. What the parsers must
+// never do is let a directive out of bento's home/runtime shield scope - expand's own
+// doc names the case, "${HOME}/../../etc/shadow" cleaning to a system path that then
+// arrives in the diff as a gap bento must shield, outside the model the audit compares
+// within. Both parsers route that question through one predicate, so a fuzzer asks it of
+// both corpora at once.
+func FuzzUpstreamParsersStayInScope(f *testing.F) {
+	f.Add("# X11 session autostart\nblacklist ${HOME}/.ssh\nread-only ${HOME}/.bashrc\n")
+	f.Add("blacklist ${HOME}/../../etc/shadow\nblacklist ${RUNUSER}/../../../etc/shadow\n")
+	f.Add("blacklist ${HOME}\nread-only ${RUNUSER}\nblacklist /etc/passwd\nblacklist ${PATH}/x\n")
+	f.Add("?HAS_X11: blacklist ${HOME}/.ICEauthority\nblacklist-nolog ${HOME}/.*_history\n")
+	f.Add("  deny @{HOME}/.*history mrwkl,\n  audit deny owner @{HOME}/.ssh/{,**} mrwkl,\n")
+	f.Add("  deny @{HOME}/.{,z}log{in,out} mrk,\n  audit deny @{HOME}/.config/ w,\n")
+	f.Add("deny\nblacklist\nread-only\n")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, content string) {
+		const home = "/home/operator"
+		const runUser = "/run/user/1000"
+		lines := strings.Count(content, "\n") + 1
+
+		for name, parse := range map[string]func(string, string, string) ([]Candidate, int){
+			"firejail": ParseFirejail,
+			"apparmor": ParseAppArmor,
+		} {
+			candidates, dropped := parse(content, home, runUser)
+			if dropped < 0 || dropped > lines {
+				t.Fatalf("%s: dropped %d of %d lines; it counts unread shield directives, so it cannot exceed them", name, dropped, lines)
+			}
+			for _, c := range candidates {
+				if !underOneScopeRoot(c.Path, home, runUser) {
+					t.Fatalf("%s: candidate path %q lies under neither %q nor %q, which is outside the scope both parsers audit within", name, c.Path, home, runUser)
+				}
+			}
+			assertSplitPartitions(t, name, candidates, home)
+		}
+	})
+}
+
+// underOneScopeRoot restates the scope the parsers' own doc claims: a cleaned absolute path
+// at or under one of the two roots. Restated rather than calling underScopeRoot, so this
+// measures the parsers against the claim instead of against the predicate they share.
+func underOneScopeRoot(path, home, runUser string) bool {
+	if path != filepath.Clean(path) {
+		return false
+	}
+	return path == home || strings.HasPrefix(path, home+"/") ||
+		path == runUser || strings.HasPrefix(path, runUser+"/")
+}
+
+// assertSplitPartitions asserts SplitByScope is a total partition: every gap lands in
+// exactly one half, none is invented or duplicated, each half is ordered for the diff, and
+// re-splitting a half moves nothing. Keyed on everything but Section, because the
+// name-classified arm deliberately restamps it.
+func assertSplitPartitions(t *testing.T, name string, candidates []Candidate, home string) {
+	t.Helper()
+	gaps := make([]Gap, 0, len(candidates))
+	for _, c := range candidates {
+		gaps = append(gaps, Gap{Candidate: c})
+	}
+	inScope, outOfScope := SplitByScope(gaps, home)
+	if len(inScope)+len(outOfScope) != len(gaps) {
+		t.Fatalf("%s: %d gaps split into %d in-scope and %d out", name, len(gaps), len(inScope), len(outOfScope))
+	}
+	key := func(g Gap) string {
+		return fmt.Sprintf("%q|%d|%v|%v|%v|%v", g.Path, g.Deny, g.Glob, g.Dir, g.Weaker, g.Narrowed)
+	}
+	want := make([]string, 0, len(gaps))
+	for _, g := range gaps {
+		want = append(want, key(g))
+	}
+	got := make([]string, 0, len(gaps))
+	for _, half := range [][]Gap{inScope, outOfScope} {
+		for _, g := range half {
+			got = append(got, key(g))
+		}
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(want, got) {
+		t.Fatalf("%s: the two halves are not the input:\n in  %v\n out %v", name, want, got)
+	}
+	for _, half := range [][]Gap{inScope, outOfScope} {
+		for i := 1; i < len(half); i++ {
+			if half[i-1].Section > half[i].Section ||
+				(half[i-1].Section == half[i].Section && half[i-1].Path > half[i].Path) {
+				t.Fatalf("%s: a half is unordered at %d: %q/%q then %q/%q; two runs would not diff", name, i, half[i-1].Section, half[i-1].Path, half[i].Section, half[i].Path)
+			}
+		}
+	}
+	// Re-splitting a half moves nothing, including the arm that rewrote Section on its way
+	// in: a classification that only survives one pass reclassifies the report between runs.
+	if again, moved := SplitByScope(inScope, home); len(moved) != 0 || len(again) != len(inScope) {
+		t.Fatalf("%s: re-splitting the in-scope half moved %d of %d out", name, len(moved), len(inScope))
+	}
+	if moved, again := SplitByScope(outOfScope, home); len(moved) != 0 || len(again) != len(outOfScope) {
+		t.Fatalf("%s: re-splitting the out-of-scope half moved %d of %d in", name, len(moved), len(outOfScope))
+	}
+}
