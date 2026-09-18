@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // skipMissingDep skips for a missing host dependency, or fails when
@@ -541,6 +543,35 @@ func TestResolveAtAnchorsAndDrops(t *testing.T) {
 	}
 	if got, ok := resolveAt(os.Getpid(), 0x7fffffff, "rel/x"); got != "" || ok {
 		t.Errorf("unresolvable dirfd: got %q, %v, want a reported drop", got, ok)
+	}
+	// A descriptor on a regular file readlinks to a good absolute path, but the kernel
+	// resolves nothing against it - openat answers ENOTDIR. Joining onto it lexically
+	// would let a traced program fabricate an access to any path it can spell with
+	// "..", and the fabricated path becomes a grant in the proposed manifest.
+	reg := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(reg, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	regfd := int32(f.Fd())
+	if _, err := unix.Openat(int(regfd), "../../etc/shadow", os.O_RDONLY, 0); err == nil {
+		t.Fatal("openat through a regular-file fd unexpectedly succeeded; the anchor is not a regular file")
+	}
+	if got, ok := resolveAt(os.Getpid(), regfd, "../../etc/shadow"); got != "" || ok {
+		t.Errorf("regular-file fd: got %q, %v, want a reported drop - the kernel answers ENOTDIR on this anchor", got, ok)
+	}
+	// A directory fd still anchors, so the drop above is the fd's kind and not the fd.
+	d, err := os.Open(filepath.Dir(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if got, ok := resolveAt(os.Getpid(), int32(d.Fd()), "file"); got != reg || !ok {
+		t.Errorf("directory fd: got %q, %v, want %q anchored", got, ok, reg)
 	}
 }
 

@@ -1622,10 +1622,32 @@ func openat2Path(resolve uint64, path string) (anchored string, record bool) {
 // descriptor that is not one readlinks to a non-path ("socket:[N]", "anon_inode:…")
 // or a deleted directory ("… (deleted)"). Passing the bare relative path through
 // would wrongly anchor it at the profiler's own cwd downstream - the bug being fixed.
+//
+// A descriptor on a REGULAR FILE readlinks to a perfectly good absolute path, so the
+// link alone does not say the kernel would resolve anything against it: openat answers
+// ENOTDIR and touches nothing, while a lexical Join of "../../etc/shadow" would name a
+// file the run never opened - and the profile that names it is what a later enforced
+// run is confined by. So the descriptor's kind is checked too.
 func resolveAt(pid int, dirfd int32, path string) (string, bool) {
 	if path == "" || strings.HasPrefix(path, "/") {
 		return path, true
 	}
+	dir, ok := fdPath(pid, dirfd)
+	if !ok {
+		return "", false
+	}
+	if dirfd != atFdCwd && !fdIsDir(pid, dirfd) {
+		// A working directory is a directory by construction, so only a real descriptor
+		// needs the stat - and this is on every relative open of a traced run.
+		return "", false
+	}
+	return filepath.Join(dir, path), true
+}
+
+// fdPath reads back the file a descriptor names, or the working directory for AT_FDCWD.
+// ok is false when /proc gives no live path at all: an unreadable link, a non-path
+// ("socket:[N]", "anon_inode:…"), or a deleted file ("… (deleted)").
+func fdPath(pid int, dirfd int32) (string, bool) {
 	link := fmt.Sprintf("/proc/%d/cwd", pid)
 	if dirfd != atFdCwd {
 		link = fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd)
@@ -1634,7 +1656,16 @@ func resolveAt(pid int, dirfd int32, path string) (string, bool) {
 	if err != nil || !strings.HasPrefix(dir, "/") || strings.HasSuffix(dir, " (deleted)") {
 		return "", false
 	}
-	return filepath.Join(dir, path), true
+	return filepath.Clean(dir), true
+}
+
+// fdIsDir reports whether a descriptor is open on a directory. The magic link is
+// stat'ed rather than the path it reads back: the link goes through the descriptor the
+// tracee holds, so it answers in the tracee's mount namespace, while re-resolving the
+// readlink result would answer in the observer's.
+func fdIsDir(pid int, dirfd int32) bool {
+	fi, err := os.Stat(fmt.Sprintf("/proc/%d/fd/%d", pid, dirfd))
+	return err == nil && fi.IsDir()
 }
 
 // readPathAt reads a pathname argument from the tracee and anchors it. ok is false if
@@ -1715,7 +1746,7 @@ const unixPtraceExitKill = 0x00100000
 // was never touched. The elsewhere-correct "an empty path names no file" rule (see the
 // AT_EMPTY_PATH note in inspectExistence, where naming nothing is right) does not hold for
 // an exec. The descriptor is resolved through /proc exactly as a relative path's anchor
-// is, which also settles the memfd case honestly: its link reads "… (deleted)", resolveAt
+// is, which also settles the memfd case honestly: its link reads "… (deleted)", fdPath
 // refuses it, and a drop says the observation is short rather than naming a pseudo-path
 // the sandbox could never bind.
 func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr, emptyPath bool, held map[string]heldPath, drop func()) {
@@ -1734,7 +1765,10 @@ func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr
 		if !emptyPath || dirfd == atFdCwd {
 			return
 		}
-		if path, ok = resolveAt(pid, dirfd, "."); !ok {
+		// The descriptor names the binary itself, a regular file - so this reads the
+		// link directly rather than anchoring through resolveAt, which refuses a
+		// non-directory anchor because no relative path resolves against one.
+		if path, ok = fdPath(pid, dirfd); !ok {
 			drop()
 			return
 		}
