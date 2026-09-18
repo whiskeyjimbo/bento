@@ -61,14 +61,14 @@ restriction and names the mechanism.
 | 3 | PID ns / cross-process reach | HANDLED - `args.go:501` `--unshare-pid` / `degraded.go:216` `blockProcessReach` + Landlock signal scope (`landlock_linux.go:429`) | HANDLED - `probe.go:280-285` names the shared process table, the group sweep and the setsid escape | HANDLED - `blockProcessReach` fatal, no report line (`degraded.go:216-218`) | HANDLED - the one residual (`/proc/<pid>/cmdline`) is named at `seccomp_linux.go:121-127`; the SysV-IPC sibling is row 11, finding F3 |
 | 4 | exec-block seccomp filter | HANDLED - one shared `installExecFilter` (`launcher.go:890`) called from `applyLayers:284` and `degraded.go:200` | IMPOSSIBLE - never dropped in degraded; same call, same strict/basic fallback | IMPOSSIBLE - it has a report line (`AppliedExecFilter`, `launcher.go:291` / `degraded.go:204`) | IMPOSSIBLE - same reason |
 | 5 | Landlock | HANDLED - `applyLayers:303` (writes only, backstop) / `degraded.go:232` (read+write+exec, primary) | HANDLED - both record; bwrap distinguishes `AppliedNo`/`AppliedAbsent` (`launcher.go:305-312`), degraded records `AppliedYes` only after a fatal call | IMPOSSIBLE - recorded on both tiers | HANDLED - the asymmetry is the ALLOWED direction: bwrap warns-and-proceeds (`launcher.go:304`), degraded is fatal. Strictly tighter in the tier with no mount ns |
-| 6 | Terminal detach (`--new-session` vs TIOCSTI/TIOCLINUX block) | HANDLED - `args.go:519` / `degraded.go:226`; rationale for the substitution at `degraded.go:219-225`. Availability is refused outright when the fence is missing (`degraded.go:127`) | IMPOSSIBLE - no channel records anything about the terminal on either tier, so a recorded drop cannot arise | HANDLED - `blockTerminalInjection` fatal, no report line | **UNHANDLED - see F4.** The substitute is narrower than `--new-session` (two ioctls vs no controlling terminal at all) and nothing says so |
+| 6 | Terminal detach (`--new-session` vs TIOCSTI/TIOCLINUX block) | HANDLED - `args.go:519` / `degraded.go:226`; rationale for the substitution at `degraded.go:219-225`. Availability is refused outright when the fence is missing (`degraded.go:127`) | IMPOSSIBLE - no channel records anything about the terminal on either tier, so a recorded drop cannot arise | HANDLED - `blockTerminalInjection` fatal, no report line | ~~UNHANDLED - see F4~~ **B (dropped and recorded), fixed in d441ca5.** The substitute is still narrower than `--new-session` (two ioctls vs no controlling terminal at all) - apply is structurally impossible, since setsid refuses a process-group leader and the stage is started `Setpgid` - but `terminalResidual` (`probe.go:447`) now says so unconditionally in the degraded Consequences, which `degradedProbe` rewrites `LayerFilesystem` with. Narrowness measured by `TestTierDifferential`'s controlling-terminal and tty-inject-ioctl rows (bv2-lpuue) |
 | 7 | Pseudo-FS: `/proc`, `/dev`, `/tmp` | HANDLED - `pseudoFSFlags` (`args.go:512`) / `degradedSystemPaths` (`internal/linux/degraded.go:451`) plus the scratch TMPDIR (`degraded.go:185-191`) | HANDLED - "any granted /proc is the host's" (`probe.go:279`); the degraded read set contains no `/proc` at all and `checkGrants` refuses `read: /proc` (`internal/linux/degraded.go:52-56`) | IMPOSSIBLE - these are host-side argv/ruleset decisions, not in-launcher fatal calls | HANDLED - the one gap, `/dev/full` absent from `degradedSystemPaths` while `permittedStdioDevice` allows it, is a compat nit named at `launcher.go:823-829`; it grants nothing (ENOSPC on write) |
 | 8 | Environment / HOME / TMPDIR / proxy vars | HANDLED - both build from the shared `sandboxEnv` (`args.go:665`); `--clearenv` (`args.go:662`) / `envSlice(sandboxEnv(...))` (`internal/linux/degraded.go:186`), plus `StripEnv` dropped at `degraded.go:184` and TMPDIR de-duplicated at `degraded.go:189` | IMPOSSIBLE - nothing is dropped; the HOME literal differs by design and the reason is in the shared doc comment (`args.go:655-664`) | IMPOSSIBLE - same | HANDLED - proxy-var scrubbing is bwrap-only (`launcher.go:241`) because degraded runs no bridge; allowed direction |
 | 9 | Inherited FDs + stdio + non-dumpable | HANDLED - `dropInheritedFDs` (`launcher.go:189` / `degraded.go:172`), stdio refusal (`launcher.go:200` / `degraded.go:177`), `PR_SET_DUMPABLE` (`launcher.go:224` / `degraded.go:180`) | IMPOSSIBLE - nothing dropped | IMPOSSIBLE - the calls are fatal on both tiers | HANDLED - degraded is STRICTER: no `AllowNetworkStdio` waiver, and the refusal says so (`launcher.go:566-572`). Allowed direction |
-| 10 | Capability bounding set | UNHANDLED - `--cap-drop ALL` (`args.go:502`) plus the in-sandbox re-check `verifyEmptyCapBound` (`verify.go:113`) have NO degraded counterpart; nothing calls `PR_CAPBSET_DROP` and nothing refuses a root-started degraded run | IMPOSSIBLE - no channel carries it; the probe Consequences is silent (spike 3) | IMPOSSIBLE - not fatal, nothing is called at all | **WRONG - see F2.** Documented only in a comment (`launcher.go:706-710`, "Nothing refuses a root run"), which is not a channel |
-| 11 | IPC / UTS / cgroup namespaces | UNHANDLED for System V IPC - `--unshare-ipc` (`args.go:501`) has no degraded substitute: Landlock's scoped IPC covers abstract unix sockets and signals only (`landlock_linux.go:416-428`) and `BlockProcessReach` (`seccomp_linux.go:128`) lists no `shmget`/`shmat`/`msgget`/`semget`. UTS/cgroup likewise unshared only on bwrap | IMPOSSIBLE - nothing records them; the probe text names mount, pid and network namespaces and stops (spike 3) | IMPOSSIBLE - not fatal, nothing called | **WRONG - see F3** |
-| 12 | Limits (systemd scope) + teardown | HANDLED for the wrap - the same `wrapWithLimits` on both (`linux.go:197` / `internal/linux/degraded.go:215`), same `canCreateScope` gate and `preflightLimits`; `--die-with-parent` (`args.go:519`) / `Pdeathsig` + process-group sweep + `WaitDelay` (`internal/linux/degraded.go:226-233`) | IMPOSSIBLE - the limits layers are deliberately left "as the probe found them" (`internal/linux/degraded.go:378-381`), so no degraded channel carries a drop | IMPOSSIBLE - not fatal | **WRONG - see F1.** The attestation half (`noteScopeLimits`) runs on all four bwrap arms (`linux.go:285,305,325,359`) and on none of the degraded four |
-| 13 | In-sandbox self-verification | HANDLED - `verifyEmptyNetns`/`FreshTmp`/`PidNamespace` (`launcher.go:150-162`) / `degradedPrerequisites` (`degraded.go:120`) | IMPOSSIBLE for the first three - they verify that bwrap built the sandbox it was asked for; the degraded tier installs its fences itself and the kernel's own return value attests them (`degraded.go:75-95`). No bwrap to be shimmed | IMPOSSIBLE - same | UNHANDLED for the capability leg - `verifyEmptyCapBound` is the one verify with a live counterpart question on this tier, and it is row 10 / F2 |
+| 10 | Capability bounding set | ~~UNHANDLED~~ **A (applied), fixed in 89bf735/f3b781d.** `restrictCapabilityBound` (`internal/launcher/degraded.go:141`) attempts `PR_CAPBSET_DROP`, re-reads `CapBnd` from the kernel rather than assuming it, and refuses the run when the set is still non-empty and the caller holds permitted capabilities | ~~IMPOSSIBLE~~ **B, fixed in d441ca5** - `capBoundResidual` (`probe.go:460`) discloses the unprivileged residual, worded about unspendability rather than about the drop failing, so it holds in every cell the branch emits | HANDLED - fatal on the privileged case, per the call at `degraded.go:327` | ~~WRONG - see F2~~ **fixed in 89bf735/f3b781d/d441ca5** (bv2-7nv8y, bv2-bweer). The unprivileged residual is inert: the call sits after the seccomp installs that set `PR_SET_NO_NEW_PRIVS`, and a bounding set can only be spent through a setuid or file-capability exec |
+| 11 | IPC / UTS / cgroup namespaces | UNHANDLED for System V IPC - `--unshare-ipc` (`args.go:501`) has no degraded substitute: Landlock's scoped IPC covers abstract unix sockets and signals only (`landlock_linux.go:416-428`) and `BlockProcessReach` (`seccomp_linux.go:128`) lists no `shmget`/`shmat`/`msgget`/`semget`. UTS/cgroup likewise unshared only on bwrap. ~~UNHANDLED~~ **A (applied), fixed in 7e483d7**: `BlockProcessReach` now denies all 12 System V IPC syscalls (`seccomp_linux.go:147-149`). POSIX mqueue deliberately excluded - named files under `/dev/mqueue`, already denied by Landlock. UTS/cgroup unchanged | IMPOSSIBLE - nothing records them; the probe text names mount, pid and network namespaces and stops (spike 3) | IMPOSSIBLE - not fatal, nothing called | ~~WRONG - see F3~~ **fixed in 7e483d7** (bv2-xwz5v). Chose apply over record: the fence is cheap and verifiable and the filter beside it already exists for the same threat. Pinned by `TestTierDifferential`'s sysv-ipc row; cost recorded as bv2-3mxlo |
+| 12 | Limits (systemd scope) + teardown | HANDLED for the wrap - the same `wrapWithLimits` on both (`linux.go:197` / `internal/linux/degraded.go:215`), same `canCreateScope` gate and `preflightLimits`; `--die-with-parent` (`args.go:519`) / `Pdeathsig` + process-group sweep + `WaitDelay` (`internal/linux/degraded.go:226-233`) | IMPOSSIBLE - the limits layers are deliberately left "as the probe found them" (`internal/linux/degraded.go:378-381`), so no degraded channel carries a drop | IMPOSSIBLE - not fatal | ~~WRONG - see F1~~ **HANDLED - `internal/linux/degraded.go:247` (3cc71f9).** F1 is struck: that commit routes `runDegraded` through `runCmd` with a sampling callback and calls `noteScopeLimits` once, ahead of all four return arms. See the base-correction section below - F1 was found by two reviewers independently and both were reading a stale base |
+| 13 | In-sandbox self-verification | HANDLED - `verifyEmptyNetns`/`FreshTmp`/`PidNamespace` (`launcher.go:150-162`) / `degradedPrerequisites` (`degraded.go:120`) | IMPOSSIBLE for the first three - they verify that bwrap built the sandbox it was asked for; the degraded tier installs its fences itself and the kernel's own return value attests them (`degraded.go:75-95`). No bwrap to be shimmed | IMPOSSIBLE - same | ~~UNHANDLED for the capability leg~~ **fixed with row 10** - `verifyEmptyCapBound` was the one verify with a live counterpart question on this tier; `restrictCapabilityBound` now supplies it, verifying against the kernel rather than assuming. See also bv2-1qsug, a provenance gap this grid has no row for: a scoped run of either tier is wrapped in a PATH-resolved `systemd-run` with no trust check |
 
 ## Grid B - ordering (8 pairs)
 
@@ -105,6 +105,7 @@ What would settle it: a host with an undelegated `cpu` controller, run degraded 
 `limits.cpu` set, and compare `Report.StateOf(LayerLimitsCPU)` against the scope's `cpu.max`.
 
 ### F2 - no capability-bounding-set drop on the degraded tier, and no disclosure of that
+**FIXED in 89bf735 / f3b781d (drop, verified against the kernel, fatal on the privileged case) and d441ca5 (disclosure of the inert residual). Beads bv2-7nv8y, bv2-bweer.**
 Non-disclosure: `VERIFIED BY SPIKE` (spike 3 asserted the probe text does not mention
 capabilities; the assertion held). Absence of the drop itself: `VERIFIED BY READING` (no
 `PR_CAPBSET_DROP` anywhere in the tree, no root refusal on this path).
@@ -122,6 +123,7 @@ route. A comment is not a channel, so as far as the report is concerned this is 
 drop.
 
 ### F3 - System V IPC is shared with the host on the degraded tier, unblocked and undisclosed
+**FIXED in 7e483d7 - applied rather than recorded: all 12 System V IPC syscalls denied in `BlockProcessReach`. Bead bv2-xwz5v; the cost of choosing apply is bv2-3mxlo.**
 Non-disclosure: `VERIFIED BY SPIKE` (spike 3). The rest: `VERIFIED BY READING`.
 
 `--unshare-ipc` is applied on the bwrap tier (`args.go:501`). On the degraded tier:
@@ -140,6 +142,7 @@ those are information-only and `/sys` is not in the degraded read set, so they a
 rather than filed.
 
 ### F4 - the terminal substitute is narrower than `--new-session`, and the difference is not disclosed
+**FIXED in d441ca5 by disclosure, not by application - apply is structurally impossible (setsid refuses a process-group leader; the stage is started `Setpgid` so `killProcessGroup` can sweep). Beads bv2-lpuue, bv2-bweer.**
 `VERIFIED BY READING`
 
 bwrap's `--new-session` gives the target no controlling terminal at all. The degraded
@@ -152,6 +155,7 @@ says the substitution is partial. The gap is in the allowed direction only if it
 recorded, and it is not.
 
 ### F5 - the degraded launcher is dumpable and in the host process table until `degraded.go:180`
+**STILL OPEN, and deliberately not filed: the exploit is a race, which a state grid cannot see. Recorded as an asymmetry only.**
 `VERIFIED BY READING` (ordering traced; the exploit window is not spikeable without a second same-uid process racing it, which is out of scope as a race)
 
 Both tiers call `PR_SET_DUMPABLE(0)` at the same point in their sequence, but the window
@@ -282,7 +286,10 @@ independence of base.
   disclosure text still never mentions capabilities (`VERIFIED BY SPIKE`, spike 3 re-run).
 - **F3 (System V IPC) HOLDS and is now fully spiked** - see the next section.
 - **F4 (terminal substitute narrower than `--new-session`) HOLDS, and 3b7a6d1 sharpened
-  the shape rather than fixing it.** The new `sessionFlags` comment (`args.go:518-528`)
+  the shape rather than fixing it.** *Fixed in d441ca5 (bv2-lpuue); the `sessionFlags`
+  comment quoted below was rewritten and now says plainly that the substitute is narrower
+  and names the four residuals, and the cite moved to `args.go:518-537`. Quoted verbatim
+  because the finding is about what it said.* The new `sessionFlags` comment (`args.go:518-528`)
   says the degraded tier "substitutes a seccomp filter and refuses fatally if it will not
   install (degraded.go:120, :226)" - a true sentence that a reader takes as a statement of
   equivalence, which is exactly what it is not: setsid leaves no controlling terminal,
@@ -342,7 +349,17 @@ Walked all 20 commits in `924e291..0a45ddb` touching these packages; the load-be
 | 686226d / f21e1bd / d39a454 (disclose degraded ABI, MPTCP and metadata residuals) | Grid A rows 1 and 2, disclosure side | **Yes**, and they are why the B column of those rows reads HANDLED. They also show the project's own channel for exactly the kind of gap F2 and F3 name, which is what makes those two silences filable rather than debatable |
 
 ### F6-new - "the report's origin is established by resolveBwrap" is written where it covers both tiers, and is true of one
-`VERIFIED BY READING` at 0a45ddb
+`VERIFIED BY READING` at 0a45ddb - **FIXED in d441ca5/6be6fce (bv2-tkbsx)**
+
+> Stale quotation warning, 2026-09-18: the paragraph quoted below was rewritten and the
+> cite moved to `internal/linux/applied.go:23-34`. It is preserved verbatim because the
+> finding is about what it said. The fix narrowed the comment's scope rather than adding a
+> check, and that judgement was confirmed independently on stronger grounds than this
+> finding used: `runDegraded` re-execs `sb.bentoPath`, which `bentoSelfPath` derives from
+> `os.Executable()`, so on the unscoped path there is no resolution step to aim at - which
+> is exactly what `resolveBwrap` guards on the other tier. One over-correction was caught
+> in review: a SCOPED run of either tier *is* wrapped in a PATH-resolved `systemd-run`, so
+> "no resolution step" is wrong there. That became bv2-1qsug.
 
 `internal/linux/applied.go:23-28` (added by 3b7a6d1) reasons about the applied report's
 trustworthiness: nothing in the bytes authenticates the writer, "The report's origin is
