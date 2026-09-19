@@ -26,7 +26,7 @@ func TestTraceObservesInterpreterAndLoader(t *testing.T) {
 	if err != nil {
 		skipMissingDep(t, "sh not available")
 	}
-	loader, ok := execImage(sh)
+	loader, ok := execImage(os.Getpid(), sh)
 	if !ok || loader == "" {
 		t.Skipf("%s names no ELF interpreter on this host", sh)
 	}
@@ -60,7 +60,7 @@ func TestExecImageChainReportsAnUnresolvableShebang(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if paths, complete := execImageChain(script); complete {
+	if paths, complete := execImageChain(os.Getpid(), script); complete {
 		t.Errorf("a relative shebang reported complete, with %v", paths)
 	}
 }
@@ -84,7 +84,7 @@ func TestExecImageReportsWhatItCouldNotSee(t *testing.T) {
 	unreadable := write("exec-only", []byte("#!/bin/sh\n"), 0o111)
 	if os.Geteuid() == 0 {
 		t.Log("running as root, so the unreadable case cannot be provoked")
-	} else if _, ok := execImage(unreadable); ok {
+	} else if _, ok := execImage(os.Getpid(), unreadable); ok {
 		t.Error("an unreadable exec target reported complete")
 	}
 
@@ -93,18 +93,18 @@ func TestExecImageReportsWhatItCouldNotSee(t *testing.T) {
 	// printable because a NUL ends the line for binfmt_script exactly as a newline does,
 	// which would make this pass without testing anything.
 	long := write("long.sh", append([]byte("#!/"), bytes.Repeat([]byte("a"), 512)...), 0o755)
-	if _, ok := execImage(long); ok {
+	if _, ok := execImage(os.Getpid(), long); ok {
 		t.Error("a shebang with no line ending reported complete")
 	}
 
 	// The same read, ending honestly: a script whose last line has no newline is ordinary,
 	// and the kernel ends the line on its zero-padded buffer.
 	short := write("noeol.sh", []byte("#!/bin/sh"), 0o755)
-	if got, ok := execImage(short); !ok || got != "/bin/sh" {
+	if got, ok := execImage(os.Getpid(), short); !ok || got != "/bin/sh" {
 		t.Errorf("a script with no trailing newline = %q %v, want /bin/sh true", got, ok)
 	}
 
-	if _, ok := execImage(filepath.Join(dir, "absent")); !ok {
+	if _, ok := execImage(os.Getpid(), filepath.Join(dir, "absent")); !ok {
 		t.Error("a path that is not there was counted as a lost observation; the exec fails the same way")
 	}
 }
@@ -135,7 +135,7 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 		{name: "junk after the NUL", interp: "/lib64/ld.so\x00/evil\x00", want: "/lib64/ld.so", ok: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := execImage(writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp))
+			got, ok := execImage(os.Getpid(), writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp))
 			if got != tc.want || ok != tc.ok {
 				t.Errorf("execImage = %q %v, want %q %v", got, ok, tc.want, tc.ok)
 			}
@@ -183,7 +183,7 @@ func TestExecImageChainWalksToTheLoader(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!"+sh+" -eu\ntrue\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	paths, complete := execImageChain(script)
+	paths, complete := execImageChain(os.Getpid(), script)
 	if !complete {
 		t.Fatal("the chain reported an unresolvable image")
 	}
@@ -211,7 +211,7 @@ func TestExecImageDoesNotBlockOnAFifo(t *testing.T) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		image, ok := execImage(fifo)
+		image, ok := execImage(os.Getpid(), fifo)
 		done <- answer{image, ok}
 	}()
 	select {
@@ -221,5 +221,34 @@ func TestExecImageDoesNotBlockOnAFifo(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("execImage did not return for a writer-less FIFO: the observer is blocked inside its own open, holding the tracee at its entry stop")
+	}
+}
+
+// The walk must resolve an image the way the TRACEE would, not the way the observer
+// would: a tracee is free to unshare(2) into a fresh mount namespace, and the same name
+// is then one file to it and another to the observer - an interpreter in the manifest
+// that the run never opened. Resolving through /proc/<pid>/root is what follows it.
+//
+// A pid with no root to look under is the reachable proof of that, and it is also the
+// case that must not be mistaken for a file that is simply absent: the exec's own ENOENT
+// is not a loss, but "the observer cannot see the tracee's namespace at all" is. Getting
+// that backwards puts a loader out of the manifest with Dropped at 0, which is the one
+// failure this file exists to stop.
+func TestExecImageChainResolvesInTheTraceesNamespace(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+	dead := exec.Command(sh, "-c", "exit 0")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	pid := dead.Process.Pid
+
+	if _, ok := execImage(pid, sh); ok {
+		t.Errorf("execImage resolved %s for a pid with no root, so it read the observer's own namespace", sh)
+	}
+	if paths, complete := execImageChain(pid, sh); complete {
+		t.Errorf("the chain reported complete with %v for a pid with no namespace to resolve in", paths)
 	}
 }

@@ -33,15 +33,23 @@ import (
 // arrives later through an execve the decoder already sees. It also guesses from the
 // extension when there is no shebang, and a guess is not an observation.
 //
+// Every image is resolved through the TRACEE's root (/proc/<pid>/root), not the
+// observer's: the tracee can unshare(2) into a fresh mount namespace - runObserve
+// installs only BlockIoUring, and a new user namespace hands back CAP_FULL_SET over it -
+// and then the same name is one file to the tracee and another to the observer. Reading
+// the shebang or PT_INTERP out of the observer's file would put an interpreter the run
+// never opened into the manifest. This is the rule fdIsDir already states for a
+// descriptor's kind: ask through something that answers in the tracee's namespace.
+//
 // complete is false when the run needed a file this could not name: a shebang whose
 // interpreter is not absolute (the kernel resolves it against the tracee's working
 // directory, which this does not track). The caller counts that as a dropped observation,
 // because an incomplete manifest that says so beats one that reads as complete.
-func execImageChain(path string) (paths []string, complete bool) {
+func execImageChain(pid int, path string) (paths []string, complete bool) {
 	// Six: the kernel's BINPRM_MAX_RECURSION allows four nested scripts, and the binary
 	// they reach plus its loader are two more opens.
 	for range 6 {
-		next, ok := execImage(path)
+		next, ok := execImage(pid, path)
 		if !ok {
 			return paths, false
 		}
@@ -75,10 +83,21 @@ func execImageChain(path string) (paths []string, complete bool) {
 // image is reopened through /proc only once the fstat says it is a regular file - which
 // is also open_exec's own rule, so anything else is an exec that fails with nothing
 // opened and no image to name.
-func execImage(path string) (string, bool) {
-	pathFD, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
+func execImage(pid int, path string) (string, bool) {
+	pathFD, err := unix.Open(traceePath(pid, path), unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return "", errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return "", false
+		}
+		// Under the tracee's root an ENOENT is ambiguous in a way it was not under the
+		// observer's: it answers both "absent in the tracee's view", which the exec will
+		// answer too, and "there is no tracee root left to look under", which is a lost
+		// observation. Taking the second for the first is what would put a loader out of
+		// the manifest with Dropped at 0.
+		if _, err := os.Stat(traceePath(pid, "/")); err != nil {
+			return "", false
+		}
+		return "", true
 	}
 	defer unix.Close(pathFD)
 	var st unix.Stat_t
@@ -160,4 +179,12 @@ func execImage(path string) (string, bool) {
 		return interp, true
 	}
 	return "", true
+}
+
+// traceePath names path as the OBSERVER must open it to see the file the TRACEE would:
+// through /proc/<pid>/root, which the kernel resolves in the tracee's mount namespace and
+// under its root, so a chroot or a fresh mount namespace is followed rather than ignored.
+// Join cleans the path, so no ".." in a target-chosen name walks back out of that root.
+func traceePath(pid int, path string) string {
+	return filepath.Join(fmt.Sprintf("/proc/%d/root", pid), path)
 }

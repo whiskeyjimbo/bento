@@ -334,7 +334,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// the caller already knows about; its #! interpreter and its loader are not, and a
 	// script run this way profiled without the shell that ran it. cmd.Path is argv[0] after
 	// the PATH search, which is the file the kernel actually opened.
-	rootImages, rootComplete := execImageChain(cmd.Path)
+	rootImages, rootComplete := execImageChain(root, cmd.Path)
 	for _, image := range rootImages {
 		record(image, false)
 	}
@@ -1778,7 +1778,7 @@ func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr
 			return
 		}
 	}
-	images, complete := execImageChain(path)
+	images, complete := execImageChain(pid, path)
 	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, exec: true, images: images, complete: complete}
 }
 
