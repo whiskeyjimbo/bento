@@ -489,10 +489,10 @@ func probeProcessVMRead() string {
 	)
 	local := []unix.Iovec{{Base: &dst[0], Len: 1}}
 	remote := []unix.RemoteIovec{{Base: uintptr(unsafe.Pointer(&src[0])), Len: 1}}
-	switch _, err := unix.ProcessVMReadv(os.Getpid(), local, remote, 0); {
-	case err == nil:
+	switch _, err := unix.ProcessVMReadv(os.Getpid(), local, remote, 0); err {
+	case nil:
 		return "permitted"
-	case err == unix.EPERM || err == unix.EACCES:
+	case unix.EPERM, unix.EACCES:
 		return "denied"
 	default:
 		return "unreadable"
