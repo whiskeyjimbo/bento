@@ -1390,3 +1390,64 @@ func TestShieldsAppliedReportsAnAbsentDenyAllAsDiscarded(t *testing.T) {
 		t.Errorf("a DenyAll path the host really has is hidden; got %v", shields)
 	}
 }
+
+// The whole Dir x real-on-disk-kind x Deny grid, asserting that the Kind shieldsApplied
+// reports and the mount shieldMount emits describe the same shield. The two are computed
+// from the same rule by different rules - shieldsApplied asks existence FIRST and only
+// then the Deny, while shieldMount asks the Deny first and consults the REAL kind on the
+// DenyAll arm and the DECLARED one on the DenyWrite arm - so a refactor collapsing either
+// asymmetry changes one and not the other, and the audit record starts naming a
+// protection other than the one applied.
+//
+// The expectations are written out per cell rather than derived, because a derivation
+// would share the branch it is meant to check and could never fail. The cells that pin
+// hardest are the absent DenyWrite pair: the declared directory takes a writable tmpfs
+// and the declared file an empty read-only bind, two different shapes under the one Kind
+// that names provenance (see enforce.ShieldApplied) rather than writability.
+func TestReportedShieldKindMatchesTheMount(t *testing.T) {
+	const path = "/home/u/x"
+	// The fake filesystem's kinds: a childless leaf is a file, an entry with something
+	// under it a directory, and an omitted path absent (see testSandbox).
+	var (
+		absent = []string{}
+		file   = []string{path}
+		dir    = []string{path, path + "/child"}
+	)
+	for _, tc := range []struct {
+		name     string
+		declared bool
+		onDisk   []string
+		deny     denylist.Deny
+		kind     string
+		mount    []string
+	}{
+		{"declared-file DenyAll absent", false, absent, denylist.DenyAll, "discarded", []string{"--ro-bind", "/tmp/shield", path}},
+		{"declared-dir DenyAll absent", true, absent, denylist.DenyAll, "discarded", []string{"--tmpfs", path}},
+		{"declared-file DenyAll on a file", false, file, denylist.DenyAll, "hidden", []string{"--ro-bind", "/tmp/shield", path}},
+		{"declared-dir DenyAll on a file", true, file, denylist.DenyAll, "hidden", []string{"--ro-bind", "/tmp/shield", path}},
+		{"declared-file DenyAll on a dir", false, dir, denylist.DenyAll, "hidden", []string{"--tmpfs", path}},
+		{"declared-dir DenyAll on a dir", true, dir, denylist.DenyAll, "hidden", []string{"--tmpfs", path}},
+
+		{"declared-file DenyWrite absent", false, absent, denylist.DenyWrite, "discarded", []string{"--ro-bind", "/tmp/shield", path}},
+		{"declared-dir DenyWrite absent", true, absent, denylist.DenyWrite, "discarded", []string{"--tmpfs", path}},
+		{"declared-file DenyWrite on a file", false, file, denylist.DenyWrite, "read-only", []string{"--ro-bind", path, path}},
+		{"declared-dir DenyWrite on a file", true, file, denylist.DenyWrite, "read-only", []string{"--ro-bind", path, path}},
+		{"declared-file DenyWrite on a dir", false, dir, denylist.DenyWrite, "read-only", []string{"--ro-bind", path, path}},
+		{"declared-dir DenyWrite on a dir", true, dir, denylist.DenyWrite, "read-only", []string{"--ro-bind", path, path}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := testSandbox(tc.onDisk...)
+			r := denylist.Rule{Path: path, Deny: tc.deny, Dir: tc.declared}
+			if got := shieldMount(r, sb); !slices.Equal(got, tc.mount) {
+				t.Errorf("shieldMount binds %v, want %v", got, tc.mount)
+			}
+			applied := shieldsApplied(sb, []denylist.Rule{r})
+			if len(applied) != 1 {
+				t.Fatalf("shieldsApplied reported %d entries for one rule: %v", len(applied), applied)
+			}
+			if applied[0].Kind != tc.kind {
+				t.Errorf("shieldsApplied reports kind %q for a shield bound as %v, want %q", applied[0].Kind, tc.mount, tc.kind)
+			}
+		})
+	}
+}
