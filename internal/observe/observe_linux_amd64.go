@@ -5,6 +5,17 @@
 //
 // This is a profiling tool, not an enforcement layer. It decodes syscalls by
 // their amd64 numbers and register layout; other architectures get a stub.
+//
+// Kernel floor: Linux 5.6. Decoding a tracee's syscalls needs nothing that new,
+// but naming a tracee's exec images does: execImage resolves every image with
+// openat2(2) under RESOLVE_IN_ROOT, which is the only way to re-root a
+// target-chosen name at the tracee's root the way the kernel will. There is no
+// fallback, deliberately - a lexical join answers with the OBSERVER's file. On an
+// older kernel the ENOSYS lands in the lost-observation arm instead, so a run
+// profiles with every exec image dropped and Dropped counting each one. The
+// profile is then short and says so, which is the honest answer; it is not a
+// silent degradation, and it is the only thing in this package that a pre-5.6
+// kernel changes.
 package observe
 
 import (

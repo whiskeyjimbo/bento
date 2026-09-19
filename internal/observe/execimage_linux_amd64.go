@@ -45,10 +45,14 @@ import (
 // interpreter is not absolute (the kernel resolves it against the tracee's working
 // directory, which this does not track). The caller counts that as a dropped observation,
 // because an incomplete manifest that says so beats one that reads as complete.
+// execChainDepth bounds the walk: the kernel's BINPRM_MAX_RECURSION allows four nested
+// scripts, and the binary they reach plus its loader are two more opens. A walk that
+// appends on every pass and falls through at the bound therefore reports complete only
+// with fewer than this many images named.
+const execChainDepth = 6
+
 func execImageChain(pid int, path string) (paths []string, complete bool) {
-	// Six: the kernel's BINPRM_MAX_RECURSION allows four nested scripts, and the binary
-	// they reach plus its loader are two more opens.
-	for range 6 {
+	for range execChainDepth {
 		next, ok := execImage(pid, path)
 		if !ok {
 			return paths, false
@@ -83,6 +87,11 @@ func execImageChain(pid int, path string) (paths []string, complete bool) {
 // image is reopened through /proc only once the fstat says it is a regular file - which
 // is also open_exec's own rule, so anything else is an exec that fails with nothing
 // opened and no image to name.
+// execHeadSize is BINPRM_BUF_SIZE: the buffer binfmt_script decodes a #! line out of, and
+// the reason a longer line is unreadable rather than absent. The decode here is held to
+// the kernel's rules over the same span, which FuzzExecImageDecode differentials.
+const execHeadSize = 256
+
 func execImage(pid int, path string) (string, bool) {
 	rootFD, err := unix.Open(fmt.Sprintf("/proc/%d/root", pid), unix.O_PATH|unix.O_CLOEXEC|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -123,32 +132,48 @@ func execImage(pid int, path string) (string, bool) {
 	}
 	defer f.Close()
 
-	// One short read is enough for either decision: the kernel reads the shebang out of a
-	// buffer of this size itself, and an ELF's program headers are found through the header
-	// this leaves to debug/elf.
-	var buf [256]byte
+	// One short read is enough for either decision: execHeadSize is the kernel's own
+	// shebang buffer, and an ELF's program headers are found through the header this
+	// leaves to debug/elf.
+	var buf [execHeadSize]byte
 	n, _ := io.ReadFull(f, buf[:])
 	head := string(buf[:n])
 	if interp, ok := strings.CutPrefix(head, "#!"); ok {
+		// The line ends at whichever of the newline and the NUL comes first: the kernel
+		// zeroes the tail of its own buffer, and its interpreter name is a C string, so a
+		// NUL terminates the line exactly as a newline does. Cutting on the newline alone
+		// carries the padding after it into the name, and the openat2 of THAT then fails
+		// EINVAL - a drop counted against a file the kernel opened perfectly well.
 		line, _, found := strings.Cut(interp, "\n")
+		if nul := strings.IndexByte(line, 0); nul >= 0 {
+			line, found = line[:nul], true
+		}
 		if !found && n == len(buf) {
-			// The line ran past the buffer, so what is here is a truncated path the kernel
-			// never opened - unreadable rather than absent. The kernel refuses this outright
-			// (its own buffer is no larger), but only the full-buffer case is that: a file
-			// that simply ends without a trailing newline is an ordinary script, which
-			// binfmt_script accepts because it ends the line on the NUL padding.
+			// The line ran past the buffer with no terminator in it, so what is here is a
+			// truncated path the kernel never opened - unreadable rather than absent. The
+			// kernel refuses this outright, its own buffer being no larger. A file that
+			// simply ends without a trailing newline is not this: it is an ordinary script,
+			// which binfmt_script accepts because it ends the line on the NUL padding.
 			return "", false
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		// Space and tab, and NOT strings.Fields' unicode whitespace: the kernel separates
+		// the interpreter from its argument on those two alone, so a '\r' or a form feed is
+		// part of the NAME. Splitting on one names a shorter path that may well exist, and
+		// reports it complete, while the kernel opened the longer one and found nothing -
+		// a file in the manifest that the run never touched.
+		name := strings.TrimLeft(line, " \t")
+		if cut := strings.IndexAny(name, " \t"); cut >= 0 {
+			name = name[:cut]
+		}
+		if name == "" {
 			return "", true
 		}
 		// A relative interpreter is resolved against the tracee's working directory at the
 		// moment of the exec, which is not knowable from here.
-		if !filepath.IsAbs(fields[0]) {
+		if !filepath.IsAbs(name) {
 			return "", false
 		}
-		return fields[0], true
+		return name, true
 	}
 	e, err := elf.NewFile(f)
 	if err != nil {
