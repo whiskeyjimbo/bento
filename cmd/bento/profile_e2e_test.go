@@ -40,19 +40,6 @@ func requireSandbox(t *testing.T) {
 	}
 }
 
-// skipMissingDep skips for a missing host dependency, or fails when
-// BENTO_REQUIRE_TEST_DEPS is set. A behavioral test that self-skips reports a pass having
-// asserted nothing, so on a host without bwrap or unprivileged user namespaces a run is
-// indistinguishable from one that exercised the shield; the variable is how a host that
-// is supposed to have them - CI, and `make test` - says so.
-func skipMissingDep(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
-		t.Fatalf(format, args...)
-	}
-	t.Skipf(format, args...)
-}
-
 // The mechanism the whole convergence loop rests on, end to end under real bwrap: a
 // content-branching script reads a config to decide what to do next. Under default-deny
 // (round 1) that read fails, so it never attempts the downstream path - the manifest
