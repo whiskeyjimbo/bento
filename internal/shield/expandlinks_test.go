@@ -45,7 +45,7 @@ func TestExpansionFollowsTheFlagNotTheBucket(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := Set{fs: Host(), homes: []string{home}, atAnchor: map[string]bool{}}
-			links := s.credentialLinks([]denylist.Rule{
+			links, _ := s.credentialLinks([]denylist.Rule{
 				{Path: store, Deny: denylist.DenyAll, Dir: true, Holds: tc.holds, ExpandLinks: tc.flag},
 			})
 			got := slices.ContainsFunc(links, func(r denylist.Rule) bool { return r.Path == target })
