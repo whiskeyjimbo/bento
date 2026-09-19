@@ -676,8 +676,11 @@ func TestReviewedGlobsNameInstancesBentoActuallyShields(t *testing.T) {
 		// so it is read rather than mirrored in a second table. One matching rule at the
 		// named level satisfies it, because the reason names a specific instance while the
 		// pattern also reaches siblings the list deliberately holds weaker - ".*coin" says
-		// .bitcoin is DenyAll and matches nothing else that has to be. A reason naming no
-		// level is out of this check's scope, which is the honest limit of reading prose.
+		// .bitcoin is DenyAll and matches nothing else that has to be. A reason that names
+		// no level is out of scope, and so is one whose glob matches nothing at all - a
+		// residual like ".Xdefaults-*" still claims the base .Xdefaults is DenyWrite, and
+		// the matcher that would hold it to that is the thing the residual records as
+		// absent. That is the honest limit of reading prose.
 		for text, level := range map[string]denylist.Deny{"DenyAll": denylist.DenyAll, "DenyWrite": denylist.DenyWrite} {
 			if strings.Contains(reason, text) && len(matched) > 0 && !levels[level] {
 				t.Errorf("reviewed glob %q says %q, but no rule it matches (%v) is %s; the record outlived the level it claims", glob, reason, matched, text)
