@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/internal/launcher"
 )
 
 // filesystemLayer is the decision at the heart of the degraded tier: bwrap when
@@ -456,9 +457,9 @@ func TestDegradedConsequencesDiscloseTheTierParityResiduals(t *testing.T) {
 		// "refused" is the half that ties this text to a DECISION rather than to a
 		// mechanism: restrictCapabilityBound (internal/launcher/degraded.go) lets the
 		// unprivileged residual pass and refuses the privileged case, and this sentence is
-		// the only place the operator is told so. The coupling stays one-directional -
-		// the launcher cannot import this package, so no test can notice the decision
-		// changing while the text stands still (bv2-5dc8e).
+		// the only place the operator is told so. This direction stops the text being
+		// gutted; the other one - the decision inverting while the text stands still -
+		// is TestCapBoundDisclosureMatchesTheLauncherDecision below.
 		for _, want := range []string{"TIOCSTI", "TIOCSWINSZ", "--new-session", "PR_CAPBSET_DROP", "bounding set", "refused"} {
 			if !strings.Contains(l.Consequences, want) {
 				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
@@ -482,6 +483,42 @@ func TestDegradedConsequencesDiscloseTheUnrunSweep(t *testing.T) {
 				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
 			}
 		}
+	}
+}
+
+// The other direction of the same coupling. capBoundResidual does not describe a
+// mechanism, it describes a VERDICT the launcher reaches: an undroppable bounding set is
+// let through as inert where the caller holds nothing, and refused where it does. Asserting
+// only the text's wording leaves the verdict free to invert underneath it, which is the
+// drift a comment linking the two packages cannot catch. This package already imports
+// internal/launcher (args.go, applied.go), so the predicate itself is what the sentence is
+// checked against - one source, read from both sides.
+func TestCapBoundDisclosureMatchesTheLauncherDecision(t *testing.T) {
+	const someCaps = uint64(0x0000003fffffffff)
+	for _, tc := range []struct {
+		name          string
+		bounding, eff uint64
+		wantLive      bool
+		wantSays      string
+	}{
+		// The ordinary host: PR_CAPBSET_DROP is unavailable without CAP_SETPCAP, so the
+		// set survives, and the run proceeds because no-new-privs makes it unspendable.
+		{"undroppable set, unprivileged caller", someCaps, 0, false, "on an ordinary host the set survives the run"},
+		// The root-started run: the surviving set still bounds what the caller's own
+		// capabilities pass on, so it is refused rather than degraded.
+		{"undroppable set, privileged caller", someCaps, someCaps, true, "is refused instead of degraded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := launcher.CapBoundResidualLive(tc.bounding, tc.eff); got != tc.wantLive {
+				t.Errorf("launcher.CapBoundResidualLive(%016x, %016x) = %v, want %v - the disclosure promises %q",
+					tc.bounding, tc.eff, got, tc.wantLive, tc.wantSays)
+			}
+			l := filesystemLayer(namespacesBlocked, "userns blocked here", true, true, true, true, true, true, true)
+			if !strings.Contains(l.Consequences, tc.wantSays) {
+				t.Errorf("the decision for this cell is live=%v but the disclosure never says %q: %q",
+					tc.wantLive, tc.wantSays, l.Consequences)
+			}
+		})
 	}
 }
 

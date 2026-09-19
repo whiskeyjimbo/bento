@@ -157,10 +157,28 @@ func restrictCapabilityBound() error {
 	if err != nil {
 		return fmt.Errorf("launcher: %w", err)
 	}
-	if eff != 0 {
-		return fmt.Errorf("launcher: refusing to run - the degraded tier could not empty the capability bounding set (%016x left) and this run holds capabilities %016x, so the target would inherit a bound the bwrap tier's --cap-drop ALL removes", held, eff)
+	if !CapBoundResidualLive(held, eff) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("launcher: refusing to run - the degraded tier could not empty the capability bounding set (%016x left) and this run holds capabilities %016x, so the target would inherit a bound the bwrap tier's --cap-drop ALL removes", held, eff)
+}
+
+// CapBoundResidualLive reports whether a capability bounding set this tier could not
+// empty actually bounds anything. It is the whole of the decision restrictCapabilityBound
+// acts on, exported because the probe's disclosure of that decision lives in another
+// package (internal/linux, capBoundResidual) and prose was the only thing holding the two
+// together: the sentence promises an unprivileged run proceeds with an inert set and a
+// privileged one is refused, and without a shared source the decision could invert while
+// the sentence stood still. internal/linux already imports this package, so the pairing is
+// asserted there against this predicate rather than against a copy of it.
+//
+// A surviving set is inert unless the caller holds capabilities of its own: this runs
+// after the seccomp installs set PR_SET_NO_NEW_PRIVS, and a bounding set is spendable
+// only through a setuid or file-capability exec, which no-new-privs already refuses. What
+// it still bounds is what the caller's OWN capabilities pass to its children, so a
+// privileged caller - the root-started run - is the live case.
+func CapBoundResidualLive(bounding, held uint64) bool {
+	return bounding != 0 && held != 0
 }
 
 // dropCapBoundingSet asks the kernel to drop every capability in held. Individual
