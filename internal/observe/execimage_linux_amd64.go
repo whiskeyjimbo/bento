@@ -141,28 +141,40 @@ func execImage(pid int, path string) (string, bool) {
 	n, _ := io.ReadFull(f, buf[:])
 	head := string(buf[:n])
 	if interp, ok := strings.CutPrefix(head, "#!"); ok {
-		// The header ends at the first of newline, NUL, space or tab, and binfmt_script
-		// refuses it outright only when the whole buffer holds none of the four. Each one is
-		// load-bearing and each was got wrong here once: the kernel zeroes its buffer's tail
-		// and takes the name as a C string, so a NUL ends the line exactly as a newline does,
-		// and space and tab - ONLY those two, not strings.Fields' unicode whitespace -
-		// separate the interpreter from its argument, so a '\r' is part of the NAME. Cutting
-		// on the newline alone carries the padding after it into the name, and the openat2 of
-		// that fails EINVAL: a drop counted against a file the kernel opened perfectly well.
-		// Stopping at a '\r' is worse - it names a shorter path that may well exist and
-		// reports it COMPLETE, while the kernel opened the longer one and found nothing.
-		if !strings.ContainsAny(interp, "\n\x00 \t") && n == len(buf) {
-			// The buffer filled with no terminator in it, so what is here is a truncated path
-			// the kernel never opened - unreadable rather than absent, and the kernel refuses
-			// it for that reason. A file that simply ends without a trailing newline is not
-			// this: it is an ordinary script, which the zero padding terminates.
-			return "", false
-		}
+		// The header ends at the first of newline, NUL, space or tab AFTER the name starts,
+		// and binfmt_script refuses it outright when the buffer fills before one arrives.
+		// Each of the four is load-bearing and each was got wrong here once: the kernel
+		// zeroes its buffer's tail and takes the name as a C string, so a NUL ends the line
+		// exactly as a newline does, and space and tab - ONLY those two, not strings.Fields'
+		// unicode whitespace - separate the interpreter from its argument, so a '\r' is part
+		// of the NAME. Cutting on the newline alone carries the padding after it into the
+		// name, and the openat2 of that fails EINVAL: a drop counted against a file the
+		// kernel opened perfectly well. Stopping at a '\r' is worse - it names a shorter path
+		// that may well exist and reports it COMPLETE, while the kernel opened the longer one
+		// and found nothing.
+		//
+		// The leading run of space and tab comes off FIRST, and the terminator is looked for
+		// after it, because that is where the kernel looks: `#!  /very/long/name` filling the
+		// buffer is refused, and testing the whole body would find the leading space, call
+		// the header terminated, and report a truncated path complete.
 		name := strings.TrimLeft(interp, " \t")
-		if end := strings.IndexAny(name, "\n\x00 \t"); end >= 0 {
-			name = name[:end]
-		}
 		if name == "" {
+			// A header that is all space and tab: ENOEXEC, with nothing opened to record.
+			return "", true
+		}
+		end := strings.IndexAny(name, "\n\x00 \t")
+		if end < 0 {
+			if n == len(buf) {
+				// The buffer filled with no terminator after the name began, so what is here
+				// is a truncated path the kernel never opened - unreadable rather than absent,
+				// and the kernel refuses it for that reason. A file that simply ends without a
+				// trailing newline is not this: it is an ordinary script, which the zero
+				// padding terminates.
+				return "", false
+			}
+			end = len(name)
+		}
+		if name = name[:end]; name == "" {
 			return "", true
 		}
 		// A relative interpreter is resolved against the tracee's working directory at the
@@ -174,17 +186,24 @@ func execImage(pid int, path string) (string, bool) {
 	}
 	e, err := elf.NewFile(f)
 	if err != nil {
-		// Not an ELF the observer can parse, and not a script: nothing names an image.
-		return "", true
+		// An ELF this cannot parse is not an ELF that will not RUN: the kernel's loader
+		// reads the program headers and never looks at the section headers debug/elf
+		// validates, so a binary with a corrupt e_shstrndx execs perfectly well and opens
+		// its PT_INTERP loader. Reporting that complete would put the loader out of the
+		// manifest with Dropped at 0. Without the magic there is no image to name and no
+		// exec that could have succeeded either, which is the shebang branch's answer for
+		// a header naming nothing.
+		return "", strings.HasPrefix(head, elf.ELFMAG)
 	}
 	for _, p := range e.Progs {
 		if p.Type != elf.PT_INTERP {
 			continue
 		}
-		// PT_INTERP holds a pathname, and Filesz comes straight out of the file - an ELF
-		// the profiled target execs is not trusted input, and an unbounded make() here
+		// binfmt_elf's own bounds on the segment: PATH_MAX above, and at least two bytes so
+		// that a name and its terminator fit. Filesz comes straight out of the file - an
+		// ELF the profiled target execs is not trusted input, and an unbounded make() here
 		// would let one kill the observer rather than be recorded by it.
-		if p.Filesz > unix.PathMax {
+		if p.Filesz > unix.PathMax || p.Filesz < 2 {
 			return "", false
 		}
 		name := make([]byte, p.Filesz)
@@ -192,7 +211,12 @@ func execImage(pid int, path string) (string, bool) {
 			return "", false
 		}
 		// The kernel takes the segment as a C string, so it ends at the FIRST NUL and
-		// whatever pads the segment after it is not part of the name.
+		// whatever pads the segment after it is not part of the name - and it REFUSES the
+		// image outright when the segment's last byte is not a NUL, because there is then
+		// no C string in it at all. Accepting that names a loader the exec never opened.
+		if name[len(name)-1] != 0 {
+			return "", false
+		}
 		interp, _, _ := strings.Cut(string(name), "\x00")
 		// The same hostile input the bound above guards against, held to what the shebang
 		// branch already holds its own interpreter to: a relative path resolves against the

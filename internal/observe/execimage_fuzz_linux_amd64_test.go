@@ -30,23 +30,28 @@ import (
 // The rule: the kernel reads its own 256-byte buffer and ZEROES the tail, then ends the
 // name at the first of newline, NUL, space or tab - a narrower separator set than
 // "whitespace", so a '\r' or a form feed is part of the interpreter's NAME. It refuses the
-// header (ENOEXEC, nothing opened) only when the whole buffer holds none of the four: a
-// full buffer whose line runs on but carries a space still execs the name before it.
+// header (ENOEXEC, nothing opened) when the buffer fills before a terminator arrives AFTER
+// the name starts: a full buffer whose line runs on but carries a space still execs the
+// name before it, while `#!  ` plus a name that runs to the end is refused, the leading
+// space notwithstanding. A header of nothing but space and tab is refused too.
 //
 // complete is false for what execImage cannot honestly name: that unterminated buffer, and
 // a relative interpreter, which the kernel resolves against the tracee's working directory.
 // The second is the contract's answer, not the kernel's - the kernel opens it fine.
 func refShebangImage(head []byte) (image string, complete bool) {
-	body := string(head[2:])
-	if !strings.ContainsAny(body, "\n\x00 \t") && len(head) >= execHeadSize {
-		return "", false
-	}
-	name := strings.TrimLeft(body, " \t")
-	if end := strings.IndexAny(name, "\n\x00 \t"); end >= 0 {
-		name = name[:end]
-	}
+	name := strings.TrimLeft(string(head[2:]), " \t")
 	if name == "" {
 		// binfmt_script refuses this with ENOEXEC, having opened nothing.
+		return "", true
+	}
+	end := strings.IndexAny(name, "\n\x00 \t")
+	if end < 0 {
+		if len(head) >= execHeadSize {
+			return "", false
+		}
+		end = len(name)
+	}
+	if name = name[:end]; name == "" {
 		return "", true
 	}
 	if !filepath.IsAbs(name) {
@@ -84,7 +89,12 @@ func refELFInterp(file []byte) (name string, complete, known bool) {
 		// The bound execImage puts on Filesz, and the short read past it: an ELF the
 		// profiled target execs is not trusted input, so neither is a loss the observer
 		// reports rather than a name it invents.
-		if size > unix.PathMax || off+size > uint64(len(file)) {
+		if size > unix.PathMax || off > uint64(len(file)) || off+size > uint64(len(file)) {
+			return "", false, true
+		}
+		// binfmt_elf refuses a segment whose last byte is not a NUL: there is no C string
+		// in it, and the exec opens nothing.
+		if size < 2 || file[off+size-1] != 0 {
 			return "", false, true
 		}
 		interp, _, _ := strings.Cut(string(file[off:off+size]), "\x00")
@@ -121,19 +131,21 @@ func imageDecodeViolation(file []byte, got string, ok bool) error {
 		}
 	}
 	if !bytes.HasPrefix(file, []byte("#!")) {
-		// execImage reaches PT_INTERP only for a file debug/elf parsed, and answers
-		// ("", true) for one it did not - so that is the precondition, not an answer to
-		// grade. Without it the reference would object to every ELF only one of the two
-		// parsers accepts, which is a disagreement about ELF and not about the image.
-		if !parsesAsELF(file) {
+		// A loss the decoder DECLARES is acceptable here: the manifest is short and says
+		// so, which is the honest answer when debug/elf refuses an ELF the kernel would
+		// have run. What is not acceptable is a silent drop, and that is the one thing
+		// gating this arm on debug/elf parsing would have hidden - the kernel's loader
+		// reads the program headers this reference walks and never the section headers
+		// debug/elf validates.
+		if !ok {
 			return nil
 		}
 		wantInterp, wantOK, known := refELFInterp(file)
 		if !known {
 			return nil
 		}
-		if got != wantInterp || ok != wantOK {
-			return fmt.Errorf("decoded %q %v; the program headers name the loader %q %v", got, ok, wantInterp, wantOK)
+		if got != wantInterp || !wantOK {
+			return fmt.Errorf("decoded %q complete; the program headers name the loader %q %v", got, wantInterp, wantOK)
 		}
 		return nil
 	}
@@ -177,7 +189,7 @@ func FuzzExecImageDecode(f *testing.F) {
 	// The PT_INTERP branch is unreachable from random bytes - a parseable ELF carrying a
 	// segment is not something a mutator builds - so the seed is built with the helper the
 	// hand-written ELF test already uses, giving the fuzzer a base to mutate from.
-	for _, interp := range []string{"/lib64/ld.so\x00", "/lib64/ld.so\x00\x00\x00"} {
+	for _, interp := range []string{"/lib64/ld.so\x00", "/lib64/ld.so\x00\x00\x00", "/lib64/ld.so"} {
 		elf, err := os.ReadFile(writeELFWithInterp(f, filepath.Join(f.TempDir(), "elf"), interp))
 		if err != nil {
 			f.Fatal(err)
@@ -325,7 +337,6 @@ func TestImageDecodeOracleRejectsAWrongAnswer(t *testing.T) {
 		ok   bool
 	}{
 		{"a named loader dropped silently", "", true},
-		{"a named loader reported as a loss", "", false},
 		{"a different loader than the headers name", "/lib64/ld-other.so", true},
 	} {
 		t.Run(wrong.name, func(t *testing.T) {
@@ -344,10 +355,81 @@ func TestImageDecodeOracleRejectsAWrongAnswer(t *testing.T) {
 	}
 }
 
-// parsesAsELF is execImage's precondition for reaching the PT_INTERP branch at all.
-func parsesAsELF(file []byte) bool {
-	_, err := elf.NewFile(bytes.NewReader(file))
-	return err == nil
+// The exec table above cannot see a truncated name that happens to EXIST: it folds "the
+// kernel refused the header" and "the kernel resolved a name that was not there" into one
+// outcome, and a truncation of a path nothing created is absent either way. This builds the
+// one shape that tells them apart - a header whose leading spaces are followed by the path
+// of a real file, running to the end of the buffer with no terminator after it.
+//
+// The kernel refuses that outright, having opened nothing. A decode that tests the whole
+// body for a terminator finds the LEADING space, calls the header terminated, and reports
+// the real file complete: a manifest naming a file the run never opened, which is the
+// failure this whole file exists to stop and is worse than the drop it replaces.
+func TestExecImageRefusesATruncatedNameThatExists(t *testing.T) {
+	dir := t.TempDir()
+	const lead = "#!  "
+	name := strings.Repeat("n", execHeadSize-len(lead)-len(dir)-1)
+	if len(name) < 1 || len(name) > 255 {
+		t.Skipf("a %d-byte temp dir leaves no room for the boundary case", len(dir))
+	}
+	image := filepath.Join(dir, name)
+	if err := os.WriteFile(image, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := lead + image + strings.Repeat("a", 64)
+	if len(lead+image) != execHeadSize {
+		t.Fatalf("the header is %d bytes, not the %d the buffer holds", len(lead+image), execHeadSize)
+	}
+	script := filepath.Join(dir, "s")
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(exec.Command(script).Run(), unix.ENOEXEC) {
+		t.Skip("the kernel did not refuse the header, so there is nothing to disagree with")
+	}
+	if got, ok := execImage(os.Getpid(), script); ok && got != "" {
+		t.Errorf("execImage named %q complete for a header the kernel refused with ENOEXEC", got)
+	}
+	if image, complete := refShebangImage([]byte(body)); complete && image != "" {
+		t.Errorf("refShebangImage named %q complete for a header the kernel refused with ENOEXEC", image)
+	}
+}
+
+// The ELF side's counterpart to TestBinfmtReferenceMatchesTheKernel: binfmt_elf takes
+// PT_INTERP as a C string and refuses the image when the segment's last byte is not a NUL,
+// so a decoder that cuts at the first NUL and accepts a segment without one names a loader
+// no exec ever opened. These ELFs cannot run - nothing is mapped in them - but the errno
+// still says which way the kernel went: ENOEXEC is the refusal, and anything else means it
+// accepted the name and went looking for the file.
+func TestPT_INTERPTerminationMatchesTheKernel(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name     string
+		interp   string
+		complete bool
+	}{
+		{name: "nul terminated", interp: "/lib64/ld.so\x00", complete: true},
+		{name: "not terminated", interp: "/lib64/ld.so"},
+		{name: "one byte", interp: "\x00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp)
+			refused := errors.Is(exec.Command(path).Run(), unix.ENOEXEC)
+			if refused == tc.complete {
+				t.Fatalf("the kernel refused = %v for a %s segment; the case assumes the opposite", refused, tc.name)
+			}
+			file, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, complete, _ := refELFInterp(file); complete != tc.complete {
+				t.Errorf("refELFInterp complete = %v, want %v", complete, tc.complete)
+			}
+			if _, ok := execImage(os.Getpid(), path); ok != tc.complete {
+				t.Errorf("execImage ok = %v, want %v", ok, tc.complete)
+			}
+		})
+	}
 }
 
 func fileExists(path string) bool {

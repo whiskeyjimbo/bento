@@ -208,14 +208,21 @@ Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** 
    kernel opened fine); and `#!/bin/sh\rx` was decoded as `/bin/sh` and reported COMPLETE,
    because `strings.Fields` splits on unicode whitespace while the kernel splits on space and
    tab alone - the kernel opened `/bin/sh\rx`, found nothing, and the manifest would have
-   named an interpreter the run never touched. A third, found by the review that followed:
-   with no newline in the 256-byte buffer the kernel still ends the name at the first space
-   or tab and execs it, and only a buffer holding none of newline, NUL, space or tab is the
-   ENOEXEC case - `#!/bin/echo ` followed by 300 filler bytes runs `/bin/echo`, where the
-   decoder reported a lost observation. Conservative rather than wrong (a spurious drop, not
-   a false complete), but it is a drop against a file the kernel opened. All three fixed in
-   the same change.
-   STAMP: **VERIFIED BY SPIKE** (both reproduced by exec, red on the seeds, green after).
+   named an interpreter the run never touched. Three more came out of the reviews that
+   followed, each likewise confirmed by exec: with no newline in the buffer the kernel still
+   ends the name at the first space or tab AFTER the name begins and execs it (`#!/bin/echo `
+   plus 300 filler bytes runs `/bin/echo`, where the decoder reported a loss - conservative,
+   but a drop against a file the kernel opened; `#!  /bin/echo` plus filler is refused
+   ENOEXEC, where a first attempt at the rule reported the truncation COMPLETE); binfmt_elf
+   refuses a PT_INTERP segment whose last byte is not a NUL, which the decoder accepted and
+   named; and an ELF `debug/elf` cannot parse is not an ELF that will not run - a corrupt
+   `e_shstrndx` execs fine and opens its loader, because the kernel's loader reads only the
+   program headers, so reporting it complete dropped the loader with Dropped at 0. All five
+   fixed in the same branch.
+   STAMP: **VERIFIED BY SPIKE** (each reproduced by exec on the host, each red before the
+   fix and green after; the two the reviews found are pinned by
+   `TestExecImageRefusesATruncatedNameThatExists` and
+   `TestPT_INTERPTerminationMatchesTheKernel`, which ask the kernel directly).
 2. **`gate`** - `Check` and eleven `*Problems` predicates, no target. The oracle is already
    written by hand: `TestShieldedGrantProblemsMirrorTheRunsRefusals` asserts gate-vs-`internal/linux`
    agreement over a table. A fuzzer generalises that table directly, and this is a second mirror
