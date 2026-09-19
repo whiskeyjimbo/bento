@@ -195,6 +195,13 @@ func refusals(set shield.Set, resolved *policy.Policy) []string {
 // Asked of the kernel and not of pathresolve's Loop arm, for the reason checkGrantNotLooped
 // spells out: Loop is that resolver's budget running out, which neither implies nor is
 // implied by the link count the kernel refuses on.
+//
+// Asked of the grant AS SPELLED, where the three functions below ask where the grant lands:
+// the backend stats filepath.Abs(g), and a chain longer than the kernel's link budget onto
+// a directory that exists resolves perfectly well (filepath.EvalSymlinks has its own, far
+// larger budget) while the kernel refuses to walk it. Resolving first would stat the target
+// and pass a grant the run refuses. TestLoopedGrantProblemsRefusesOnlyLoops carries that
+// row against internal/linux's TestCheckGrantNotLoopedRealFilesystem.
 func LoopedGrantProblems(read, write []string) []string {
 	var problems []string
 	seen := map[string]bool{}
@@ -205,8 +212,15 @@ func LoopedGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		lands, _ := pathresolve.Existing(g)
-		if _, err := os.Stat(lands); errors.Is(err, syscall.ELOOP) {
+		// Abs fails only where the process has no working directory to anchor a relative
+		// spelling to, and the backend refuses the whole policy there. Skipped rather than
+		// raised: nothing about the grant was shown to be wrong, and missing a refusal is
+		// the direction this package narrows in.
+		abs, err := filepath.Abs(g)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(abs); errors.Is(err, syscall.ELOOP) {
 			problems = append(problems, grantrefusal.Looped(g).Error())
 		}
 	}

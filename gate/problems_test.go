@@ -443,6 +443,21 @@ func TestLoopedGrantProblemsRefusesOnlyLoops(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A chain of more links than the kernel will walk, onto a directory that EXISTS.
+	// The backend's checkGrantNotLooped stats the grant as spelled and gets ELOOP, so
+	// the run refuses it; resolving first hands back the target, which stats fine, and
+	// the gate would pass a manifest that cannot run. The same row is carried by
+	// internal/linux's TestCheckGrantNotLoopedRealFilesystem, which is what pins the
+	// two ends of this parity.
+	chain := filepath.Join(d, "chain")
+	if err := os.Mkdir(chain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustSymlink(t, chain, filepath.Join(d, "chain0"))
+	for i := 1; i <= 45; i++ {
+		mustSymlink(t, filepath.Join(d, "chain"+strconv.Itoa(i-1)), filepath.Join(d, "chain"+strconv.Itoa(i)))
+	}
+
 	for _, tc := range []struct {
 		name string
 		read []string
@@ -451,6 +466,7 @@ func TestLoopedGrantProblemsRefusesOnlyLoops(t *testing.T) {
 		{"a loop", []string{loop}, 1},
 		{"a dangling chain", []string{dangling}, 0},
 		{"an ordinary directory", []string{plain}, 0},
+		{"a chain past the kernel's link budget onto a real directory", []string{filepath.Join(d, "chain45")}, 1},
 	} {
 		if got := gate.LoopedGrantProblems(tc.read, nil); len(got) != tc.want {
 			t.Errorf("%s: LoopedGrantProblems = %v, want %d problem(s)", tc.name, got, tc.want)
