@@ -459,6 +459,25 @@ func TestExecImageReportsAnUnparseableELFAsALoss(t *testing.T) {
 	}
 }
 
+// The walk's depth bound, which no fuzzer input can reach: the file it writes is at a path
+// the fuzzer does not know, so it cannot name itself. A script whose interpreter IS itself
+// is the #! cycle the bound exists for, and the answer has to be that the chain is short
+// and says so - a walk that stopped at the bound and reported complete would hand out a
+// manifest missing whatever the exec would have gone on to open, with Dropped at 0.
+func TestExecImageChainReportsACycleAsIncomplete(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "loop.sh")
+	if err := os.WriteFile(script, []byte("#!"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths, complete := execImageChain(os.Getpid(), script)
+	if complete {
+		t.Errorf("a #! cycle reported complete with %v", paths)
+	}
+	if len(paths) != execChainDepth {
+		t.Errorf("the walk named %d images, want the bound's %d", len(paths), execChainDepth)
+	}
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
