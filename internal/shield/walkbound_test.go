@@ -92,10 +92,18 @@ func TestACallerDenyCarriesNoRelocationSource(t *testing.T) {
 
 	// Shields() is what the report renders from; CallerDenies() alone would go green
 	// under a fix that cleared only the other copy of the caller's rules.
+	var mounted bool
 	for _, a := range set.Shields() {
-		if a.Rule.Path == store && a.Rule.Source != "" {
+		if a.Rule.Path != store {
+			continue
+		}
+		mounted = true
+		if a.Rule.Source != "" {
 			t.Errorf("caller deny %s reached the report stamped as relocated by $%s", store, a.Rule.Source)
 		}
+	}
+	if !mounted {
+		t.Fatalf("premise gone: caller deny %s never reaches the report at all", store)
 	}
 	for _, r := range set.CallerDenies() {
 		if r.Source != "" {
