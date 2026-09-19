@@ -210,8 +210,8 @@ func hostSafetyDelegationState(ctrls map[string]bool, known bool, controller str
 // path rather than the name: resolving here and letting exec resolve "systemd-run" again
 // would leave the run confined by a binary nothing checked, since trustLauncherPath rules
 // on the file it found and not on the PATH directories ahead of it. Every wrapped launch
-// reaches this - the profiling path consults no scope verdict of its own - so it is the
-// one place a scoped run's provenance can be settled.
+// reaches this, on both tiers and on the profiling path, so it is the one place a scoped
+// run's provenance can be settled.
 //
 // env is the environment the real run will hand systemd-run, or nil to inherit the
 // enforcer's. Passing the real one matters on the degraded tier, whose command env is

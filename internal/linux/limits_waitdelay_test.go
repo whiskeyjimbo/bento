@@ -23,7 +23,8 @@ import (
 // a holder of stdout and exits 0, which is what a real killed `systemd-run --user --scope`
 // leaves behind.
 func TestScopeProbesAreBoundedWhenSomethingHoldsTheirOutput(t *testing.T) {
-	shimPATH(t, "systemd-run", "#!/bin/sh\nsleep 20 &\nexit 0\n")
+	dir := shimPATH(t, "systemd-run", "#!/bin/sh\nsleep 20 &\nexit 0\n")
+	runner := filepath.Join(dir, "systemd-run")
 
 	// Comfortably past the 5s bound plus the 1s WaitDelay, and comfortably short of the
 	// 20s the holder lives: whichever side of that window the probe lands on is the
@@ -32,7 +33,7 @@ func TestScopeProbesAreBoundedWhenSomethingHoldsTheirOutput(t *testing.T) {
 
 	t.Run("runScopeProbe", func(t *testing.T) {
 		err, ok := within(t, bound, func() error {
-			return runScopeProbe(context.Background(), "systemd-run", policy.Limits{Memory: "64M"}, nil)
+			return runScopeProbe(context.Background(), runner, policy.Limits{Memory: "64M"}, nil)
 		})
 		if !ok {
 			t.Fatalf("runScopeProbe was still blocked after %s while its documented bound is %s; the deadline killed systemd-run but the backgrounded holder of stdout keeps the output read waiting", bound, scopeProbeTimeout)

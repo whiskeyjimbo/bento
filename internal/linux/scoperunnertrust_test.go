@@ -5,7 +5,6 @@ package linux
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,9 +28,9 @@ func plantScopeRunner(t *testing.T) string {
 	return dir
 }
 
-// requireScopeRunner skips unless this host has a systemd-run wrapWithLimits will accept.
-// Wrapping resolves and vouches for the runner, so a test that only cares about the scope
-// ARGUMENTS still needs a resolvable one.
+// requireScopeRunner skips unless this host has a systemd-run that passes the provenance
+// check. wrapWithLimits takes a runner it does not resolve, so a test that only cares
+// about the scope ARGUMENTS still needs a vouched-for one to hand it.
 func requireScopeRunner(t *testing.T) string {
 	t.Helper()
 	path, _, err := resolveScopeRunner()
@@ -71,17 +70,10 @@ func TestPreflightLimitsReturnsTheValidatedRunnerForTheLaunch(t *testing.T) {
 		t.Fatalf("wrapWithLimits launched %q, want the runner it was given, %q", exe, runner)
 	}
 
-	// The window itself. PATH changing between the check and the exec is the shape the
-	// bare name was vulnerable to, so plant a runner the way an attacker would and confirm
-	// the launch still names the file that was vouched for.
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "systemd-run"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-	if got := exec.Command(exe).Path; got != want {
-		t.Errorf("the launch would exec %q after PATH changed, want %q", got, want)
-	}
+	// No PATH-mutation assertion follows, deliberately: exe is absolute by now, so exec
+	// performs no lookup and the check could only fail if one of the two above already
+	// had. What PATH cannot be made to prove here is the launch SITES passing this value
+	// on - see the test-gap note on the bead.
 }
 
 // Under limits the scope runner, not bwrap, is the outer process the host execs, and it
