@@ -378,11 +378,15 @@ type streamRefusalJSON struct {
 	// The network record and the exec record ride the failed event under the verdict's
 	// names: a run hung retrying a denied host and then interrupted is the one the denial
 	// explains, and --record-exec asked for a record whether or not the run finished.
-	EgressConnections int             `json:"egress_connections,omitempty"`
-	GuardBlocked      []hostPortJSON  `json:"guard_blocked,omitempty"`
-	EgressDenied      []hostPortJSON  `json:"egress_denied,omitempty"`
-	Untunneled        []hostPortJSON  `json:"untunneled,omitempty"`
-	ExecRecord        *execRecordJSON `json:"exec_record,omitempty"`
+	EgressConnections int            `json:"egress_connections,omitempty"`
+	GuardBlocked      []hostPortJSON `json:"guard_blocked,omitempty"`
+	// GuardBlockedMetadata is the subset of guard_blocked refused for being the cloud
+	// metadata address - the one guard cause that reads as a credential probe rather
+	// than a misconfigured name.
+	GuardBlockedMetadata []hostPortJSON  `json:"guard_blocked_metadata,omitempty"`
+	EgressDenied         []hostPortJSON  `json:"egress_denied,omitempty"`
+	Untunneled           []hostPortJSON  `json:"untunneled,omitempty"`
+	ExecRecord           *execRecordJSON `json:"exec_record,omitempty"`
 	*runNotesJSON
 }
 
@@ -433,7 +437,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// clean posture !HasDegradation() would read as.
 	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toRunReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: res.UnresolvedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed,
 		TargetNeverRan:    res.Setup == enforce.SetupSilent && len(res.Report.Layers) == 0,
-		EgressConnections: res.EgressConnections, GuardBlocked: toHostPortsJSON(res.GuardBlocked), EgressDenied: toHostPortsJSON(res.Denied),
+		EgressConnections: res.EgressConnections, GuardBlocked: toHostPortsJSON(res.GuardBlocked), GuardBlockedMetadata: toHostPortsJSON(res.GuardBlockedMetadata), EgressDenied: toHostPortsJSON(res.Denied),
 		Untunneled: toHostPortsJSON(res.Untunneled), ExecRecord: toExecRecordJSON(res.ExecRecord), runNotesJSON: notes})
 	return reportStreamed(stderr, stream, bentoFailed)
 }
@@ -563,6 +567,11 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// reach. Each host is the sandbox's own CONNECT target, so a consumer rendering it
 			// is rendering attacker-chosen bytes.
 			GuardBlocked []hostPortJSON `json:"guard_blocked,omitempty"`
+			// GuardBlockedMetadata is the subset of guard_blocked the guard refused for being
+			// the cloud instance metadata address. It is emitted apart because it is the only
+			// guard cause that is not a misconfiguration: a target reached for the instance's
+			// credentials. Attacker-chosen bytes, like guard_blocked.
+			GuardBlockedMetadata []hostPortJSON `json:"guard_blocked_metadata,omitempty"`
 			// EgressDenied names the destinations the allowlist refused outright, which
 			// egress_connections counts but does not identify - it is what lets a consumer
 			// answer "what did it try to reach and what did we refuse". Attacker-chosen bytes,
@@ -617,7 +626,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// no shield can follow, which the shield summary warns about.
 			UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
 			*runNotesJSON
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, shadowedPathDirs(p, env), res.Setup == enforce.SetupTargetUnreached, verdictRelocations(res), notes})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.GuardBlockedMetadata), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, shadowedPathDirs(p, env), res.Setup == enforce.SetupTargetUnreached, verdictRelocations(res), notes})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)

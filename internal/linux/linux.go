@@ -315,7 +315,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// No ExitCode or Signaled: the kill was the cancel's, and a SIGKILLed target has
 		// no outcome of its own to report. That separation is what tells an operator who
 		// aborted a run apart from a policy that killed it.
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 
 	switch err := runErr; {
@@ -332,7 +332,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -352,7 +352,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	default:
 		// The auto-exec list for the same reason the cancel arm carries it: the target may
 		// already have run, and this is the arm where nothing else says what the host holds.
@@ -386,7 +386,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 
@@ -1140,6 +1140,7 @@ type egressCollector struct {
 	atCapacity int
 	admitted   map[string]enforce.HostPort
 	blocked    map[string]enforce.HostPort
+	metadata   map[string]enforce.HostPort
 	denied     map[string]enforce.HostPort
 	gateDenied map[string]enforce.HostPort
 	untunneled map[string]enforce.HostPort
@@ -1191,11 +1192,30 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 		}
 		c.gateDenied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 		c.gateFaults++
+	case proxy.GuardBlockedMetadata:
+		// A metadata probe is a guard block like the four below - the operator needs the
+		// destination either way - and is also recorded apart, because it is the one cause
+		// that is not a misconfiguration: 169.254.169.254 and the 6to4/NAT64/mapped forms
+		// of it are reached only by a target that went looking for instance credentials.
+		// The subset stays a subset rather than replacing the entry, so a consumer that
+		// only asks "did the guard refuse anything" keeps the whole set.
+		if c.blocked == nil {
+			c.blocked = make(map[string]enforce.HostPort)
+		}
+		if c.metadata == nil {
+			c.metadata = make(map[string]enforce.HostPort)
+		}
+		c.blocked[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
+		c.metadata[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	case proxy.GuardBlockedReserved, proxy.GuardBlockedUnparsed, proxy.GuardBlockedPrivate, proxy.GuardBlockedNAT64:
-		// Every cause the guard refuses for shares one set: an operator reading the result
-		// needs the destination whatever the cause was, and the four differ in the remedy
-		// rather than in whether the host belongs here. Telling them apart is the
-		// embedder's observer's job, which sees the decision itself.
+		// These four share one set: an operator reading the result needs the destination
+		// whatever the cause was, and they differ in the remedy rather than in whether the
+		// host belongs here. Telling THEM apart is the embedder's observer's job, which
+		// sees the decision itself; the metadata cause above is the one worth carrying
+		// this far, because it is the only one that reads as an attack rather than a
+		// corporate DNS. The constants are listed rather than folded into
+		// Decision.GuardRefused deliberately: the exhaustive switch is what fails when a
+		// sixth cause is added and nobody decides which half it belongs in.
 		if c.blocked == nil {
 			c.blocked = make(map[string]enforce.HostPort)
 		}
@@ -1261,6 +1281,14 @@ func (c *egressCollector) guardBlocked() []enforce.HostPort {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return sortedHostPorts(c.blocked)
+}
+
+// guardBlockedMetadata returns a copy of the subset of the guard-blocked set refused for
+// being the cloud metadata address, sorted for the same reason gateAdmitted is.
+func (c *egressCollector) guardBlockedMetadata() []enforce.HostPort {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return sortedHostPorts(c.metadata)
 }
 
 // allowlistDenied returns a copy of the set the allowlist refused, sorted for the same reason

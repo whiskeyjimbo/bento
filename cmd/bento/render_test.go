@@ -770,6 +770,38 @@ func TestWriteGuardBlockedWarning(t *testing.T) {
 	}
 }
 
+// A metadata probe is the one guard refusal an operator must not read past as routine,
+// so the notice names it again under its own sentence instead of leaving it in the list
+// where a split-horizon DNS block looks the same. The routine refusal stays unnamed
+// there, which is what makes the extra sentence a signal.
+func TestWriteGuardBlockedWarningCallsOutMetadataProbes(t *testing.T) {
+	var b bytes.Buffer
+	writeGuardBlockedWarning(&b, enforce.Result{
+		GuardBlocked: []enforce.HostPort{
+			{Host: "internal.example", Port: "443"},
+			{Host: "169.254.169.254", Port: "80"},
+		},
+		GuardBlockedMetadata: []enforce.HostPort{{Host: "169.254.169.254", Port: "80"}},
+	})
+	out := b.String()
+	_, credentials, ok := strings.Cut(out, "instance's credentials")
+	if !ok {
+		t.Fatalf("a metadata probe must be called out apart from the routine refusals; got %q", out)
+	}
+	if !strings.Contains(credentials, "169.254.169.254") {
+		t.Errorf("the metadata destination must be named under the callout; got %q", credentials)
+	}
+	if strings.Contains(credentials, "internal.example") {
+		t.Errorf("a routine guard refusal must not be named as a credential probe; got %q", credentials)
+	}
+
+	b.Reset()
+	writeGuardBlockedWarning(&b, enforce.Result{GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}})
+	if strings.Contains(b.String(), "instance's credentials") {
+		t.Errorf("a run with no metadata probe must not claim one; got %q", b.String())
+	}
+}
+
 // A CONNECT target is whatever the sandboxed script asked for, so a host holding a
 // newline would otherwise print as a second line and forge a line of this report.
 func TestWriteGuardBlockedWarningQuotesTheHost(t *testing.T) {

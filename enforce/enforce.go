@@ -415,6 +415,21 @@ type Result struct {
 	// that no name resolved into private space: a run that made no connections, or one
 	// with no egress at all, reports empty too.
 	GuardBlocked []HostPort
+	// GuardBlockedMetadata is the subset of GuardBlocked refused for being the cloud
+	// instance metadata address - 169.254.169.254, or a 6to4/NAT64/IPv4-mapped form of
+	// it. Every entry here is also in GuardBlocked, so a consumer asking only whether
+	// the guard refused anything reads that one and is unaffected.
+	//
+	// It is carried apart because it is the only guard refusal that is not a
+	// misconfiguration. The other causes say a name resolved somewhere the sandbox may
+	// not go, which on a corporate network is routine; this one says the target went
+	// looking for the instance's credentials, which is worth an operator's attention
+	// even on a run that otherwise succeeded.
+	//
+	// The Host is ATTACKER-CONTROLLED for the same reason GuardBlocked's is, and must
+	// be quoted the same way. Empty carries no assurance either: a run that made no
+	// connections reports empty too.
+	GuardBlockedMetadata []HostPort
 	// Denied lists the destinations the allowlist refused outright - no rule named them,
 	// and no gate was there to be asked - deduped and sorted. A destination a gate was
 	// consulted about and refused is in GateDenied instead, so this list is exactly the

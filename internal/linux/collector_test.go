@@ -304,3 +304,28 @@ func TestNoAcceptRetriesLeavesTheNetworkLayerAlone(t *testing.T) {
 		t.Errorf("LayerNetwork = %v, want Enforced: the listener never faltered", got)
 	}
 }
+
+// A metadata probe is the one guard refusal worth alerting on: 169.254.169.254 and the
+// 6to4/NAT64/mapped forms of it are reachable only by a target that went looking for
+// instance credentials, where the other four causes are routine misconfiguration. The
+// cause that separates them is proxy.GuardBlockedMetadata, in another package - so this
+// test is what keeps the collector's arm and the warning's claim tied to it. The
+// destination must still land in the blocked set, which is what the operator reads for
+// every cause, and the metadata set is a subset of it rather than a disjoint one.
+func TestMetadataProbesAreBlockedAndCalledOut(t *testing.T) {
+	c := &egressCollector{}
+	c.observe(proxy.GuardBlockedPrivate, "intranet.example", "443")
+	c.observe(proxy.GuardBlockedMetadata, "metadata.example", "80")
+
+	want := []enforce.HostPort{{Host: "intranet.example", Port: "443"}, {Host: "metadata.example", Port: "80"}}
+	if got := c.guardBlocked(); !slices.Equal(got, want) {
+		t.Errorf("guardBlocked() = %v, want %v: a metadata probe is a guard block like any other", got, want)
+	}
+	wantMeta := []enforce.HostPort{{Host: "metadata.example", Port: "80"}}
+	if got := c.guardBlockedMetadata(); !slices.Equal(got, wantMeta) {
+		t.Errorf("guardBlockedMetadata() = %v, want %v: the probe must be named apart from routine refusals", got, wantMeta)
+	}
+	if got := c.counted(); got != 2 {
+		t.Errorf("counted() = %d, want 2", got)
+	}
+}

@@ -1477,15 +1477,24 @@ func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
 	for _, hp := range res.GuardBlocked {
 		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
 	}
-	// The guard blocks three shapes - host-reserved space, private space with no
-	// literal rule, and an address it could not classify - and the report cannot say
-	// which (naming the resolved address is the disclosure the 502 exists to avoid), so
-	// the likeliest cause is offered as a cause and not asserted. Widening the
+	// The guard blocks five shapes and the report cannot say which for four of them
+	// (naming the resolved address is the disclosure the 502 exists to avoid), so the
+	// likeliest cause is offered as a cause and not asserted. The fifth, a metadata
+	// probe, is named below: that destination discloses nothing the target did not
+	// already choose, and it is the one cause an operator must not read past. Widening the
 	// allowlist cannot fix any of them, which is the part an operator most needs told.
 	fmt.Fprintln(w, "[bento] usually a name that resolves into private space (a split-horizon or corporate DNS).")
 	fmt.Fprintln(w, "[bento] adding the name to the allowlist will not help: to reach a private address, list")
 	fmt.Fprintln(w, "[bento] that address itself as an explicit IP rule. Loopback and cloud metadata can never")
 	fmt.Fprintln(w, "[bento] be reached, by any rule.")
+	if len(res.GuardBlockedMetadata) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "[bento] one of those was the cloud instance metadata address, which nothing reaches by")
+	fmt.Fprintln(w, "[bento] accident - the target asked for the instance's credentials:")
+	for _, hp := range res.GuardBlockedMetadata {
+		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
+	}
 }
 
 // writeDeniedWarning names the destinations the allowlist refused. The target met the
