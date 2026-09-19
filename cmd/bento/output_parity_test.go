@@ -95,7 +95,9 @@ var parityRows = []parityRow{
 	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
 	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
 
-	// profile.
+	// profile. Rendered by calling the writers: reaching profile.go's calls to them means
+	// profiling a script under a real sandbox, which this table does not require. The call
+	// sites are covered instead by TestProfileSaysWhatItKeptAndWhatTheLocationIsWorth.
 	{writers: []string{"writeMergeNotice"}, fixture: "profile", marker: "kept from the existing manifest", key: "merged"},
 	{writers: []string{"warnUntrusted"}, fixture: "profile", marker: "attests only what whoever can write it leaves there", key: "location_flaws"},
 
@@ -131,7 +133,6 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 		"validate":         parityValidate,
 		"validate-stamped": parityValidateStamped,
 		"doctor":           parityDoctor,
-		// Its HISTFILE stays set for the fixtures rendered after it; none of them reads it.
 		"doctor-relocated": parityDoctorRelocated,
 		"profile":          parityProfile,
 	}
@@ -250,6 +251,10 @@ func isZeroJSON(v any) bool {
 	return false
 }
 
+// renderRun calls the dispatcher rather than the run command: every run row's fixture is
+// a synthesised enforce.Result - a signalled exit alongside four egress collectors and an
+// exec record - that no runnable target produces. run.go's single call site is covered by
+// run_e2e_test.go, whose exit-code assertions are on what writeRunResult hands back.
 func renderRun(t *testing.T, p *policy.Policy, env map[string]string, res enforce.Result, runErr error) (string, map[string]any) {
 	t.Helper()
 	var human bytes.Buffer
@@ -345,24 +350,25 @@ func parityValidateStamped(t *testing.T) (string, map[string]any) {
 	return human, machine
 }
 
-// parityDoctorRelocated is the host the ordinary doctor fixture cannot be: a $HOME inside
-// the passwd home, which the test cannot arrange, is passed as anchors directly, and a
-// variable moves a shield somewhere no home contains.
+// parityDoctorRelocated is the host the ordinary doctor fixture cannot be: $HOME inside
+// the passwd home, so the two anchors nest, and a variable moving a shield somewhere no
+// home contains. Both are environment facts, so doctor still renders them itself and
+// these rows drive the command like every other doctor row.
+//
+// HISTFILE is left set for the fixtures rendered after it; none of them reads it, and the
+// doctor rows that would are rendered before this one.
 func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
+	// The passwd home is the anchor $HOME cannot move, so nesting them means putting
+	// $HOME under it. A host whose uid has no usable passwd entry cannot be arranged into
+	// that shape at all - said out loud rather than skipped, since a row that quietly
+	// stops asserting is what this table exists to prevent.
+	pw := denylist.PasswdHome()
+	if pw == "" || pw == "/" {
+		t.Fatalf("uid %d has no usable passwd home, so the nested-anchor row cannot be driven through doctor on this host", os.Getuid())
+	}
+	t.Setenv("HOME", filepath.Join(pw, ".aws"))
 	t.Setenv("HISTFILE", "/usr/bin/python3")
-	anchors := []string{"/home/u/.aws", "/home/u"}
-	var human bytes.Buffer
-	writeNestedAnchors(&human, anchors)
-	writeRelocatedShields(&human)
-	encoded, err := json.Marshal(toDoctorJSON(enforce.Report{}, anchors, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var machine map[string]any
-	if err := json.Unmarshal(encoded, &machine); err != nil {
-		t.Fatal(err)
-	}
-	return human.String(), machine
+	return renderDoctor(t)
 }
 
 func parityProfile(t *testing.T) (string, map[string]any) {
@@ -384,23 +390,24 @@ func parityProfile(t *testing.T) (string, map[string]any) {
 }
 
 func parityDoctor(t *testing.T) (string, map[string]any) {
-	anchors, err := denylist.HomeAnchors()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var report enforce.Report
-	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-	var human bytes.Buffer
-	writePlatform(&human)
-	writeReportTable(&human, report)
-	writeShieldAnchors(&human)
-	encoded, err := json.Marshal(toDoctorJSON(report, anchors, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
+	return renderDoctor(t)
+}
+
+// renderDoctor drives the real doctor command for both halves. Through the command and
+// not the writers: the rows below prove a fact reaches both surfaces, and a fixture that
+// called writePlatform/writeReportTable/writeShieldAnchors itself would stay green if
+// doctor stopped calling them. Both halves come from the same pair of invocations, so the
+// probe the table renders is the probe the JSON reports.
+//
+// The error is dropped for the reason parityValidate drops it: doctor exits non-zero on a
+// host whose core layers fall short, and what these rows assert is what it printed.
+func renderDoctor(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	human, _ := runCapturingStdout(t, newDoctorCmd())
+	out, _ := runCapturingStdout(t, newDoctorCmd(), "--json")
 	var machine map[string]any
-	if err := json.Unmarshal(encoded, &machine); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal([]byte(out), &machine); err != nil {
+		t.Fatalf("doctor --json is not JSON (%v):\n%s", err, out)
 	}
-	return human.String(), machine
+	return human, machine
 }

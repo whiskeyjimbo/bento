@@ -187,3 +187,49 @@ func TestProfileResumesFromAnApprovedManifestWithARelativeGrant(t *testing.T) {
 		t.Errorf("the session must say it resumed from the approved grant (%q):\n%s", want, stderr)
 	}
 }
+
+// The two things a profiling session says on stderr that nothing else in the tree asserts
+// against the real command: what the merge kept from a manifest this run never saw, and
+// what the manifest's location is worth. Both are printed from profile's RunE and carried
+// by its --json as merged and location_flaws; output_parity_test.go pins that the two
+// halves agree, but renders the human one by calling the writers, so without this a
+// profile that stopped calling either would stay green everywhere.
+func TestProfileSaysWhatItKeptAndWhatTheLocationIsWorth(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	// World-writable, which is the location flaw: anyone can swap the manifest its stamp
+	// attests, so the session has to say the stamp is worth less than it looks.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A grant the script never touches, so the merge keeps it and has something to name.
+	unattempted := filepath.Join(dir, "reference")
+	if err := os.Mkdir(unattempted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "bento.yaml")
+	existing, err := manifest.Marshal(
+		&policy.Policy{Entrypoint: script, Interpreter: "/bin/sh", Read: []string{unattempted}},
+		manifest.Provenance{GeneratedBy: "a hand edit"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, _ := runProfileInteractively(t, "n\n", "--out", out, script)
+
+	if want := "kept from the existing manifest"; !strings.Contains(stderr, want) {
+		t.Errorf("the session must say what the merge kept (%q):\n%s", want, stderr)
+	}
+	if want := "attests only what whoever can write it leaves there"; !strings.Contains(stderr, want) {
+		t.Errorf("the session must say what the location is worth (%q):\n%s", want, stderr)
+	}
+}
