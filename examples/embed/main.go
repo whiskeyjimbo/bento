@@ -419,7 +419,7 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	}
 	// GuardBlockedMetadata: the subset of the above refused for being the cloud instance
 	// metadata address. Said again, under its own sentence, because it is the only guard
-	// cause that is not a misconfiguration - the target went looking for the instance's
+	// cause that reads as a credential probe - the target went looking for the instance's
 	// credentials - and a wrapper that leaves it in the list above has reported a
 	// credential probe as a DNS problem. Quoted for the same reason.
 	for _, hp := range res.GuardBlockedMetadata {

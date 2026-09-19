@@ -46,7 +46,7 @@ Field groups (collapsed; each group is populated or dropped together on every ar
 - F-setup: Setup
 - F-report: Report
 - F-rec: ExecRecord
-- F-net: EgressConnections, GateAdmitted, GuardBlocked, Denied, GateDenied, Untunneled
+- F-net: EgressConnections, GateAdmitted, GuardBlocked, GuardBlockedMetadata, Denied, GateDenied, Untunneled
 - F-shield: Shields, Exposed, ShieldedGrants, AcceptedAliases
 - F-hooks: ChangedAutoExec, RedirectedHooks, UnresolvedHooks
 

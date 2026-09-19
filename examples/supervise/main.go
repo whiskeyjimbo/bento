@@ -387,8 +387,8 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 	}
 	// The metadata subset is said again under its own heading: in a wrapper where a human
 	// approved the host at a prompt, "the guard refused it" reads as their approval being
-	// second-guessed, and this is the one cause where it was not a misconfiguration but
-	// the target reaching for the instance's credentials. Quoted for the same reason.
+	// second-guessed, and this is the one cause that reads as a credential probe rather
+	// than a misconfigured name. Quoted for the same reason.
 	if len(res.GuardBlockedMetadata) > 0 {
 		fmt.Fprintf(w, "\n%s\n", t.warn("the cloud instance metadata address is among those: the target went looking for the instance's credentials"))
 		for _, hp := range res.GuardBlockedMetadata {

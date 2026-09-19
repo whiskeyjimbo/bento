@@ -420,9 +420,10 @@ type Result struct {
 	// it. Every entry here is also in GuardBlocked, so a consumer asking only whether
 	// the guard refused anything reads that one and is unaffected.
 	//
-	// It is carried apart because it is the only guard refusal that is not a
-	// misconfiguration. The other causes say a name resolved somewhere the sandbox may
-	// not go, which on a corporate network is routine; this one says the target went
+	// It is carried apart because it is the only guard refusal that reads as a
+	// credential probe. The other causes say a name resolved somewhere the sandbox may
+	// not go - or that bento could not classify it at all - which on a corporate network
+	// is routine; this one says the target went
 	// looking for the instance's credentials, which is worth an operator's attention
 	// even on a run that otherwise succeeded.
 	//

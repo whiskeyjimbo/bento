@@ -569,8 +569,8 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			GuardBlocked []hostPortJSON `json:"guard_blocked,omitempty"`
 			// GuardBlockedMetadata is the subset of guard_blocked the guard refused for being
 			// the cloud instance metadata address. It is emitted apart because it is the only
-			// guard cause that is not a misconfiguration: a target reached for the instance's
-			// credentials. Attacker-chosen bytes, like guard_blocked.
+			// guard cause that reads as a credential probe rather than a misconfigured or
+			// unclassifiable name: a target reached for the instance's credentials. Attacker-chosen bytes, like guard_blocked.
 			GuardBlockedMetadata []hostPortJSON `json:"guard_blocked_metadata,omitempty"`
 			// EgressDenied names the destinations the allowlist refused outright, which
 			// egress_connections counts but does not identify - it is what lets a consumer

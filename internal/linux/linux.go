@@ -1195,8 +1195,8 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 	case proxy.GuardBlockedMetadata:
 		// A metadata probe is a guard block like the four below - the operator needs the
 		// destination either way - and is also recorded apart, because it is the one cause
-		// that is not a misconfiguration: 169.254.169.254 and the 6to4/NAT64/mapped forms
-		// of it are reached only by a target that went looking for instance credentials.
+		// that reads as a credential probe: 169.254.169.254 and the 6to4/NAT64/mapped forms
+		// of it are reached only by a target that went looking for them.
 		// The subset stays a subset rather than replacing the entry, so a consumer that
 		// only asks "did the guard refuse anything" keeps the whole set.
 		if c.blocked == nil {
