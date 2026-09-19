@@ -275,7 +275,7 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // and either may be empty on its own - see Refused. A guard refusal carries the CONNECT
 // target, not the address it resolved to, which nothing host-side reads: what the
 // operator needs from it - host infrastructure, an internal name, or a NAT64 blackout -
-// is in the decision instead, which is why these four causes are separate constants.
+// is in the decision instead, which is why these causes are separate constants.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
 }
@@ -698,7 +698,8 @@ func classifyRFC8215(ip net.IP) ipClass {
 	ip16 := ip.To16()
 	// Ranked rather than first-hit: the carves are guesses, and a wrong-length read of a
 	// wrapped metadata address lands on its own padding and spells some other reserved
-	// address (a /48 carve read at /64 gives 254.169.254.0, inside 240/4). Returning the
+	// address (a /48 carve read at /64 gives 169.254.0.0, and rfc6052Lengths descends, so
+	// that read comes first). Returning the
 	// first host-reserved hit would refuse it correctly and report it as an ordinary
 	// loopback dial, so the most alerting decode over all lengths wins - the same rule,
 	// and the same reason, as blockedDecision's.
