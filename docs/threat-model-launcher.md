@@ -33,12 +33,21 @@ Attacker list (proposed, not confirmed - see "Attackers" below):
 `VERIFIED BY SPIKE` (both halves, in-process), with the escalating variant
 `UNSPIKEABLE HERE`.
 
-**RESOLVED** in `internal/linux/probe.go:466`. The resolution is unchanged -
+**RESOLVED** in `internal/linux/probe.go:525`. The resolution is unchanged -
 `exec.LookPath` still finds the binary, because a fixed list of system
-directories would refuse NixOS - but `trustLauncherPath` (`:486`) then refuses
+directories would refuse NixOS - but `trustLauncherPath` (`:566`) then refuses
 any path, or symlink target, one of whose components this uid may write. Both
 launch sites and the probe go through it, so a plant in a granted `bin`
 directory refuses the next run instead of unconfining it.
+
+bwrap is no longer the only binary under that check. Under resource limits the
+outer process the host execs is a `systemd-run` scope runner, which inherits fd
+3 and the bridge liveness pipe in bwrap's place; `resolveScopeRunner`
+(`internal/linux/limits.go:89`) holds it to the same refusal, and
+`preflightLimits` (`limits.go:221`) is the gate every wrapped launch reaches
+(e607a3b). `trustLauncherPath` therefore takes a `role` naming which of the two
+it is ruling on, and its refusals are worded about running with a binary rather
+about building a sandbox with one.
 
 The report's half is closed by the same check and not by anything on the
 channel. Nothing in the report's bytes can authenticate its writer: whatever the
@@ -281,7 +290,7 @@ so the launcher's is suffixed.
 
 | slug | inside / outside | who controls the outside | crossing |
 |---|---|---|---|
-| `lookpath-bwrap` | the host enforcer / the binary that builds the sandbox | anyone who can write a `PATH` directory, or set `PATH` | `internal/linux/probe.go:466` (`resolveBwrap`), reached from `linux.go:97`, `probe.go:512`, `profile.go:65` |
+| `lookpath-bwrap` | the host enforcer / the binary that builds the sandbox | anyone who can write a `PATH` directory, or set `PATH` | `internal/linux/probe.go:525` (`resolveBwrap`), reached from `linux.go:102`, `probe.go:592`, `profile.go:65` |
 | `run-launcher` | the in-sandbox stage / the namespace it woke up in | whatever built that namespace | `internal/launcher/launcher.go:108` |
 | `decodelaunch` | the in-sandbox stage / its own argv | whatever exec'd it | `internal/launcher/reexec.go:61` |
 | `parseapplied` | the host's report / fd 3 | whatever inherited fd 3 | `internal/linux/applied.go:109` |
@@ -336,11 +345,12 @@ planted fixture, `spiked` attempted against the real thing.
 
 | id | attacker | enforcement | effect | detection | grade | evidence |
 |---|---|---|---|---|---|---|
-| `lookpath-bwrap/identity-forged` | same-uid | `ENFORCED` | a launcher any component of whose path this uid may write is refused, and the run with it | `LOGGED-ONLY` (the refusal names the writable component) | evidenced | `internal/linux/probe.go:486` (`trustLauncherPath`); `launchertrust_test.go`. Not `checkLauncher` at `linux.go:976`: that seam rules on `sb.bentoPath`, which comes from `os.Executable()`, and two of its three callers have no bwrap at all |
+| `lookpath-bwrap/identity-forged` | same-uid | `ENFORCED` | a launcher any component of whose path this uid may write is refused, and the run with it | `LOGGED-ONLY` (the refusal names the writable component) | evidenced | `internal/linux/probe.go:566` (`trustLauncherPath`); `launchertrust_test.go`. Not `checkLauncher` at `linux.go:976`: that seam rules on `sb.bentoPath`, which comes from `os.Executable()`, and two of its three callers have no bwrap at all |
 | `lookpath-bwrap/check-bypassed` | same-uid | `PARTIAL` | five fences are re-checked from inside; ten flags are not | `LOGGED-ONLY` (the five refusals name what they saw) | read | `verify.go:29,59,131,212`, `netns.go:29` against `args.go:501,513,519,662,388` |
-| `lookpath-bwrap/search-path-hijacked` | same-uid (next run) | `ENFORCED` | a granted `bin` directory is by construction writable by this uid, so a `bwrap` planted in it refuses the next run instead of unconfining it | `LOGGED-ONLY` | evidenced | `internal/linux/probe.go:486`; `TestRunRefusesAUserWritableLauncher`. The auto-exec report still names neither shape (`autoexec.go:32,63`), which no longer matters for this row |
-| `lookpath-bwrap/privilege-inherited` | same-uid | `ENFORCED` | the descriptors are still inherited, but only by a launcher whose provenance was established first | `SILENT` | read | `internal/linux/probe.go:466` gates every launch that passes them; `internal/linux/applied.go:23` records why the channel's origin is rooted there and not in its bytes |
-| `parseapplied/identity-forged` | same-uid (as the shim) | `ENFORCED` (by provenance, not by content) | a forged report still parses, but only a launcher `resolveBwrap` vouched for can write one | `SILENT` | evidenced | `internal/linux/probe.go:466`; the residual is documented at `internal/linux/applied.go:23`. No authenticator on the bytes can close this: whatever the host launches shares its argv and environment, so a nonce reaches the forger too |
+| `lookpath-bwrap/search-path-hijacked` | same-uid (next run) | `ENFORCED` | a granted `bin` directory is by construction writable by this uid, so a `bwrap` planted in it refuses the next run instead of unconfining it | `LOGGED-ONLY` | evidenced | `internal/linux/probe.go:566`; `TestRunRefusesAUserWritableLauncher`. The auto-exec report still names neither shape (`autoexec.go:32,63`), which no longer matters for this row |
+| `lookpath-scoperunner/identity-forged` | same-uid | `ENFORCED` | under limits the scope runner is the outer process, inheriting fd 3 and the liveness pipe; one this uid may replace is refused, and the run with it | `LOGGED-ONLY` (the refusal names the writable component) | evidenced | `internal/linux/limits.go:89` (`resolveScopeRunner`), gated at `limits.go:221` (`preflightLimits`); `scoperunnertrust_test.go`. The probes' own PATH-resolved `systemd-run`, `sh` and `true` are not this row: they are executed before any preflight |
+| `lookpath-bwrap/privilege-inherited` | same-uid | `ENFORCED` | the descriptors are still inherited, but only by a launcher whose provenance was established first | `SILENT` | read | `internal/linux/probe.go:525` gates every launch that passes them; `internal/linux/applied.go:23` records why the channel's origin is rooted there and not in its bytes |
+| `parseapplied/identity-forged` | same-uid (as the shim) | `ENFORCED` (by provenance, not by content) | a forged report still parses, but only a launcher `resolveBwrap` vouched for can write one | `SILENT` | evidenced | `internal/linux/probe.go:525`; the residual is documented at `internal/linux/applied.go:23`. No authenticator on the bytes can close this: whatever the host launches shares its argv and environment, so a nonce reaches the forger too |
 | `parseapplied/state-mutated` | same-uid | `ENFORCED` | a post-marker edit voids the report rather than being accepted | `LOGGED-ONLY` | read | `internal/linux/applied.go:152,157` - monotone: claims can grow, never retract |
 | `parseapplied/path-traversal` | local-user | `ENFORCED` | a substituted file at the path cannot reach the read | `SILENT` | read | host holds the descriptor from before the child started; `internal/linux/applied.go:109`, `:90` (0600 in a 0700 per-run dir) |
 | `parseapplied/log-forgeable` | same-uid | `ENFORCED` | a newline in a detail cannot forge a record | n/a | read | `internal/launcher/applied.go:133` quotes every detail with `%q` |
