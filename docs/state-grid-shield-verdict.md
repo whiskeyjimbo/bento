@@ -107,7 +107,7 @@ Sorted by whether they break the forbidden direction of the invariant.
 
 ## Rejected
 
-- **Gate over-refusing on spelling.** The gate asks `Contains(pathresolve.Existing(g))`, the backend
+- **Gate over-refusing on spelling.** The gate asks `Contains` of where `pathresolve.Existing` says the grant lands, the backend
   asks it of `resolveGrants` output. The corpus includes dangling-link and symlinked-store rows and
   the sites agree. VERIFIED BY EXECUTION (gate and backend corpus tests).
 - **A write containing a caller deny gets the built-in AboveShield sentence.** `callerDenied` is

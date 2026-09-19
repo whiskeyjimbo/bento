@@ -317,7 +317,7 @@ func TestValidateJSONCarriesTheApprovalCallouts(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("stdout is not valid JSON (%v); got:\n%s", err, out)
 	}
-	dir := pathresolve.Existing(filepath.Dir(path))
+	dir, _ := pathresolve.Existing(filepath.Dir(path))
 	for field, want := range map[string]string{
 		"writes_covering_manifest":   dir,
 		"writes_covering_entrypoint": dir,

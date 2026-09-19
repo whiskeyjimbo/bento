@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 )
 
 // Fuzz resolve()/pathresolve.Existing against a REAL symlink tree built under a temp dir.
@@ -52,8 +54,9 @@ import (
 const maxResolveNodes = 6
 
 // buildSymlinkTree materializes up to maxResolveNodes named nodes under root from the
-// fuzzer bytes and returns where each landed: each node is a directory, a regular file, or
-// a symlink, and each sits either directly under root or inside an EARLIER node, so a
+// fuzzer bytes and returns where each landed: each node is a directory, a regular file, an
+// UNREADABLE directory (mode 0000, which readlink answers EACCES for every child of),
+// or a symlink, and each sits either directly under root or inside an EARLIER node, so a
 // symlink target can route through another symlink's subdirectory. Dirs and files are
 // created first and symlinks second, so a symlink may dangle, point at a never-created
 // node, or point at another symlink to form a chain or a loop. Errors are tolerated (a
@@ -64,7 +67,16 @@ const maxResolveNodes = 6
 // only produce a ".." that lexical cleaning happens to get right; a link that crosses
 // depth is the case where raw joining and lexical cleaning disagree, which is the whole
 // reason resolve does not simply Clean.
-func buildSymlinkTree(root string, data []byte) (paths []string) {
+//
+// The unreadable kind is what reaches pathresolve's Unreadable arm, the branch the walk
+// takes for any readlink errno that is not EINVAL/ENOENT/ENOTDIR. EACCES is the only one of
+// that set a tree on a local disk can produce - EIO and ESTALE need a failing network mount
+// - and all three take the same branch, so covering EACCES here covers the arm. Running as
+// root there is no EACCES to raise and the node is an ordinary directory; the oracle asserts
+// on the reported outcome rather than on the mode, so that degrades to less coverage rather
+// than to a false pass.
+func buildSymlinkTree(t *testing.T, root string, data []byte) (paths []string) {
+	t.Helper()
 	byteAt := func(i int) byte {
 		if i < len(data) {
 			return data[i]
@@ -76,7 +88,7 @@ func buildSymlinkTree(root string, data []byte) (paths []string) {
 	targets := make([]string, maxResolveNodes)
 	paths = make([]string, maxResolveNodes)
 	for i := range maxResolveNodes {
-		kinds[i] = byteAt(3*i) % 3
+		kinds[i] = byteAt(3*i) % 4
 		// The parent is an earlier node or root, so a directory is always created before
 		// anything nests inside it.
 		dir := root
@@ -124,7 +136,7 @@ func buildSymlinkTree(root string, data []byte) (paths []string) {
 
 	for i := range maxResolveNodes {
 		switch kinds[i] {
-		case 0:
+		case 0, 3:
 			_ = os.Mkdir(paths[i], 0o755)
 		case 2:
 			_ = os.WriteFile(paths[i], nil, 0o644)
@@ -133,6 +145,14 @@ func buildSymlinkTree(root string, data []byte) (paths []string) {
 	for i := range maxResolveNodes {
 		if kinds[i] == 1 {
 			_ = os.Symlink(targets[i], paths[i])
+		}
+	}
+	// Closed last and reopened on cleanup: a node nests inside an earlier one, so closing a
+	// directory during the passes above would stop its own children being created, and
+	// leaving it closed would stop TempDir removing the tree.
+	for i := range maxResolveNodes {
+		if kinds[i] == 3 && os.Chmod(paths[i], 0o000) == nil {
+			t.Cleanup(func() { _ = os.Chmod(paths[i], 0o755) })
 		}
 	}
 	return paths
@@ -157,6 +177,9 @@ const (
 	// branchFailClosed is the depth-cutoff/loop result: still holds a symlink component, so
 	// only "terminated, absolute" is guaranteed.
 	branchFailClosed resolveBranch = iota
+	// branchUnreadable is the could-not-read result: a component the walk could not ask
+	// about, so nothing about the path was determined and the caller's own path comes back.
+	branchUnreadable
 	// branchUnconfirmable is a symlink-free result the kernel cannot be asked about - start
 	// routes through a real file (ENOTDIR, which resolve handles lexically and the kernel
 	// cannot), or populating did not converge. The fixed point is checked; the landing is not.
@@ -171,7 +194,7 @@ const (
 // loop-aware oracle. Shared by the fuzz and its seed corpus.
 func checkResolveInvariants(t *testing.T, data []byte) {
 	root := canonTempDir(t)
-	paths := buildSymlinkTree(root, data)
+	paths := buildSymlinkTree(t, root, data)
 
 	startIdx, suffix, rel := 0, "", false
 	if n := len(data); n > 0 {
@@ -203,6 +226,17 @@ func assertResolveOracle(t *testing.T, start string) resolveBranch {
 	}
 	if !filepath.IsAbs(r1) {
 		t.Fatalf("resolve(%q) = %q, want an absolute path", start, r1)
+	}
+	// Asked of pathresolve directly, because sb.resolve drops the outcome on purpose and
+	// this is the only thing that distinguishes a path nothing was learned about from one
+	// that simply has no symlinks. Like the loop branch below, this one then asserts
+	// nothing about WHERE it landed: the walk stopped without knowing whether the closed
+	// component is a symlink, so there is no resolution to confirm and the fixed-point and
+	// kernel checks are false by design. What the returned path must be is pinned on the
+	// absolute hand-built case in TestResolveOracleLoopAndChainControls, where comparing it
+	// is not the same expression on both sides.
+	if _, outcome := pathresolve.Existing(start); outcome == pathresolve.Unreadable {
+		return branchUnreadable
 	}
 	if hasSymlinkComponent(r1) {
 		// Depth-cutoff/loop branch: resolve bailed and returned a path that still holds a
@@ -276,6 +310,7 @@ func FuzzResolveSymlinkTree(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 1, 65, 0, 1, 194, 1}) // a nested node, relative and "..-after" targets
 	f.Add([]byte{1, 1, 0, 1, 0, 0})             // a two-hop loop
 	f.Add([]byte{0, 0, 0, 1, 6, 1, 2, 0, 0})    // real dir, a dangling symlink inside it, a file
+	f.Add([]byte{3, 0, 0, 1, 6, 1, 0, 0, 0, 1}) // an unreadable directory with a start path under it
 	f.Fuzz(checkResolveInvariants)
 }
 
@@ -293,6 +328,23 @@ func TestResolveOracleLoopAndChainControls(t *testing.T) {
 	mustLink(t, filepath.Join(loop, "a"), filepath.Join(loop, "b"))
 	if got := assertResolveOracle(t, filepath.Join(loop, "a")); got != branchFailClosed {
 		t.Errorf("a symlink loop must take the fail-closed branch; got %d", got)
+	}
+
+	// A component the walk cannot read: whether closed/link is a symlink is exactly what
+	// could not be determined, so the caller's own path comes back under the Unreadable
+	// arm rather than under a resolution the consumer would bind. EACCES stands in for the
+	// whole arm here (see buildSymlinkTree), and root raises none, so the shape is skipped
+	// rather than asserted there.
+	if os.Geteuid() != 0 {
+		closedRoot := canonTempDir(t)
+		closed := filepath.Join(closedRoot, "closed")
+		if err := os.Mkdir(closed, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(closed, 0o755) })
+		if got := assertResolveOracle(t, filepath.Join(closed, "link", "leaf")); got != branchUnreadable {
+			t.Errorf("an unreadable component must take the unreadable branch; got %d", got)
+		}
 	}
 
 	// A dangling chain a -> b -> c(missing): resolve follows it to c, a non-symlink

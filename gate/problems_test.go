@@ -358,7 +358,7 @@ func FuzzShieldedGrantProblemsNameARealShield(f *testing.F) {
 			t.Fatalf("one grant earned %d read and %d write problems", len(reads), len(writes))
 		}
 
-		landed := pathresolve.Existing(grant)
+		landed, _ := pathresolve.Existing(grant)
 		if len(reads) == 1 && !insideAnyShield(shields, landed, denylist.DenyAll) {
 			t.Fatalf("read grant %q was refused as shielded, but lands at %q, which is at or inside no DenyAll shield: %v", grant, landed, reads)
 		}
@@ -418,4 +418,55 @@ func aboveAnyShield(shields []shield.Applied, landed string) bool {
 
 func hasFoldedPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// LoopedGrantProblems mirrors the backend's checkGrantNotLooped, and both now read
+// pathresolve's Loop arm rather than stat-ing the resolver's output for ELOOP. The mirror
+// is the point: a grant the gate passes over and the run then refuses is a manifest that
+// validates and cannot start. Asserted against a real symlink tree, since a loop is a
+// kernel fact no fake supplies.
+//
+// A dangling chain is here for the same reason the backend's own control is: it is the
+// shape most easily confused with a loop, it resolves to a target that does not exist yet,
+// and refusing it would refuse the ordinary not-yet-populated-store grant.
+func TestLoopedGrantProblemsRefusesOnlyLoops(t *testing.T) {
+	d := t.TempDir()
+	loop := filepath.Join(d, "a")
+	mustSymlink(t, filepath.Join(d, "b"), loop)
+	mustSymlink(t, loop, filepath.Join(d, "b"))
+
+	dangling := filepath.Join(d, "dangling")
+	mustSymlink(t, filepath.Join(d, "unborn"), dangling)
+
+	plain := filepath.Join(d, "plain")
+	if err := os.Mkdir(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		read []string
+		want int
+	}{
+		{"a loop", []string{loop}, 1},
+		{"a dangling chain", []string{dangling}, 0},
+		{"an ordinary directory", []string{plain}, 0},
+	} {
+		if got := gate.LoopedGrantProblems(tc.read, nil); len(got) != tc.want {
+			t.Errorf("%s: LoopedGrantProblems = %v, want %d problem(s)", tc.name, got, tc.want)
+		}
+	}
+
+	// The same fact once, whichever side names it: the backend refuses on the first of read
+	// and write it reaches, so a path granted both ways is one sentence, not two.
+	if got := gate.LoopedGrantProblems([]string{loop}, []string{loop}); len(got) != 1 {
+		t.Errorf("a loop granted read and write = %v, want one problem", got)
+	}
+}
+
+func mustSymlink(t *testing.T, target, name string) {
+	t.Helper()
+	if err := os.Symlink(target, name); err != nil {
+		t.Fatal(err)
+	}
 }

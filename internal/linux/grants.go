@@ -336,20 +336,27 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 	return nil
 }
 
-// checkGrantNotLooped refuses a grant whose symlinks loop. pathresolve.Existing leaves
-// a loop unresolved on purpose - a shield on one still fails closed - but a grant
-// is then bound at the looping path itself, and --ro-bind-try tolerates only a
-// missing source (ENOENT), not ELOOP, so bwrap aborts the run naming itself
-// rather than the grant. A dangling symlink is not a loop and stays supported:
-// it resolves to a target that simply does not exist yet.
+// checkGrantNotLooped refuses a grant whose symlinks loop. pathresolve leaves a loop
+// unresolved on purpose - a shield on one still fails closed - but a grant is then bound
+// at the looping path itself, and --ro-bind-try tolerates only a missing source (ENOENT),
+// not ELOOP, so bwrap aborts the run naming itself rather than the grant. A dangling
+// symlink is not a loop and stays supported: it resolves to a target that simply does not
+// exist yet.
 //
-// The check asks the kernel (os.Stat/ELOOP) rather than the sandbox's resolver
-// seam, and stays that way deliberately. sb.resolve cannot report a loop - it
-// returns the path unchanged, which is also its answer for a path that is no
-// symlink at all - and a fake that walked only the granted leaf would miss a loop
-// in a parent component and pass where production refuses. A seam whose fake
-// disagrees with the kernel is worse than none, so the loop cases are covered
-// against real symlink trees instead (TestCheckGrantNotLoopedRealFilesystem).
+// The check asks the KERNEL (os.Stat/ELOOP), not the sandbox's resolver seam and not
+// pathresolve's Loop arm, and stays that way. sb.resolve carries the path and not the
+// outcome, and a fake supplying one would answer for the test rather than for the host -
+// so the loop cases are covered against real symlink trees instead
+// (TestCheckGrantNotLoopedRealFilesystem).
+//
+// pathresolve now reports Loop, and it is the wrong question here in both directions.
+// Loop means its own budget ran out, which happens only past a chain EvalSymlinks could
+// not walk: a 45-link chain onto a directory that exists resolves OK there while the
+// kernel answers ELOOP, so reading Loop would let through exactly the grant bwrap aborts
+// on. A 40-link DANGLING chain is the mirror - Loop there, ENOENT from the kernel, and
+// --ro-bind-try tolerates ENOENT - so reading Loop would also refuse a grant the run
+// honors. ELOOP is a link-count fact about what bwrap will meet; Loop is a fact about
+// this resolver. TestCheckGrantNotLoopedRealFilesystem pins the first case.
 func checkGrantNotLooped(p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
 		abs, err := filepath.Abs(g)
@@ -582,5 +589,9 @@ func resolve(path string) (string, error) {
 		}
 		abs = filepath.Clean(wd) + "/" + path
 	}
-	return pathresolve.Existing(abs), nil
+	// The outcome is dropped here and asked at checkGrantNotLooped instead: this is the
+	// sandbox's resolve seam, which fakes replace, and a signal a fake supplies is a
+	// signal that says what the test wanted rather than what the host is.
+	resolved, _ := pathresolve.Existing(abs)
+	return resolved, nil
 }

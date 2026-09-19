@@ -1725,7 +1725,8 @@ func TestClampWriteShieldMatchesDanglingShieldTarget(t *testing.T) {
 		t.Skipf("cannot symlink on this filesystem: %v", err)
 	}
 
-	grant := filepath.Join(pathresolve.Existing(store), "mytool")
+	storeLands, _ := pathresolve.Existing(store)
+	grant := filepath.Join(storeLands, "mytool")
 	_, kept, _, dropped := clampShieldedGrants(hostShieldSet(t), nil, []string{grant})
 	if slices.Contains(kept, grant) {
 		t.Errorf("a write at a dangling shield's target must be dropped, not proposed for a manifest compile will refuse; kept=%v", kept)
