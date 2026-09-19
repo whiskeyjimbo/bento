@@ -131,9 +131,11 @@ type scopeVerdict struct {
 // directory does not prove the manager will answer.
 func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	// Existence only, deliberately: this probe decides a VERDICT, and provenance is
-	// checked where it decides a launch instead (preflightLimits). A planted systemd-run
-	// that talked this probe into a yes still cannot get a scoped run launched, because
-	// every wrapped launch preflights first and is refused there.
+	// checked where it decides a launch instead (preflightLimits), so a planted
+	// systemd-run that talked this probe into a yes still cannot get a scoped run
+	// launched. What it does get is executed: this probe and the delegation read run
+	// their PATH-resolved binaries on the host, unsandboxed, before any preflight, on
+	// every run and every doctor. That residual is open, not closed here.
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
@@ -215,6 +217,11 @@ func preflightLimits(ctx context.Context, l policy.Limits, env []string) error {
 	// Ahead of the probe, because this is the one preflight every wrapped launch reaches -
 	// the profiling path consults no scope verdict of its own - and because a planted
 	// systemd-run would answer the probe as happily as the real one.
+	//
+	// The validated path is deliberately not threaded onward yet: wrapWithLimits returns
+	// the bare name and the launch re-resolves it against PATH, so this refuses a planted
+	// binary but does not pin the one it vouched for. Threading it is a signature change
+	// through three call sites outside this file.
 	if _, _, err := resolveScopeRunner(); err != nil {
 		return err
 	}
@@ -397,13 +404,20 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// which is a different question from whether the scope exited 0.
 	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; echo ` + controllersMarker + `; cat /sys/fs/cgroup$p/cgroup.controllers`
 	// Both binaries this rests on are PATH-resolved and neither is trust-checked, unlike
-	// the scope runner a real launch goes through (resolveScopeRunner). That is the
-	// deliberate half of the asymmetry: this reading decides a verdict, not what confines
-	// a run, and a host whose PATH carries a planted systemd-run or sh cannot get a scoped
-	// run launched at all, because preflightLimits refuses first. The residue - a claimed
-	// Enforced on a run that then proceeds unscoped under --allow-degraded - is closed
-	// downstream by noteScopeLimits, which reads the cgroup the run was actually given and
-	// worsens any layer the kernel shows uncapped.
+	// the scope runner a real launch goes through (resolveScopeRunner). Two different
+	// residuals follow, and only one of them is closed.
+	//
+	// The verdict residual is closed: a planted systemd-run cannot get a scoped run
+	// launched, because preflightLimits refuses it first, and a claimed Enforced on a run
+	// that then proceeds unscoped under --allow-degraded is worsened downstream by
+	// noteScopeLimits, which reads the cgroup the run was actually given. A planted sh is
+	// not covered by that preflight - nothing trust-checks shBinary or trueBinary - but it
+	// can only forge this reading, and noteScopeLimits answers the forgery from the kernel.
+	//
+	// The execution residual is open: this reading and measureScope run their resolved
+	// binaries on the host, unsandboxed, before any preflight. A planted sh in a bin
+	// directory on PATH is therefore executed as this user on the next bento invocation,
+	// doctor included, whatever the limits verdict comes out as.
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
