@@ -130,16 +130,16 @@ type scopeVerdict struct {
 // measureScope answers by actually creating a throwaway scope - a stat of a runtime
 // directory does not prove the manager will answer.
 func measureScope(ctx context.Context) (scopeVerdict, bool) {
-	// Existence only, deliberately: this probe decides a VERDICT, and provenance is
-	// checked where it decides a launch instead (preflightLimits), so a planted
-	// systemd-run that talked this probe into a yes still cannot get a scoped run
-	// launched. What it does get is executed, on every run and every doctor, before any
-	// preflight: that residual is still open for systemd-run itself, because trust-checking
-	// it here would refuse the shim harness this package's probe tests are built on. It is
-	// closed for the canaries, which go through trustedProbeBinary.
-	runner, err := exec.LookPath("systemd-run")
+	// Provenance-checked, like the canaries: this probe runs before any preflight, so what
+	// it resolves is executed as this user on every run and every doctor. Absence stays the
+	// ordinary host verdict and caches; a refusal is not a reading of this host and must not
+	// be cached as one.
+	runner, err := scopeProbeRunner()
 	if err != nil {
-		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
+		if errors.Is(err, exec.ErrNotFound) {
+			return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
+		}
+		return scopeVerdict{reason: err.Error()}, false
 	}
 	if err := runScopeProbe(ctx, runner, policy.Limits{Memory: "64M"}, nil); err != nil {
 		// A caller that gave up measured nothing about this host, and must not leave a
@@ -419,18 +419,13 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// not enforce as Enforced. The marker is proof the snippet ran and reached its read,
 	// which is a different question from whether the scope exited 0.
 	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; echo ` + controllersMarker + `; cat /sys/fs/cgroup$p/cgroup.controllers`
-	// Both binaries this rests on are PATH-resolved, and only one of them is trust-checked.
-	//
-	// The shell is: shBinary goes through trustedProbeBinary, so a planted sh is refused
-	// before it runs rather than executed as this user. The reading then reports known=false,
-	// which is the fail-closed answer.
-	//
-	// systemd-run is not, and the residual there is a verdict rather than execution: a
-	// planted one cannot get a scoped run launched, because preflightLimits refuses it
-	// first, and a claimed Enforced on a run that then proceeds unscoped under
-	// --allow-degraded is worsened downstream by noteScopeLimits, which reads the cgroup
-	// the run was actually given. What it does still get is executed here, before any
-	// preflight - see measureScope, which names why the check is not on this name yet.
+	// Both binaries this rests on go through trustedProbeBinary, because both are executed
+	// here as this user before any preflight. Either refusal reports known=false, which is
+	// the fail-closed answer.
+	runner, err := scopeProbeRunner()
+	if err != nil {
+		return nil, false
+	}
 	sh, err := shBinary()
 	if err != nil {
 		// Fail closed, like every other unreadable-delegation path here: an unknown set
@@ -447,7 +442,9 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
 		"--", sh, "-c", readControllers,
 	}
-	cmd := exec.CommandContext(ctx, "systemd-run", args...)
+	// The resolved path, not the bare name: letting exec resolve "systemd-run" a second
+	// time would make the trust check decorative.
+	cmd := exec.CommandContext(ctx, runner, args...)
 	cmd.WaitDelay = probeWaitDelay
 	out, err := cmd.Output()
 	noteProbeDeadline(parent, ctx)
@@ -470,6 +467,13 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 // unlike any cgroup controller name, and matched with its newline, so a controller list
 // cannot contain it.
 const controllersMarker = "bento-delegated-controllers:"
+
+// scopeProbeRunner is the systemd-run the limits probes execute on the host. Separate from
+// resolveScopeRunner, which resolves the one that WRAPS a run: this one runs earlier, before
+// any preflight, so it is the execution half rather than the verdict half.
+func scopeProbeRunner() (string, error) {
+	return probeBinary("systemd-run", "/usr/bin/systemd-run", "resource-limit probe runner")
+}
 
 // shBinary is the shell the delegated-controllers reading and the namespace probe run
 // their canary snippets in.

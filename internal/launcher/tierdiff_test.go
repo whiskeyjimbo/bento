@@ -54,9 +54,12 @@ const (
 )
 
 // namespaceProbes are the namespaces whose identity a row compares against the host's.
-// Each is a bwrap --unshare-<name> flag with no degraded counterpart, so each row's
-// finding is the same shape: the degraded tier shares the host's.
-var namespaceProbes = []string{"pid", "uts", "cgroup"}
+// Each is a bwrap --unshare-<name> flag, and in every row the degraded tier shares the
+// host's. Only ipc has a degraded counterpart at all, and it is a different KIND of fence:
+// BlockProcessReach denies the System V calls rather than giving the target a namespace of
+// its own, which is why the two ipc rows measure different things - identity here, reach in
+// sysv-ipc.
+var namespaceProbes = []string{"pid", "uts", "cgroup", "ipc"}
 
 // tierProbe is one restriction, and what each tier is expected to give the target.
 // unfenced is the control: a row whose unfenced value equals its degraded value is
@@ -120,6 +123,42 @@ var tierProbes = []tierProbe{
 		bwrap:    "separate",
 	},
 	{
+		name: "ipc-namespace",
+		// Redundant with sysv-ipc for pinning --unshare-ipc: both cells go red when the
+		// flag is dropped (measured by ablation, not reasoned). Carried anyway because the
+		// two measure different things - sysv-ipc measures REACH, which the degraded tier
+		// denies with seccomp and the bwrap tier with a namespace, so it cannot say WHICH
+		// mechanism answered. This row measures IDENTITY, so it stays red if the bwrap arm
+		// ever grows a filter that denies reach without a namespace.
+		why:      "grid rows 3 and 11: --unshare-ipc gives the bwrap tier its own System V namespace; the degraded tier shares the host's and substitutes BlockProcessReach, which the sysv-ipc row measures",
+		unfenced: "shared",
+		degraded: "shared",
+		bwrap:    "separate",
+	},
+	{
+		name: "process-vm-read",
+		// The bwrap cell reading "permitted" is a fact about the TIER, not a gap in the arm,
+		// and it is not inet-socket's shape: that cell is permitted because the arm omits
+		// --unshare-net, a flag the real tier does pass. Here the real tier passes nothing
+		// that would deny this. It does install seccomp - BlockIoUring and
+		// installExecFilter, both in Run - but no filter of its own lists
+		// process_vm_readv, and BlockProcessReach is degraded-only (degraded.go:109).
+		// --unshare-pid only decides WHICH processes can be named, not whether the call is
+		// reachable.
+		//
+		// This row produces no red the suite does not already have: dropping
+		// process_vm_readv from the filter list reds
+		// internal/seccomp/process_reach_linux_test.go, and dropping BlockProcessReach from
+		// the degraded arm reds sysv-ipc as well. It is here so the table NAMES the
+		// memory-read half of BlockProcessReach in the same place as the rest of the
+		// differential, rather than leaving that fence represented only by the System V
+		// calls - legibility, not a unique red.
+		why:      "grid row 3, cross-process reach: BlockProcessReach is the degraded tier's whole substitute for the pid namespace it cannot create, and process_vm_readv is the memory-read half of it; sysv-ipc pins only the System V half",
+		unfenced: "permitted",
+		degraded: "denied",
+		bwrap:    "permitted",
+	},
+	{
 		name:     "uts-namespace",
 		why:      "grid row 11: --unshare-uts is bwrap-only and has no degraded substitute at all",
 		unfenced: "shared",
@@ -153,6 +192,46 @@ var tierProbes = []tierProbe{
 	},
 }
 
+// The grid's other restrictions, and why each is not a row here. Recorded next to the
+// table because that is where the next person widening it looks, and because "not
+// comparable" with no reason is the claim this repo asks for a test or a bead for. Each
+// was checked against the arms as they are built, not reasoned from the grid text.
+//
+// Identical in both tiers, so a differential row would assert nothing:
+//
+//   - Row 1 filesystem fence and row 5 Landlock. The degraded arm omits Landlock on
+//     purpose (see TestTierProbeHelper) because it would confine the probes' own reads,
+//     so any row would measure the arm's omission rather than the tier's.
+//   - Row 4 exec-block filter. One installExecFilter, called by both tiers, and the
+//     degraded arm omits it for the same reason as Landlock.
+//   - Row 9's non-dumpable half. Both tiers set it - Run at launcher.go:229 and
+//     RunDegraded at degraded.go:282 - so there is no difference to measure. Mirroring
+//     it into the degraded arm alone, which is what this row was once filed as, would
+//     MANUFACTURE a difference production does not have. It is also a property of the
+//     launcher process rather than of the target: execve resets dumpable, so nothing the
+//     probes run as ever carries it.
+//
+// Out of the arms' declared scope:
+//
+//   - Row 7 pseudo-FS /proc /dev /tmp. The bwrap arm is --dev-bind / / and models
+//     namespaceFlags+sessionFlags only; pseudoFSFlags is outside it. This is also why
+//     the arm sees the host's process table despite --unshare-pid, which is worth knowing
+//     before anyone writes a "host process table" row and misreads the result.
+//
+// Not observable from inside the child at all, so the differential is the wrong
+// instrument:
+//
+//   - Row 8 environment/HOME/TMPDIR. Both tiers build from the shared sandboxEnv and the
+//     child sees whatever the parent passed, so a row would measure this test's own env
+//     plumbing.
+//   - Row 9's inherited-FD and stdio refusals. Both happen in the parent before exec.
+//   - Row 12 systemd scope limits and teardown. Neither is a property of the child.
+//   - Row 13 in-sandbox self-verification. It IS the verification, not a restriction a
+//     probe can ask about.
+//
+// So the ceiling for this table is roughly 7 of 13, not 13 of 13, unless the arms grow
+// Landlock and pseudoFSFlags - which would cost the differential its property that each
+// arm models exactly one documented flag set.
 func TestTierDifferential(t *testing.T) {
 	if reexecUnderTerminal(t) {
 		return
@@ -275,9 +354,9 @@ func runTierArm(t *testing.T, arm, key string) map[string]string {
 		// The list is hand-copied because namespaceFlags is unexported in internal/linux
 		// and this package cannot import it - the dependency runs the other way - so the
 		// arm cannot be derived from it. Five of the seven flags are pinned by a row that
-		// reads the unfenced value if the flag goes missing: --unshare-ipc by sysv-ipc,
-		// --unshare-pid, --unshare-uts and --unshare-cgroup by their namespace rows, and
-		// --new-session by controlling-terminal. The other two cannot be pinned from an
+		// reads the unfenced value if the flag goes missing: --unshare-ipc by sysv-ipc and
+		// ipc-namespace both, --unshare-pid, --unshare-uts and --unshare-cgroup by their
+		// namespace rows, and --new-session by controlling-terminal. The other two cannot be pinned from an
 		// unprivileged run and are carried for fidelity to namespaceFlags: bwrap creates a
 		// user namespace without --unshare-user, and empties the bounding set without
 		// --cap-drop ALL, which it applies only when privileged.
@@ -362,6 +441,8 @@ func runTierProbes() {
 		}
 	}
 
+	report("process-vm-read", probeProcessVMRead())
+
 	// The bounding set is read rather than inferred: it is the one fact that says
 	// whether a capability could still be gained, and /proc/self/status carries it
 	// verbatim on every arm.
@@ -398,6 +479,34 @@ func runTierProbes() {
 	}
 	report("controlling-terminal", "n/a")
 	report("tty-inject-ioctl", "n/a")
+}
+
+// probeProcessVMRead reports whether process_vm_readv - the memory-read half of
+// cross-process reach - is reachable at all.
+//
+// It reads this process's OWN memory, which is the only target that isolates the question.
+// The parent was the obvious subject and does not work: a child reading its parent needs
+// PTRACE_MODE_ATTACH, which yama ptrace_scope=1 refuses on every arm including the
+// unfenced control, so the row would read "denied" everywhere and assert nothing. Under the
+// bwrap arm it would fail a second way - the parent's host pid names no task in a separate
+// pid namespace, so the cell would measure --unshare-pid rather than a memory fence. Self
+// is subject to neither, and what the degraded tier's BlockProcessReach denies is the
+// SYSCALL, not a particular target, so a denial here is that fence and nothing else.
+func probeProcessVMRead() string {
+	var (
+		src = [1]byte{0x42}
+		dst [1]byte
+	)
+	local := []unix.Iovec{{Base: &dst[0], Len: 1}}
+	remote := []unix.RemoteIovec{{Base: uintptr(unsafe.Pointer(&src[0])), Len: 1}}
+	switch _, err := unix.ProcessVMReadv(os.Getpid(), local, remote, 0); err {
+	case nil:
+		return "permitted"
+	case unix.EPERM, unix.EACCES:
+		return "denied"
+	default:
+		return "unreadable"
+	}
 }
 
 // probeHostSegment attaches the parent's System V segment by key and returns what it

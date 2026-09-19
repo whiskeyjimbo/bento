@@ -22,7 +22,7 @@ func TestMeasureScopeSeparatesTheCanaryFromTheUserManager(t *testing.T) {
 	const propagating = "#!/bin/sh\nfor a in \"$@\"; do last=$a; done\nexec \"$last\"\n"
 
 	t.Run("a canary that will not run", func(t *testing.T) {
-		shimPATH(t, "systemd-run", propagating)
+		plantProbeCanary(t, "systemd-run", propagating)
 		plantProbeCanary(t, "true", "#!/bin/sh\nexit 3\n")
 
 		v, answered := measureScope(context.Background())
@@ -37,7 +37,7 @@ func TestMeasureScopeSeparatesTheCanaryFromTheUserManager(t *testing.T) {
 	// The positive control: the same shim shape, a canary that runs, and a systemd-run that
 	// refuses. The user manager really is the cause here and must still be named.
 	t.Run("a user manager that will not create the scope", func(t *testing.T) {
-		shimPATH(t, "systemd-run", "#!/bin/sh\necho 'Failed to start transient scope unit' >&2\nexit 1\n")
+		plantProbeCanary(t, "systemd-run", "#!/bin/sh\necho 'Failed to start transient scope unit' >&2\nexit 1\n")
 
 		v, answered := measureScope(context.Background())
 		if answered {

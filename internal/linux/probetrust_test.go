@@ -145,7 +145,7 @@ func TestProbesRefuseARefusedCanary(t *testing.T) {
 		// A systemd-run that propagates its command's status drives measureScope onto the
 		// branch that runs the canary bare - the one execution that is not even wrapped in
 		// a scope.
-		shimPATH(t, "systemd-run", "#!/bin/sh\nfor a in \"$@\"; do last=$a; done\nexec \"$last\"\n")
+		plantProbeCanary(t, "systemd-run", "#!/bin/sh\nfor a in \"$@\"; do last=$a; done\nexec \"$last\"\n")
 		dir := refuseProbeCanary(t, "true")
 
 		v, answered := measureScope(context.Background())
@@ -158,7 +158,7 @@ func TestProbesRefuseARefusedCanary(t *testing.T) {
 	})
 
 	t.Run("delegated controllers fail closed", func(t *testing.T) {
-		shimPATH(t, "systemd-run", "#!/bin/sh\necho '"+controllersMarker+"'\necho 'memory pids cpu'\nexit 0\n")
+		plantProbeCanary(t, "systemd-run", "#!/bin/sh\necho '"+controllersMarker+"'\necho 'memory pids cpu'\nexit 0\n")
 		refuseProbeCanary(t, "sh")
 
 		ctrls, known := measureDelegatedControllers(context.Background())
@@ -184,5 +184,45 @@ func TestProbesRefuseARefusedCanary(t *testing.T) {
 		if !strings.Contains(reason, dir) {
 			t.Errorf("reason = %q, want the refusal to name the writable directory", reason)
 		}
+	})
+}
+
+// The harm the systemd-run half of this is about is EXECUTION, not a forged verdict: the
+// verdict half was already closed by preflightLimits and noteScopeLimits. So the assertion
+// is that nothing ran, not that a reason reads a particular way. A bare exec.LookPath here
+// finds the PATH plant and runs it as this user, before any preflight, on every Run and
+// every doctor.
+//
+// No root skip, unlike its neighbours: the refusal is injected through the probeBinary
+// override rather than read off a writable directory, so the question is the same at every
+// uid.
+func TestProbesDoNotExecuteAnUnvouchedScopeRunner(t *testing.T) {
+	run := func(t *testing.T, probe func()) {
+		t.Helper()
+		sentinel := filepath.Join(t.TempDir(), "ran")
+		shimPATH(t, "systemd-run", "#!/bin/sh\n: > "+sentinel+"\nexit 0\n")
+		refuseProbeCanary(t, "systemd-run")
+
+		probe()
+
+		if _, err := os.Stat(sentinel); err == nil {
+			t.Fatalf("a systemd-run nothing vouched for was executed as this user (%s)", sentinel)
+		}
+	}
+
+	t.Run("measureScope", func(t *testing.T) {
+		run(t, func() {
+			if _, answered := measureScope(context.Background()); answered {
+				t.Error("measureScope cached a verdict from a runner it refused; a refusal is not a reading of this host")
+			}
+		})
+	})
+
+	t.Run("measureDelegatedControllers", func(t *testing.T) {
+		run(t, func() {
+			if ctrls, known := measureDelegatedControllers(context.Background()); known {
+				t.Errorf("known=true with ctrls=%v from a refused runner; every one of those would be reported enforced", ctrls)
+			}
+		})
 	})
 }

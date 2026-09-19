@@ -16,7 +16,7 @@ import (
 // The shim pair reproduces the bead's spike: a systemd-run that cannot create a scope
 // forces the canary branch, and a `true` that never returns is the canary that hangs.
 func TestMeasureScopeBoundsItsCanary(t *testing.T) {
-	shimPATH(t, "systemd-run", "#!/bin/sh\nexit 1\n")
+	plantProbeCanary(t, "systemd-run", "#!/bin/sh\nexit 1\n")
 	plantProbeCanary(t, "true", "#!/bin/sh\nsleep 30\n")
 
 	before := ProbeDeadlines()
