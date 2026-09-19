@@ -343,23 +343,27 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 // symlink is not a loop and stays supported: it resolves to a target that simply does not
 // exist yet.
 //
-// It asks pathresolve.Existing's Loop arm, which is the resolver's own account of the
-// grant, and asks it directly rather than through sb.resolve. The seam carries the path
-// and not the outcome, and a fake supplying one would answer for the test rather than for
-// the host - so the loop cases stay covered against real symlink trees
+// The check asks the KERNEL (os.Stat/ELOOP), not the sandbox's resolver seam and not
+// pathresolve's Loop arm, and stays that way. sb.resolve carries the path and not the
+// outcome, and a fake supplying one would answer for the test rather than for the host -
+// so the loop cases are covered against real symlink trees instead
 // (TestCheckGrantNotLoopedRealFilesystem).
 //
-// The Loop arm replaces an os.Stat/ELOOP of the same path. They agree by construction, not
-// by coincidence: pathresolve.MaxDepth is the kernel's own limit, so the budget runs out on
-// exactly the chains the kernel refuses. gate.LoopedGrantProblems reads the same arm, which
-// is what keeps the gate's sentence and this one about one fact.
+// pathresolve now reports Loop, and it is the wrong question here in both directions.
+// Loop means its own budget ran out, which happens only past a chain EvalSymlinks could
+// not walk: a 45-link chain onto a directory that exists resolves OK there while the
+// kernel answers ELOOP, so reading Loop would let through exactly the grant bwrap aborts
+// on. A 40-link DANGLING chain is the mirror - Loop there, ENOENT from the kernel, and
+// --ro-bind-try tolerates ENOENT - so reading Loop would also refuse a grant the run
+// honors. ELOOP is a link-count fact about what bwrap will meet; Loop is a fact about
+// this resolver. TestCheckGrantNotLoopedRealFilesystem pins the first case.
 func checkGrantNotLooped(p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
 		abs, err := filepath.Abs(g)
 		if err != nil {
 			return fmt.Errorf("linux: %q: %w", g, err)
 		}
-		if _, outcome := pathresolve.Existing(abs); outcome == pathresolve.Loop {
+		if _, err := os.Stat(abs); errors.Is(err, syscall.ELOOP) {
 			return grantrefusal.Looped(g)
 		}
 	}

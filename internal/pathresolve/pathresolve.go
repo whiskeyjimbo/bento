@@ -26,12 +26,13 @@ const (
 	// OK means the returned path is where a write through the caller's path lands.
 	OK Outcome = iota
 	// Loop means the symlink budget ran out before the walk reached an answer, so the
-	// returned path is the caller's own. The kernel answers ELOOP on such a path.
+	// returned path is the caller's own. It is NOT the kernel's ELOOP: see Existing.
 	Loop
 	// Unreadable means a component could not be read - any readlink errno that is not
-	// EINVAL, ENOENT or ENOTDIR, so EACCES on an ancestor, or EIO or ESTALE from a network
-	// mount - and the returned path is the caller's own. Whether that component is a
-	// symlink is exactly what stayed unknown.
+	// EINVAL, ENOENT or ENOTDIR - EACCES on an ancestor, EIO or ESTALE from a network
+	// mount, ENAMETOOLONG on a component or a rebuilt path over the limit - and the
+	// returned path is the caller's own. Whether that component is a symlink is exactly
+	// what stayed unknown.
 	Unreadable
 )
 

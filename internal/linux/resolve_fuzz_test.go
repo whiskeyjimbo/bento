@@ -229,21 +229,13 @@ func assertResolveOracle(t *testing.T, start string) resolveBranch {
 	}
 	// Asked of pathresolve directly, because sb.resolve drops the outcome on purpose and
 	// this is the only thing that distinguishes a path nothing was learned about from one
-	// that simply has no symlinks. Unreadable has to hand back the caller's own path: the
-	// walk stopped without knowing whether the closed component is a symlink, so any other
-	// answer is a guess a consumer would then bind.
-	want, outcome := pathresolve.Existing(start)
-	if want != r1 {
-		t.Fatalf("resolve(%q) = %q, but pathresolve.Existing says %q", start, r1, want)
-	}
-	if outcome == pathresolve.Unreadable {
-		abs, absErr := filepath.Abs(start)
-		if absErr != nil {
-			t.Fatalf("filepath.Abs(%q): %v", start, absErr)
-		}
-		if r1 != abs {
-			t.Fatalf("resolve(%q) over an unreadable component = %q, want the caller's own path %q", start, r1, abs)
-		}
+	// that simply has no symlinks. Like the loop branch below, this one then asserts
+	// nothing about WHERE it landed: the walk stopped without knowing whether the closed
+	// component is a symlink, so there is no resolution to confirm and the fixed-point and
+	// kernel checks are false by design. What the returned path must be is pinned on the
+	// absolute hand-built case in TestResolveOracleLoopAndChainControls, where comparing it
+	// is not the same expression on both sides.
+	if _, outcome := pathresolve.Existing(start); outcome == pathresolve.Unreadable {
 		return branchUnreadable
 	}
 	if hasSymlinkComponent(r1) {

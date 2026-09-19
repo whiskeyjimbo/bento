@@ -5,6 +5,7 @@ package linux
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -25,6 +26,21 @@ func TestCheckGrantNotLoopedRealFilesystem(t *testing.T) {
 	mustLink(t, a, b)
 	mustLink(t, filepath.Join(d, "missing"), filepath.Join(d, "dangle"))
 
+	// A chain of more links than the kernel will walk, onto a directory that EXISTS. The
+	// kernel refuses it with ELOOP without ever reaching the target, so bwrap aborts the
+	// run naming itself - but pathresolve resolves it perfectly well (filepath.EvalSymlinks
+	// has its own, far larger budget and never reaches pathresolve's), so its Loop arm says
+	// nothing about this grant. It is the case that decides whether this check may read
+	// that arm instead of stat-ing: it may not.
+	longChain := filepath.Join(d, "chain")
+	if err := os.Mkdir(longChain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 45; i++ {
+		mustLink(t, filepath.Join(d, "chain"+strconv.Itoa(i-1)), filepath.Join(d, "chain"+strconv.Itoa(i)))
+	}
+	mustLink(t, longChain, filepath.Join(d, "chain0"))
+
 	for _, tc := range []struct {
 		name    string
 		p       *policy.Policy
@@ -39,6 +55,7 @@ func TestCheckGrantNotLoopedRealFilesystem(t *testing.T) {
 		// supported - only a loop names nothing bindable.
 		{"dangling leaf", &policy.Policy{Read: []string{filepath.Join(d, "dangle")}}, false},
 		{"plain directory", &policy.Policy{Read: []string{d}}, false},
+		{"chain past the kernel's link budget onto a real directory", &policy.Policy{Read: []string{filepath.Join(d, "chain45")}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkGrantNotLooped(tc.p)

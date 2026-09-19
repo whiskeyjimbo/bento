@@ -197,9 +197,9 @@ func TestUnreadableComponentResolvesToNothing(t *testing.T) {
 	if got != path {
 		t.Errorf("Existing(%q) = %q, want the path unresolved - whether %q is a symlink could not be read", path, got, filepath.Join(closed, "link"))
 	}
-	// The signal, not the path, is what a consumer fails closed on. EACCES is the only
-	// errno of this arm a test can construct locally; EIO and ESTALE from a network mount
-	// reach the same branch, so Unreadable covers them by construction. For EACCES the
+	// The signal, not the path, is what a consumer fails closed on. EACCES is the errno
+	// this test constructs; EIO and ESTALE from a network mount reach the same branch, so
+	// Unreadable covers them by construction. For EACCES the
 	// consumer meets the same barrier the walk did, so a caller that binds the returned
 	// path is still safe - for a transient errno it is not, which is why the arm exists.
 	if outcome != Unreadable {

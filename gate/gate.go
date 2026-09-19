@@ -186,13 +186,15 @@ func refusals(set shield.Set, resolved *policy.Policy) []string {
 // LoopedGrantProblems reports the grants whose symlinks loop, read and write alike, since
 // the backend refuses either kind on the same fact and in the same sentence.
 //
-// Asked of the resolver rather than of the kernel. pathresolve bounds symlink following
-// at the kernel's own ELOOP limit, so the paths it answers Loop for are the paths a stat
-// answers ELOOP on - and the backend's checkGrantNotLooped now reads the same signal, so
-// the two agree because they ask one question, not because two questions were argued into
-// parity. Nothing else the resolver reports is a problem here: an Unreadable component
-// says nothing about what run will find, since the sandbox sees that tree as a different
-// user.
+// ELOOP is the one stat error that decides anything here. It is the answer the backend
+// itself acts on (internal/linux checkGrantNotLooped matches ELOOP and nothing else), so
+// parity holds on every other error too: a grant bento cannot stat because a directory
+// above it is unreadable says nothing about what run will find, since the sandbox sees
+// that tree as a different user.
+//
+// Asked of the kernel and not of pathresolve's Loop arm, for the reason checkGrantNotLooped
+// spells out: Loop is that resolver's budget running out, which neither implies nor is
+// implied by the link count the kernel refuses on.
 func LoopedGrantProblems(read, write []string) []string {
 	var problems []string
 	seen := map[string]bool{}
@@ -203,7 +205,8 @@ func LoopedGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		if _, outcome := pathresolve.Existing(g); outcome == pathresolve.Loop {
+		lands, _ := pathresolve.Existing(g)
+		if _, err := os.Stat(lands); errors.Is(err, syscall.ELOOP) {
 			problems = append(problems, grantrefusal.Looped(g).Error())
 		}
 	}
