@@ -133,9 +133,9 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	// Existence only, deliberately: this probe decides a VERDICT, and provenance is
 	// checked where it decides a launch instead (preflightLimits), so a planted
 	// systemd-run that talked this probe into a yes still cannot get a scoped run
-	// launched. What it does get is executed: this probe and the delegation read run
-	// their PATH-resolved binaries on the host, unsandboxed, before any preflight, on
-	// every run and every doctor. That residual is open, not closed here.
+	// launched. What it does get is executed: this probe runs its PATH-resolved binaries
+	// on the host, unsandboxed, before any preflight, on every run and every doctor. That
+	// residual is open, not closed here.
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
@@ -414,10 +414,12 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// not covered by that preflight - nothing trust-checks shBinary or trueBinary - but it
 	// can only forge this reading, and noteScopeLimits answers the forgery from the kernel.
 	//
-	// The execution residual is open: this reading and measureScope run their resolved
-	// binaries on the host, unsandboxed, before any preflight. A planted sh in a bin
-	// directory on PATH is therefore executed as this user on the next bento invocation,
-	// doctor included, whatever the limits verdict comes out as.
+	// The execution residual is open: this reading runs its resolved binaries on the host,
+	// unsandboxed, before any preflight, so a planted sh in a bin directory on PATH is
+	// executed as this user on the next bento invocation, doctor included. It is reached
+	// only where canCreateScope already answered yes, but that is no consolation - the
+	// namespace probe executes shBinary on every Probe regardless (probe.go, under bwrap),
+	// so closing this one would not close sh execution.
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
