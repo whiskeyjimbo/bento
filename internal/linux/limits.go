@@ -4,6 +4,7 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,6 +76,30 @@ func cacheProbe[T any](measure func(context.Context) (T, bool)) func(context.Con
 	}
 }
 
+// resolveScopeRunner resolves the systemd-run that wraps a scoped run and refuses one this
+// uid could have planted, the way resolveBwrap does for the binary one path over. Under
+// limits the scope runner is the outer process the host execs - not bwrap, and on the
+// degraded tier not the launcher either - so it inherits the applied-report descriptor and
+// the bridge liveness pipe, and decides both what runs and what the run's report says ran.
+// A trust check on bwrap alone left that wrapper unchecked on both tiers.
+//
+// notInstalled separates absence from provenance for the same reason resolveBwrap does:
+// absence is the ordinary "this host cannot enforce limits" verdict, and a hijacked scope
+// runner must not be reported as one.
+func resolveScopeRunner() (path string, notInstalled bool, err error) {
+	p, lookErr := exec.LookPath("systemd-run")
+	// ErrDot still found a binary - one resolved out of the current directory, which is
+	// the hijackable shape rather than an absence, so it goes to the trust check (whose
+	// per-component write test refuses a writable cwd) instead of being reported missing.
+	if lookErr != nil && !errors.Is(lookErr, exec.ErrDot) {
+		return "", true, lookErr
+	}
+	if err := trustLauncherPath(p, "resource-limit scope runner"); err != nil {
+		return "", false, err
+	}
+	return p, false, nil
+}
+
 // canCreateScope reports whether this host can create a transient user scope at
 // all, and why not otherwise.
 //
@@ -105,6 +130,10 @@ type scopeVerdict struct {
 // measureScope answers by actually creating a throwaway scope - a stat of a runtime
 // directory does not prove the manager will answer.
 func measureScope(ctx context.Context) (scopeVerdict, bool) {
+	// Existence only, deliberately: this probe decides a VERDICT, and provenance is
+	// checked where it decides a launch instead (preflightLimits). A planted systemd-run
+	// that talked this probe into a yes still cannot get a scoped run launched, because
+	// every wrapped launch preflights first and is refused there.
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
@@ -182,6 +211,12 @@ func hostSafetyDelegationState(ctrls map[string]bool, known bool, controller str
 func preflightLimits(ctx context.Context, l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return nil
+	}
+	// Ahead of the probe, because this is the one preflight every wrapped launch reaches -
+	// the profiling path consults no scope verdict of its own - and because a planted
+	// systemd-run would answer the probe as happily as the real one.
+	if _, _, err := resolveScopeRunner(); err != nil {
+		return err
 	}
 	if err := runScopeProbe(ctx, l, env); err != nil {
 		return fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
@@ -361,6 +396,14 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// not enforce as Enforced. The marker is proof the snippet ran and reached its read,
 	// which is a different question from whether the scope exited 0.
 	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; echo ` + controllersMarker + `; cat /sys/fs/cgroup$p/cgroup.controllers`
+	// Both binaries this rests on are PATH-resolved and neither is trust-checked, unlike
+	// the scope runner a real launch goes through (resolveScopeRunner). That is the
+	// deliberate half of the asymmetry: this reading decides a verdict, not what confines
+	// a run, and a host whose PATH carries a planted systemd-run or sh cannot get a scoped
+	// run launched at all, because preflightLimits refuses first. The residue - a claimed
+	// Enforced on a run that then proceeds unscoped under --allow-degraded - is closed
+	// downstream by noteScopeLimits, which reads the cgroup the run was actually given and
+	// worsens any layer the kernel shows uncapped.
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",

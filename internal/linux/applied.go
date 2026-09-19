@@ -30,7 +30,8 @@ import (
 // which bentoSelfPath takes from os.Executable(), so substituting that binary means bento
 // itself was already substituted. (checkLauncher, on that path and the bwrap one alike, is
 // the launchGuard test seam, not a verification. A scoped run of either tier is wrapped in
-// a PATH-resolved systemd-run, which no trust check covers on either side.)
+// a systemd-run that inherits this descriptor in bwrap's place; resolveScopeRunner holds it
+// to the same provenance test resolveBwrap applies, so the wrapper is not the gap it was.)
 // parseApplied's job is narrower and stays what it was: refusing content
 // the genuine stage does not write.
 const appliedReportFD = 3

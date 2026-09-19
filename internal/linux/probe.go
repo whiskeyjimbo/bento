@@ -506,7 +506,7 @@ func resolveBwrap() (path string, notInstalled bool, err error) {
 	if lookErr != nil {
 		return "", true, fmt.Errorf("bubblewrap (bwrap) not found: %w", lookErr)
 	}
-	if err := trustLauncherPath(p); err != nil {
+	if err := trustLauncherPath(p, "sandbox builder"); err != nil {
 		return "", false, err
 	}
 	return p, false, nil
@@ -514,14 +514,25 @@ func resolveBwrap() (path string, notInstalled bool, err error) {
 
 // trustLauncherPath refuses a resolved launcher path that this uid may replace. Both the
 // path as resolved on PATH and its symlink target are checked, so a link that lives in a
-// root-owned directory but points into a writable one is refused for where it lands.
+// root-owned directory but points into a writable one is refused for where it lands. role
+// names what the binary is to the run, because more than one process stands between bento
+// and the target: bwrap builds the sandbox, and under limits a systemd-run scope runner
+// wraps it (resolveScopeRunner).
 //
 // Refusal rather than a warning, and refusal of the whole run: what a launcher this uid can
 // replace produces is an unconfined run with a report claiming every layer was enforced,
 // and that report is the one artifact the user reads afterwards to decide whether the run
 // was confined. Nothing downstream can recover from it, because a substituted launcher
 // never execs bento's in-sandbox stage and so none of its own re-checks run.
-func trustLauncherPath(path string) error {
+//
+// The refusal is unconditional, with no opt-in to record: it does refuse shapes that are
+// not attacks - a ~/.local/bin install, home-manager's ~/.nix-profile (every path under a
+// writable $HOME), a distrobox export - and that is the answer the threat model settles on,
+// because the alternative is a run whose report claims a fence nothing vouched for. An
+// escape hatch would have to be carried into the Report for the report to stay honest,
+// which is a larger change than the hatch, and the refusal already names the writable
+// component and a remedy the user can act on.
+func trustLauncherPath(path, role string) error {
 	// Root may write everywhere, which makes the question vacuous rather than answered -
 	// and an attacker who is already root does not need to plant a launcher. Refusing here
 	// would refuse every run instead of reporting anything.
@@ -530,15 +541,15 @@ func trustLauncherPath(path string) error {
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fmt.Errorf("the sandbox builder at %s cannot be resolved (%w), so nothing proves which binary would build the sandbox", path, err)
+		return fmt.Errorf("the %s at %s cannot be resolved (%w), so nothing proves which binary bento would execute", role, path, err)
 	}
 	for _, candidate := range []string{path, resolved} {
 		writable := hostWritablePrefix(candidate)
 		if writable == "" {
 			continue
 		}
-		return fmt.Errorf("refusing to build a sandbox with %s: %s is writable by this user, so any program running as you - including a sandboxed target with a write grant for it - can replace the binary that builds the sandbox and have the run report layers it never applied. Install bubblewrap system-wide and remove %s from PATH, or unset the PATH entry that shadows it",
-			candidate, writable, filepath.Dir(candidate))
+		return fmt.Errorf("refusing to run with %s as the %s: %s is writable by this user, so any program running as you - including a sandboxed target with a write grant for it - can replace it and have the run report layers it never applied. Install it system-wide and remove %s from PATH, or unset the PATH entry that shadows it",
+			candidate, role, writable, filepath.Dir(candidate))
 	}
 	return nil
 }
