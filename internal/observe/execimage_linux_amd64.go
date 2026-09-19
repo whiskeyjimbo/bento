@@ -245,9 +245,17 @@ func elfInterp(f *os.File, head []byte) (string, bool) {
 	phoff := num(head, phoffAt, phSize)
 	phentsize := int(binary.LittleEndian.Uint16(head[phentAt:]))
 	phnum := int(binary.LittleEndian.Uint16(head[phentAt+2:]))
-	// binfmt_elf's own bound on the table, and the reason an unbounded read of a
+	// The table's size is binfmt_elf's own bound, and the reason an unbounded read of a
 	// fuzzer-chosen e_phnum cannot happen here: the kernel refuses an image whose header
 	// table does not fit in 64KiB, so one that claims more is not an image that runs.
+	//
+	// The entry size is only FLOORED, which is looser than the kernel: binfmt_elf wants
+	// e_phentsize to equal its own struct exactly and answers ENOEXEC otherwise, so an
+	// oversized stride walks a table no exec will ever read and may name a loader for an
+	// image the kernel refuses. debug/elf floored it the same way before this walk
+	// replaced it, so this is the behaviour as it stood rather than something introduced
+	// here, and an image recorded for an exec that fails is what this file does anyway -
+	// the decode runs at the entry stop, before the kernel has validated anything.
 	if phentsize < phentMin || phnum < 1 || phnum*phentsize > 65536 {
 		return "", false
 	}
