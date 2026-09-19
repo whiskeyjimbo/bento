@@ -164,7 +164,12 @@ var traceCalls sync.Mutex
 // wait statuses with Wait4(-1) (ptrace offers no way to wait on one tracee set), so
 // concurrent calls are serialized, and a caller must not have its own children whose
 // exit status it needs while a trace runs - this consumes it. bento's profiling path
-// satisfies both: the trace runs in the dedicated in-sandbox launcher stage.
+// satisfies the first by construction, being the dedicated in-sandbox launcher stage,
+// but NOT the second: that stage starts the egress bridge, a live child it deliberately
+// never waits for, whenever the profiled policy grants egress. The second is instead
+// enforced, by the launcher's verifyNoStrayChild, which admits the bridge's pid as the
+// one exception and refuses any other live child before dispatching here. A caller
+// adding a second launcher child must extend that check, not read this as permission.
 func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, fmt.Errorf("observe: empty argv")
