@@ -461,7 +461,7 @@ func isCheckout(dir string) bool {
 
 // hasHEADLine reports whether path is a git HEAD: the symbolic "ref: " form a checkout
 // carries, or the hex object id a detached one does. Only the first byte can decide
-// between those and an empty or invented file, and the id's width varies with the repo's
+// between those and an empty file, and the id's width varies with the repo's
 // hash, so nothing wider is read. Requiring more of the store than HEAD - refs/, say -
 // would refuse a real repo: the reftable backend has no refs directory.
 func hasHEADLine(path string) bool {
