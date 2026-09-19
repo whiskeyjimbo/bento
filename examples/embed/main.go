@@ -417,6 +417,14 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	for _, hp := range res.GuardBlocked {
 		fmt.Fprintf(w, "embed: the egress guard refused %q port %s: it resolved to an address the sandbox may not reach (list a private address as an explicit IP rule to allow it)\n", hp.Host, hp.Port)
 	}
+	// GuardBlockedMetadata: the subset of the above refused for being the cloud instance
+	// metadata address. Said again, under its own sentence, because it is the only guard
+	// cause that is not a misconfiguration - the target went looking for the instance's
+	// credentials - and a wrapper that leaves it in the list above has reported a
+	// credential probe as a DNS problem. Quoted for the same reason.
+	for _, hp := range res.GuardBlockedMetadata {
+		fmt.Fprintf(w, "embed: %q port %s is the cloud instance metadata address: the target reached for the instance's credentials\n", hp.Host, hp.Port)
+	}
 	// Denied: destinations that were refused - no rule named them, and no gate admitted
 	// no gate was there to be asked. The target met the refusal as a 403 from the proxy
 	// inside its own error, with nothing naming the rule it fell outside of, so an embedder

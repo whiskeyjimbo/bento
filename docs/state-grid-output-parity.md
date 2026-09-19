@@ -96,7 +96,7 @@ the key run uses.
 | R10 | PATH shadow (writeSandboxPathShadow) | shadowed_path_dirs | HANDLED (verdict and failed) | READING |
 | R11 | degradations, host-only vs policy (writeDegradations) | report.layers[] | HANDLED | READING |
 | R12 | changed auto-exec / redirected hooks / unresolved hooks | changed_auto_exec, redirected_hooks, unresolved_hooks | HANDLED (verdict and failed) | READING |
-| R13 | guard blocked / egress denied / gate denied / untunneled | guard_blocked, egress_denied, gate_denied, untunneled | HANDLED | READING |
+| R13 | guard blocked / metadata probe / egress denied / gate denied / untunneled | guard_blocked, guard_blocked_metadata, egress_denied, gate_denied, untunneled | HANDLED | READING |
 | R14 | target unreached: exit N is bento's, the script never ran (writeTargetUnreached) | target_never_ran | HANDLED, fixed in 0eacfd5 (was UNHANDLED: a consumer read exit_code as the script's) | TEST |
 | R15 | signal notice, certain | signal | HANDLED | READING |
 | R16 | signal notice, hedged 128+n inference | none | HANDLED by design (run.go verdict comment on Signal) | READING |

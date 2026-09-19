@@ -272,6 +272,7 @@ all of it, or ship a frontend silent about the rest.
 | `ChangedAutoExec`       | `changed_auto_exec`, the auto-executing files the run changed |
 | `EgressConnections`     | `egress_connections`                           |
 | `Denied`, `GuardBlocked` | `egress_denied` and `guard_blocked`, naming what the count does not |
+| `GuardBlockedMetadata`  | `guard_blocked_metadata`, the subset of `guard_blocked` that was a metadata probe |
 | `GateAdmitted`          | *nothing* - see below                          |
 | `Setup`                 | *nothing* - which stage died is not reported here |
 

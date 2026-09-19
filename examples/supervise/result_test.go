@@ -28,11 +28,13 @@ func populatedResult() enforce.Result {
 		Setup:             enforce.SetupAttested,
 		EgressConnections: 0, // with a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
-		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
-		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
-		Untunneled:        []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
-		GateDenied:        []enforce.HostPort{{Host: "declined.example\x1b[2K", Port: "443"}},
-		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
+		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}, {Host: "169.254.169.254\x1b[2K", Port: "80"}},
+		// A subset of GuardBlocked, never a set beside it.
+		GuardBlockedMetadata: []enforce.HostPort{{Host: "169.254.169.254\x1b[2K", Port: "80"}},
+		Denied:               []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
+		Untunneled:           []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
+		GateDenied:           []enforce.HostPort{{Host: "declined.example\x1b[2K", Port: "443"}},
+		AcceptedAliases:      []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		// OnHost is the store the grant landed on, enumerated from the host filesystem.
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
@@ -61,27 +63,29 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 	got := out.String()
 
 	for _, want := range []string{
-		"the egress proxy stopped accepting mid-run", // Report.Degradations
-		`"/repo/\x1b[2K.git/hooks"`,                  // Residue, quoted
-		"bento did not remove them",                  // Residue
-		"shielded 1 credential/host-service path(s)", // Shields
-		`"ads.example\x1b[2K" port 443`,              // GateAdmitted, quoted
-		"the live gate admitted egress",              // GateAdmitted
-		`"internal.example\x1b[2K" port 443`,         // GuardBlocked, quoted
-		"the egress guard refused",                   // GuardBlocked
-		`"api.githb.example\x1b[2K" port 443`,        // Denied, quoted
-		"egress to these destinations was refused",   // Denied
-		`"plain.example\x1b[2K" port 80`,             // Untunneled, quoted
-		"addressed without a CONNECT",                // Untunneled
-		`"declined.example\x1b[2K" port 443`,         // GateDenied, quoted
-		"refused at the prompt",                      // GateDenied
-		`"/home/u/.ssh"`,                             // ShieldedGrants
-		`on this host: "/home/u/real\x1b[2K/.ssh"`,   // ShieldedGrants OnHost, quoted
-		`"/backup/\x1b[2Kid_rsa" aliases`,            // AcceptedAliases, quoted
-		"read-only on a host that can shield",        // Exposed
-		`"/repo/\x1b[2Kpackage.json"`,                // ChangedAutoExec, quoted
-		"run on the host later without being read",   // ChangedAutoExec
-		"no connection through the egress proxy",     // EgressConnections read as a bypass
+		"the egress proxy stopped accepting mid-run",  // Report.Degradations
+		`"/repo/\x1b[2K.git/hooks"`,                   // Residue, quoted
+		"bento did not remove them",                   // Residue
+		"shielded 1 credential/host-service path(s)",  // Shields
+		`"ads.example\x1b[2K" port 443`,               // GateAdmitted, quoted
+		"the live gate admitted egress",               // GateAdmitted
+		`"internal.example\x1b[2K" port 443`,          // GuardBlocked, quoted
+		"the egress guard refused",                    // GuardBlocked
+		`"169.254.169.254\x1b[2K" port 80`,            // GuardBlockedMetadata, quoted
+		"went looking for the instance's credentials", // GuardBlockedMetadata
+		`"api.githb.example\x1b[2K" port 443`,         // Denied, quoted
+		"egress to these destinations was refused",    // Denied
+		`"plain.example\x1b[2K" port 80`,              // Untunneled, quoted
+		"addressed without a CONNECT",                 // Untunneled
+		`"declined.example\x1b[2K" port 443`,          // GateDenied, quoted
+		"refused at the prompt",                       // GateDenied
+		`"/home/u/.ssh"`,                              // ShieldedGrants
+		`on this host: "/home/u/real\x1b[2K/.ssh"`,    // ShieldedGrants OnHost, quoted
+		`"/backup/\x1b[2Kid_rsa" aliases`,             // AcceptedAliases, quoted
+		"read-only on a host that can shield",         // Exposed
+		`"/repo/\x1b[2Kpackage.json"`,                 // ChangedAutoExec, quoted
+		"run on the host later without being read",    // ChangedAutoExec
+		"no connection through the egress proxy",      // EgressConnections read as a bypass
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary is missing %q; a field left unprinted is a silence the human reads as nothing to report.\ngot:\n%s", want, got)
@@ -124,7 +128,7 @@ func TestWriteSummarySurfacesEveryField(t *testing.T) {
 		"Degraded":   "which tier ran, already warned about through Degradations(): that tier is admitted only on a Degraded filesystem layer",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "GuardBlockedMetadata": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true, "UnresolvedHooks": true,
 		"Residue": true,

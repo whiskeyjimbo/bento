@@ -32,11 +32,13 @@ func populatedResult() (enforce.Result, *policy.Policy) {
 		Report:            report,
 		EgressConnections: 0, // with p.Network below and a non-zero exit, the bypass hint fires
 		GateAdmitted:      []enforce.HostPort{{Host: "ads.example\x1b[2K", Port: "443"}},
-		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}},
-		Denied:            []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
-		Untunneled:        []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
-		GateDenied:        []enforce.HostPort{{Host: "declined.example\x1b[2K", Port: "443"}},
-		AcceptedAliases:   []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
+		GuardBlocked:      []enforce.HostPort{{Host: "internal.example\x1b[2K", Port: "443"}, {Host: "169.254.169.254\x1b[2K", Port: "80"}},
+		// A subset of GuardBlocked, never a set beside it.
+		GuardBlockedMetadata: []enforce.HostPort{{Host: "169.254.169.254\x1b[2K", Port: "80"}},
+		Denied:               []enforce.HostPort{{Host: "api.githb.example\x1b[2K", Port: "443"}},
+		Untunneled:           []enforce.HostPort{{Host: "plain.example\x1b[2K", Port: "80"}},
+		GateDenied:           []enforce.HostPort{{Host: "declined.example\x1b[2K", Port: "443"}},
+		AcceptedAliases:      []enforce.CredentialAlias{{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh"}},
 		// OnHost is the store the grant landed on, enumerated from the host filesystem.
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
@@ -71,6 +73,8 @@ func TestWriteResultSurfacesEveryHonestyField(t *testing.T) {
 		`"ads.example\x1b[2K"`,                                 // GateAdmitted, quoted
 		`"internal.example\x1b[2K"`,                            // GuardBlocked, quoted
 		"the egress guard refused",                             // GuardBlocked
+		`"169.254.169.254\x1b[2K"`,                             // GuardBlockedMetadata, quoted
+		"reached for the instance's credentials",               // GuardBlockedMetadata
 		`"api.githb.example\x1b[2K"`,                           // Denied, quoted
 		"was refused: no network rule covers it",               // Denied
 		`"plain.example\x1b[2K"`,                               // Untunneled, quoted
@@ -150,7 +154,7 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 		"Degraded":   "which tier ran, already warned about through Degradations(): that tier is admitted only on a Degraded filesystem layer",
 	}
 	warned := map[string]bool{
-		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
+		"EgressConnections": true, "GateAdmitted": true, "GuardBlocked": true, "GuardBlockedMetadata": true, "Denied": true, "GateDenied": true, "Untunneled": true, "AcceptedAliases": true,
 		"ShieldedGrants": true, "Shields": true, "Exposed": true,
 		"Setup": true, "Signaled": true, "Signal": true, "ChangedAutoExec": true, "RedirectedHooks": true, "UnresolvedHooks": true,
 		"Residue": true,

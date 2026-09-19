@@ -605,6 +605,45 @@ func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	}
 }
 
+// guard_blocked_metadata is a SUBSET of guard_blocked, not a set beside it: a consumer
+// gating on "the guard refused something" reads the one key and is unaffected, while a
+// consumer alerting on a credential probe reads the other. The verdict envelope is a
+// positional literal of adjacent same-typed fields, so this also pins that the two are
+// not swapped.
+func TestWriteRunResultReportsMetadataProbesInsideGuardBlocked(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	res := enforce.Result{ExitCode: 0,
+		GuardBlocked:         []enforce.HostPort{{Host: "169.254.169.254", Port: "80"}, {Host: "internal.example", Port: "443"}},
+		GuardBlockedMetadata: []enforce.HostPort{{Host: "169.254.169.254", Port: "80"}},
+	}
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	var env struct {
+		GuardBlocked         []hostPortJSON `json:"guard_blocked"`
+		GuardBlockedMetadata []hostPortJSON `json:"guard_blocked_metadata"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(env.GuardBlocked) != 2 {
+		t.Errorf("guard_blocked = %+v, want both refusals: the metadata one is a subset, not a move", env.GuardBlocked)
+	}
+	want := []hostPortJSON{{Host: "169.254.169.254", Port: "80"}}
+	if !slices.Equal(env.GuardBlockedMetadata, want) {
+		t.Errorf("guard_blocked_metadata = %+v, want %+v", env.GuardBlockedMetadata, want)
+	}
+
+	stdout.Reset()
+	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0,
+		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}, nil, newEventStream(&stdout), nil)
+	var raw map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if _, present := raw["guard_blocked_metadata"]; present {
+		t.Error("guard_blocked_metadata must be omitted when no metadata probe was refused")
+	}
+}
+
 // failWriter is a stdout that always fails, so a test can drive the JSON-encode error
 // path of writeRunResult.
 type failWriter struct{}

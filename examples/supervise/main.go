@@ -385,6 +385,16 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port), t.dim("(a private address is reachable only as an explicit IP rule; loopback and metadata never)"))
 		}
 	}
+	// The metadata subset is said again under its own heading: in a wrapper where a human
+	// approved the host at a prompt, "the guard refused it" reads as their approval being
+	// second-guessed, and this is the one cause where it was not a misconfiguration but
+	// the target reaching for the instance's credentials. Quoted for the same reason.
+	if len(res.GuardBlockedMetadata) > 0 {
+		fmt.Fprintf(w, "\n%s\n", t.warn("one of those is the cloud instance metadata address: the target went looking for the instance's credentials"))
+		for _, hp := range res.GuardBlockedMetadata {
+			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port))
+		}
+	}
 	// The destinations the human said no to at the prompt, which in this wrapper is where
 	// nearly every refusal lands: it supervises with the manifest's own rules, so anything
 	// not already granted reaches the gate. Named apart from Denied below so the summary

@@ -44,6 +44,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeRedirectedHooksNotice"}, fixture: "verdict", marker: "pointed this checkout's hooks", key: "redirected_hooks"},
 	{writers: []string{"writeRedirectedHooksNotice"}, fixture: "verdict", marker: "could not read these grants whole", key: "unresolved_hooks"},
 	{writers: []string{"writeGuardBlockedWarning"}, fixture: "verdict", marker: "egress guard refused to connect", key: "guard_blocked"},
+	{writers: []string{"writeGuardBlockedWarning"}, fixture: "verdict", marker: "instance's credentials", key: "guard_blocked_metadata"},
 	{writers: []string{"writeDeniedWarning"}, fixture: "verdict", marker: "egress allowlist refused", key: "egress_denied"},
 	{writers: []string{"writeGateDeniedWarning"}, fixture: "verdict", marker: "network gate was asked", key: "gate_denied"},
 	{writers: []string{"writeUntunneledWarning"}, fixture: "verdict", marker: "addressed without a CONNECT", key: "untunneled"},
@@ -282,7 +283,8 @@ func parityRunVerdict(t *testing.T) (string, map[string]any) {
 		RedirectedHooks: []string{"/work/hooks"},
 		UnresolvedHooks: []string{"/work/other"},
 		GuardBlocked:    hp, Denied: hp, GateDenied: hp, Untunneled: hp,
-		ExecRecord: &enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{{Pid: 1, Exe: "/x", Argv: []string{"x"}}}},
+		GuardBlockedMetadata: hp,
+		ExecRecord:           &enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{{Pid: 1, Exe: "/x", Argv: []string{"x"}}}},
 	}
 	return renderRun(t, validPolicy(), env, res, nil)
 }
