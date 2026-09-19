@@ -29,7 +29,7 @@ Nothing here changes semantics. No code was modified.
 
 The output is not advisory. `rules.go:107-120` puts it in `Set.links`, `Set.builtin` and
 `Set.rules`, so it changes what bwrap binds, what a grant is refused over, and what the
-alias scans walk (`Set.CredentialLinks` at `rules.go:151`, documented at `rules.go:136-146`
+alias scans walk (`Set.CredentialLinks` at `rules.go:172`, documented at `rules.go:157-162`
 as an input to the alias scan). VERIFIED BY READING.
 
 ### What the doc says
