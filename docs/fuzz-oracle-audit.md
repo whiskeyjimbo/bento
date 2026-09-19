@@ -187,12 +187,26 @@ findings. STAMP for this section: **VERIFIED BY READING** (delegated).
 
 Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** (delegated).
 
-1. **`internal/observe`** - confirmed no target, and the biggest gap. `execImage` /
-   `execImageChain` decode attacker-chosen ELF headers and `#!` shebang lines from a 256-byte
-   head buffer with hand-rolled truncation rules mirroring binfmt_script. Oracles available:
-   shebang decoding is differential against the kernel's own binfmt behaviour, and the chain's
-   6-step bound plus `complete` flag is a narrowing invariant (complete implies every named path
-   is really named by the bytes). Worth adding.
+1. **`internal/observe`** - CLOSED. `FuzzExecImageDecode`
+   (internal/observe/execimage_fuzz_linux_amd64_test.go) now covers `execImage` /
+   `execImageChain`, with both oracles this entry named: a differential against
+   `refShebangImage`, a restatement of binfmt_script's decode written in the test, and the
+   chain's bound plus `complete` as a narrowing invariant (complete implies every named path
+   is absolute and really appears in the bytes it was decoded from). The reference is itself
+   pinned to the kernel by `TestBinfmtReferenceMatchesTheKernel`, which execs ten hand-built
+   scripts with chosen interpreters - the fuzz target never execs its input, because the
+   fuzzer reaches `#!/bin/sh` within seconds and running one would hand it a shell.
+   `TestImageDecodeOracleRejectsAWrongAnswer` is the positive control.
+
+   **The gap was a defect, not just missing coverage.** The seed corpus alone found two
+   divergences from binfmt_script, both confirmed by exec: `#!/bin/true\x00junk` was decoded
+   as the name `/bin/true\x00junk` (the kernel's name is a C string and ends at the NUL, and
+   the openat2 of the NUL-bearing name then failed EINVAL, counting a drop against a file the
+   kernel opened fine); and `#!/bin/sh\rx` was decoded as `/bin/sh` and reported COMPLETE,
+   because `strings.Fields` splits on unicode whitespace while the kernel splits on space and
+   tab alone - the kernel opened `/bin/sh\rx`, found nothing, and the manifest would have
+   named an interpreter the run never touched. Fixed in the same change.
+   STAMP: **VERIFIED BY SPIKE** (both reproduced by exec, red on the seeds, green after).
 2. **`gate`** - `Check` and eleven `*Problems` predicates, no target. The oracle is already
    written by hand: `TestShieldedGrantProblemsMirrorTheRunsRefusals` asserts gate-vs-`internal/linux`
    agreement over a table. A fuzzer generalises that table directly, and this is a second mirror
@@ -222,7 +236,7 @@ Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** 
 | 5 | `normalizeHost` is not idempotent on a doubled trailing dot; safe, known, documented at proxy.go:1088. An idempotence oracle here would be wrong | VERIFIED BY SPIKE + BY READING |
 | 6 | 16 targets, zero NONE or STRUCTURAL; 5 ship an explicit positive control or exhaustive companion | VERIFIED BY READING (delegated) |
 | 7 | Harness: auto-discovery, 30s local / 5m nightly, corpus cached in GOCACHE, crashers committed as seeds, SARIF upload | VERIFIED BY READING |
-| 8 | `internal/observe` has no target and has an oracle (kernel binfmt differential + chain narrowing) | VERIFIED BY READING (delegated) |
+| 8 | `internal/observe` has no target and has an oracle (kernel binfmt differential + chain narrowing) - since ADDED as `FuzzExecImageDecode`, and it found two real binfmt divergences on its seeds | VERIFIED BY SPIKE |
 | 9 | `gate` has no target and its oracle is already written as a table test | VERIFIED BY READING (delegated) |
 | 10 | Whether a 5m nightly budget is adequate for the splicer and resolve targets | UNVERIFIED - would need a long run and a coverage comparison |
 | 11 | Whether `internal/landlock` / `internal/seccomp` filters admit anything a fuzzer could find | UNSPIKEABLE HERE - installs process-global kernel state |
