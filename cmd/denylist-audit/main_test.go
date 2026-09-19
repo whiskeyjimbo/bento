@@ -616,3 +616,63 @@ func TestFetchRefusesARedirect(t *testing.T) {
 		})
 	}
 }
+
+// uncoveredGlobs are the reviewed wildcards no rule in bento's home list matches by
+// name, with why that is the accepted answer rather than a gap. They are the recorded
+// half of the check below: a glob is either answered by a named instance the matcher
+// finds, or it is written down here as a residual - never waved through on the strength
+// of a sentence nobody re-read. A glob that stops being reported upstream is a stale
+// record and fails too, so this shrinks with the corpus instead of accumulating.
+var uncoveredGlobs = map[string]string{
+	"*.kdb":        "arbitrary-location KeePass 1.x database; nothing at the home root can be named",
+	"*.kdbx":       "arbitrary-location KeePass 2.x database; nothing at the home root can be named",
+	"*.key":        "arbitrary-location key file; the named key stores bento shields all sit inside directories, not at the home root",
+	".*~":          "editor backup of an arbitrary dotfile at the home root; covered inside shielded directories, nowhere nameable outside them",
+	".*~1~":        "numbered emacs backup, same class as .*~",
+	".*.swp":       "vim swap file of an arbitrary dotfile, same class as .*~",
+	".*.bak":       "generic backup copy of an arbitrary dotfile, same class as .*~",
+	".*_history_*": "rotated history variants; the rotation suffix is not part of any name bento can shield",
+	".Xdefaults-*": "per-host xrdb variant; the base .Xdefaults is shielded DenyWrite but the hostname suffix puts every variant outside the pattern",
+	".sendgmail.*": "no home-root sendgmail file is shielded; .config/sendgmail is the only sendgmail store in the list, and it is not what this pattern names",
+}
+
+// The glob half of the audit's report is prose: each entry in audit.ReviewedGlobs says a
+// class is covered because bento shields the instances that matter, and until this check
+// nothing held that claim to the rule list. Matching each reviewed pattern against the
+// names denylist.Home actually shields turns it into a fact, and the residuals above are
+// the ones that honestly have no such name. A reviewed glob that is neither is the
+// finding: either a rule was renamed out from under the claim, or the claim was never
+// true.
+//
+// Offline by design: the corpus side of the ratchet already exists - a wildcard upstream
+// that is not in ReviewedGlobs is unclassified and hard-fails the gate - so this half
+// only has to check the records against bento's own list.
+func TestReviewedGlobsNameInstancesBentoActuallyShields(t *testing.T) {
+	rules := denylist.Home(home)
+	for glob, reason := range audit.ReviewedGlobs {
+		var matched []string
+		for _, r := range rules {
+			rel, ok := strings.CutPrefix(r.Path, home+"/")
+			if !ok {
+				continue
+			}
+			if ok, err := filepath.Match(glob, rel); err != nil {
+				t.Fatalf("%q is not a valid pattern: %v", glob, err)
+			} else if ok {
+				matched = append(matched, rel)
+			}
+		}
+		_, residual := uncoveredGlobs[glob]
+		switch {
+		case len(matched) == 0 && !residual:
+			t.Errorf("reviewed glob %q says %q, but no rule in denylist.Home matches it; shield an instance or record it in uncoveredGlobs with why it cannot be", glob, reason)
+		case len(matched) > 0 && residual:
+			t.Errorf("reviewed glob %q is recorded as having no nameable instance, but denylist.Home shields %v; drop the residual record", glob, matched)
+		}
+	}
+	for glob := range uncoveredGlobs {
+		if _, ok := audit.ReviewedGlobs[glob]; !ok {
+			t.Errorf("uncoveredGlobs records %q, which is no longer a reviewed glob; drop the record", glob)
+		}
+	}
+}
