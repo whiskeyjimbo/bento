@@ -486,6 +486,10 @@ func TestWrapperMapsEachStatusToItsVerdict(t *testing.T) {
 		{4, 1, "proved nothing"},
 		{5, 1, "could not clear a relocation variable"},
 		{6, 1, "required the upstream corpora"},
+		// An unread directive was never compared, so the parity is narrower than the
+		// diff claims. It has a status of its own because the wrapper used to read it
+		// off the wording of a line the audit could reword alone.
+		{7, 1, "was not read"},
 		// A panic exits 2. It must not reach the pass-over arm, which is why that arm
 		// is 3 and not 2.
 		{2, 2, "unexpected failure (exit 2)"},
@@ -563,13 +567,14 @@ func TestCollectRefusesACorpusItCannotRead(t *testing.T) {
 
 // The ratio ceiling in collect only fires on a collapse. A slice of a corpus going quiet
 // moves the count long before it moves the ratio, so the report says per profile what the
-// parser could not read - whether or not anything else about the run is interesting.
+// parser could not read - and exits on a status of its own, so the wrapper's verdict does
+// not rest on the wording of that line.
 func TestReportNamesWhatTheParserCouldNotRead(t *testing.T) {
 	content := liveSections() + "blacklist ${XDGDATA}/keyrings\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Name: "disable-common.inc", Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
-		t.Fatalf("an unread directive is a note, not a gate failure; got %d (%q)", code, b.String())
+	if code := report(&b, []audit.Source{{Name: "disable-common.inc", Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != exitUnreadDirective {
+		t.Fatalf("an unread directive must exit %d so the wrapper reddens without grepping the banner; got %d (%q)", exitUnreadDirective, code, b.String())
 	}
 	if !strings.Contains(b.String(), "disable-common.inc: 1 of ") {
 		t.Errorf("the report must name the profile and the count; got %q", b.String())

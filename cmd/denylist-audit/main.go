@@ -100,12 +100,19 @@ const (
 // exitEnvUnclean is separate from exitContentRefused for the same reason: it is raised
 // before anything is fetched, so the corpus arm's "an upstream corpus is not the profile"
 // would send a CI reader after an upstream that is fine.
+//
+// exitUnreadDirective is separate from exitGap for that reason too: a directive the
+// parser could not read was never compared, so the parity is narrower than it looks, and
+// the remedy is to teach internal/denylist/audit the directive form rather than to
+// classify a path into denylist.go. It also puts the wrapper's verdict on a status rather
+// than on the wording of the line below, which either side could reword alone.
 const (
-	exitGap            = 1
-	exitFetchFailed    = 3
-	exitContentRefused = 4
-	exitEnvUnclean     = 5
-	exitFetchRequired  = 6
+	exitGap             = 1
+	exitFetchFailed     = 3
+	exitContentRefused  = 4
+	exitEnvUnclean      = 5
+	exitFetchRequired   = 6
+	exitUnreadDirective = 7
 )
 
 // requireFetchVar makes a fetch failure red instead of skipped. Passing over an
@@ -230,8 +237,10 @@ func isProfile(content, sentinel string) bool {
 
 // report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
 // in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
-// exitGap when any in-scope gap remains or a scope keyword has gone stale, 0 when the
-// list already covers them and the classifier still matches every section. It is separated
+// exitGap when any in-scope gap remains or a scope keyword has gone stale,
+// exitUnreadDirective when the diff was otherwise clean but a parser could not read part
+// of a corpus, 0 when the list already covers them and the classifier still matches every
+// section. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
 func report(w io.Writer, sources []audit.Source, home, runUser string) int {
@@ -255,11 +264,13 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 	// the last run is what makes that visible. An unnamed source still reports - a source
 	// added without a name losing its drop count silently is the failure this exists to
 	// refuse.
+	unread := false
 	for i, s := range sources {
 		kept, dropped := s.Parse(s.Content, home, runUser)
 		if dropped == 0 {
 			continue
 		}
+		unread = true
 		name := s.Name
 		if name == "" {
 			name = fmt.Sprintf("source %d", i+1)
@@ -289,6 +300,10 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 		}
 		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec upstream shield is covered or excluded")
 		reportOutOfScope(w, outOfScope)
+		// A gap outranks this: both are red, and its banner points at the larger job.
+		if unread {
+			return exitUnreadDirective
+		}
 		return 0
 	}
 
