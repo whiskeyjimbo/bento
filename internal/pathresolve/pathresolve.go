@@ -37,9 +37,23 @@ const MaxDepth = 40
 // is: whether it is a symlink is exactly what could not be determined, and guessing it is
 // not one would put a symlink into a prefix a later ".." is popped off lexically.
 //
-// A path whose symlinks loop is returned unresolved once the budget runs out: a caller
-// that shields on the result then fails closed, and one that judges a proposal is
-// judging a path the backend refuses anyway.
+// "Unresolved" means the caller's own path, symlink components and all - not a
+// could-not-resolve signal. Nothing in this package makes that safe, so do not read the
+// return as a fail-closed guarantee this package provides. Where it does hold, it holds
+// because the CONSUMER meets the same barrier the resolver met: for EACCES, landlock's
+// add-rule has to open the path and bwrap's --ro-bind-try tolerates only a missing
+// source, so the kernel stops the enforcer exactly where it stopped the walk. That
+// symmetry is the whole property.
+//
+// It is not symmetric for a transient errno. The branch below catches EIO and ESTALE from
+// a network mount alongside EACCES (internal/landlock/landlock_linux.go reasons about the
+// same set), and a component unreadable at resolve time but readable at bind time leaves
+// the consumer following the symlink handed back here - check time and use time disagree.
+// That half is reasoned, not observed; confirming it needs a network mount.
+//
+// A path whose symlinks loop is returned unresolved once the budget runs out - the same
+// caller's-path return, and fail-closed on the same consumer-side terms. One that judges
+// a proposal is judging a path the backend refuses anyway.
 //
 // A relative path is made absolute against the working directory first, the same way the
 // backend does it before binding a grant. The walk below starts from "/", so taking a
