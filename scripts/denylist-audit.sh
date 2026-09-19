@@ -60,6 +60,8 @@ case "$status" in
 	# A directive the parser could not read was never compared against bento's list, so a
 	# run carrying one proves less than it claims. The audit has no exit status for it -
 	# the count is disclosed in its output and nowhere else - so the banner is the signal.
+	# That couples this gate to a message's wording with nothing failing if it changes; a
+	# status of its own is the fix, tracked as its own item.
 	# Every form the corpora use today is read, which is what makes the zero reachable;
 	# this turns upstream introducing a new one into a red build rather than a line in a
 	# passing run's output that nobody reads.

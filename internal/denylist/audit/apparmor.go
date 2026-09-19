@@ -150,7 +150,7 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 }
 
 // allShieldedBelow reports whether each directory a create-guard-only rule named has a
-// candidate of its own beneath it elsewhere in the corpus - the condition under which
+// candidate of its own at or beneath it elsewhere in the corpus - the condition under which
 // dropping the rule costs the diff nothing. .config, .local, .kde{,4} and .pki all pass:
 // the abstraction shields children under each, and the guard exists only so the parent
 // cannot be replaced to side-step them. A bare "foo/ w" with nothing under foo is the
@@ -160,7 +160,12 @@ func allShieldedBelow(dirs []string, out []Candidate) bool {
 	for _, dir := range dirs {
 		found := false
 		for _, c := range out {
-			if strings.HasPrefix(c.Path, dir+"/") {
+			// A directory candidate ON the guarded path counts too: a corpus spelling the
+			// guard and the subtree as two lines ("foo/ w" beside "foo/** mrwkl") shields
+			// foo itself, which is the same nothing-hidden the one-rule "foo/{,**}" form
+			// gives. The live abstractions use the one-rule form, so only the reading is
+			// at stake, not today's count.
+			if (c.Dir && c.Path == dir) || strings.HasPrefix(c.Path, dir+"/") {
 				found = true
 				break
 			}

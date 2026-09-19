@@ -733,6 +733,8 @@ func Home(home string) []Rule {
 		// carries a .local/share/emailidentities with no claim about its shape and no KDE
 		// producer behind it; it is kept here as the same file class rather than as the
 		// credential DIRECTORY it was, which asserted a per-identity tree nothing writes.
+		// Leaving credentialAnchorDirs also drops it from the AliasAnchors scan below; both
+		// that and ExpandLinks walk a directory, so neither did anything here.
 		".local/share/emailidentities",
 		".config/kmailsearchindexingrc",
 		".config/specialmailcollectionsrc",
