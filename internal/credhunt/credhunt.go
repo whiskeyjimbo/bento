@@ -431,23 +431,55 @@ func tokenAssignment(line string) bool {
 // from every future scan, and creating a name in a directory is far less capability than
 // reading what is under it, so an empty file called .git would let anyone who can write
 // into a home hide the rest of it. A .git file is still legitimate when it carries git's
-// "gitdir: " pointer - that is how a worktree and a submodule are spelled. .hg and .svn
-// have no file form, so for those only a directory counts. A directory named .git is
-// still taken at its name; see bd bv2-gg916 for that residual.
+// "gitdir: " pointer - that is how a worktree and a submodule are spelled. A .git
+// DIRECTORY is read for the same reason: "mkdir .git" is the same capability as
+// "touch .git", so its HEAD has to name a ref or a commit. .hg and .svn have no file
+// form and no one sentinel this package can name without inventing their layouts, so
+// for those a directory still counts on its name.
 func isCheckout(dir string) bool {
 	for _, marker := range []string{".git", ".hg", ".svn"} {
-		info, err := os.Lstat(filepath.Join(dir, marker))
+		path := filepath.Join(dir, marker)
+		info, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}
 		if info.IsDir() {
+			if marker == ".git" {
+				if hasHEADLine(filepath.Join(path, "HEAD")) {
+					return true
+				}
+				continue
+			}
 			return true
 		}
-		if marker == ".git" && info.Mode().IsRegular() && hasGitdirLine(filepath.Join(dir, marker)) {
+		if marker == ".git" && info.Mode().IsRegular() && hasGitdirLine(path) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasHEADLine reports whether path is a git HEAD: the symbolic "ref: " form a checkout
+// carries, or the hex object id a detached one does. Only the first byte can decide
+// between those and an empty or invented file, and the id's width varies with the repo's
+// hash, so nothing wider is read. Requiring more of the store than HEAD - refs/, say -
+// would refuse a real repo: the reftable backend has no refs directory.
+func hasHEADLine(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, len("ref: "))
+	n, err := io.ReadFull(f, head)
+	if err != nil && n == 0 {
+		return false
+	}
+	if string(head[:n]) == "ref: " {
+		return true
+	}
+	c := head[0]
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f'
 }
 
 // hasGitdirLine reports whether path begins with git's worktree/submodule pointer. The
