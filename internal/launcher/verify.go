@@ -268,9 +268,10 @@ func capBounding(status []byte) (uint64, error) {
 	return 0, fmt.Errorf("%s named no capability bounding set, so the sandbox's cannot be vouched for", procSelfStatus)
 }
 
-// procSelfChildren is the per-thread list of a process's live children. It is read per
-// task because the kernel files it under the thread that forked, and the launcher's Go
-// runtime forks from whichever thread the scheduler was on.
+// procSelfTasks holds one directory per thread, each with a children file listing that
+// thread's live children. The list is per-thread because the kernel files a child under
+// the thread that forked it, and the launcher's Go runtime forks from whichever thread
+// the scheduler was on.
 const procSelfTasks = "/proc/self/task"
 
 // verifyNoStrayChild is the profiling stage's check that nothing but the bridge is a live
@@ -323,10 +324,12 @@ func ownChildren() ([]string, error) {
 		}
 		others, err := threadChildren(t.Name())
 		if err != nil {
-			// A thread that exited between the listing and the read takes its children
-			// with it (they reparent, and are then no longer this process's), so a
-			// vanished entry is not a read bento was denied. The file itself exists on
-			// this kernel - the read above proved it - so this arm is only ever that race.
+			// A thread that exited between the listing and the read is gone with its
+			// directory, so a vanished entry is not a read bento was denied. Its children
+			// are not lost with it: the kernel reparents them to a live thread of the
+			// same group, so they are still this process's and still show up, under a
+			// sibling's file. The file itself exists on this kernel - the read above
+			// proved it - so this arm is only ever that race.
 			if os.IsNotExist(err) {
 				continue
 			}
