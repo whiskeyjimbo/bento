@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -503,38 +504,50 @@ func TestNAT64BlackoutIsNotNotedWhenALiteralGrantReachesIt(t *testing.T) {
 	}
 }
 
-// The site-prefix screen is decided once, at Serve start, and never revisited: p.nat64 is
-// written before the accept loop so the guard reads it without a lock. A host that joins a
+// The site-prefix screen is decided once, before the accept loop, and never revisited:
+// p.nat64 is written there so the guard reads it without a lock. A host that joins a
 // DNS64/NAT64 network afterwards - a Wi-Fi change, a VPN coming up - moves the Go
 // resolver's answers and not this, so a synthesis the new network would produce passes the
 // guard as ordinary public IPv6 for the rest of the run.
 //
-// This pins that limit rather than the fix, because it is what docs/threat-model.md
-// discloses under "NAT64 discovery is a snapshot": a claim about behaviour in another file
-// that would otherwise drift with nothing failing. The same address is run against both
-// conclusions, so the only difference is what discovery saw.
+// This pins the snapshot itself rather than the two conclusions: discovery is answered
+// NXDOMAIN once and the site's own prefix on every call after, so a guard that consulted
+// discovery again on the dial - the fix this bead weighed and did not take - would refuse
+// the target and turn this red. It exists because docs/threat-model.md's "NAT64 discovery
+// is a snapshot" paragraph rests on that ordering and on nothing a compiler checks, which
+// is the drift the repo's cross-file-prose rule is about.
 func TestNAT64SitePrefixScreenIsFixedAtDiscovery(t *testing.T) {
 	// A /96 synthesis of 10.0.0.5 under a site prefix: dangerous only to a proxy that
 	// knows the site runs DNS64.
 	target := net.JoinHostPort("2001:db8:64::a00:5", "443")
-	screen := func(discovered []net.IP) error {
-		p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
-			if len(discovered) == 0 {
-				return nil, &net.DNSError{Err: "no such host", Name: ipv4onlyName, IsNotFound: true}
-			}
-			return discovered, nil
-		}))
-		p.discoverNAT64(t.Context())
-		var refusals dialRefusals
-		return p.guardUpstream(withDialRefusals(t.Context(), &refusals), "tcp", target, nil)
-	}
+	// The synthesized ipv4only.arpa answer the site gives once it is reachable: 192.0.0.170
+	// wrapped at /96, which is what makes the prefix known.
+	sitePrefix := []net.IP{net.ParseIP("2001:db8:64::c000:aa")}
 
-	if err := screen(nil); err != nil {
-		t.Errorf("a run whose discovery concluded no DNS64 refused %s: %v", target, err)
+	var lookups atomic.Int64
+	p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+		if lookups.Add(1) == 1 {
+			return nil, &net.DNSError{Err: "no such host", Name: ipv4onlyName, IsNotFound: true}
+		}
+		return sitePrefix, nil
+	}))
+	p.discoverNAT64(t.Context())
+
+	var refusals dialRefusals
+	if err := p.guardUpstream(withDialRefusals(t.Context(), &refusals), "tcp", target, nil); err != nil {
+		t.Errorf("the guard refused %s after a discovery that concluded no DNS64: %v", target, err)
 	}
-	// The synthesized ipv4only.arpa answer the same site would give: 192.0.0.170 wrapped
-	// at /96, which is what makes the prefix known.
-	if err := screen([]net.IP{net.ParseIP("2001:db8:64::c000:aa")}); err == nil {
+	if got := lookups.Load(); got != 1 {
+		t.Errorf("discovery ran %d times; the screen is a snapshot taken once before the accept loop", got)
+	}
+	// The other half of the pin: the same address under the same prefix IS refused when
+	// discovery saw it, so the assertion above is about WHEN the screen was taken and not
+	// about an address the guard never minded.
+	seen := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+		return sitePrefix, nil
+	}))
+	seen.discoverNAT64(t.Context())
+	if err := seen.guardUpstream(withDialRefusals(t.Context(), &refusals), "tcp", target, nil); err == nil {
 		t.Errorf("a run that discovered the site prefix still reached %s, which wraps 10.0.0.5", target)
 	}
 }

@@ -82,12 +82,15 @@ const (
 	// without firing on the routine ones. Decision.GuardRefused reports whether a
 	// decision is one of them.
 
-	// GuardBlockedReserved marks a refusal of loopback, link-local (including the
-	// 169.254.169.254 cloud metadata address) or the unspecified address. Those name the
-	// host itself and its infrastructure, which no rule may reach - not even an explicit
-	// IP literal - so a sandboxed script that reached one was reaching for the host. It
-	// is the only one of the four that is an attack signal rather than a configuration
-	// fact, and the remedy is to investigate the script.
+	// GuardBlockedReserved marks a refusal of everything classifyIP calls ipHostReserved -
+	// loopback, link-local (including the 169.254.169.254 cloud metadata address),
+	// multicast, IPv6 site-local, the unspecified address, and the v4 ranges that are
+	// never a valid destination (0/8, 198.18/15, 240/4) - whether the address says so
+	// itself or through a transition form wrapping one. See ipHostReserved for the list
+	// that governs. Those name the host itself and its infrastructure, which no rule may
+	// reach, not even an explicit IP literal, so a sandboxed script that reached one was
+	// reaching for the host. It is the only one of the four that is an attack signal
+	// rather than a configuration fact, and the remedy is to investigate the script.
 	GuardBlockedReserved Decision = "blocked-reserved"
 	// GuardBlockedUnparsed marks a refusal of a dial target the guard could not classify:
 	// an address that does not split into host and port, or a host that is not a plain
@@ -100,10 +103,13 @@ const (
 	// exists for. The remedy is a manifest decision: naming the address as an explicit IP
 	// rule is what makes reaching it deliberate.
 	GuardBlockedPrivate Decision = "blocked-private"
-	// GuardBlockedNAT64 marks a refusal the run's own DNS caused rather than its manifest:
-	// an IPv6 destination no transition prefix decodes, refused for no reason but that
-	// NAT64 discovery was inconclusive. The remedy is to fix DNS; see NAT64Blackouts,
-	// which counts the same connections.
+	// GuardBlockedNAT64 marks a connection that lost AT LEAST ONE address to the run's own
+	// DNS rather than to its manifest: an IPv6 destination no transition prefix decodes,
+	// refused for no reason but that NAT64 discovery was inconclusive. It is a claim about
+	// the connection, not about every address of the name - a name resolving to both a
+	// blacked-out AAAA and an A record in RFC1918 reports this one, and the A record would
+	// still be refused on its own bytes once DNS is fixed. Fixing DNS is the remedy for
+	// what the blackout cost; see NAT64Blackouts, which counts the same connections.
 	GuardBlockedNAT64 Decision = "blocked-nat64"
 	// RefusedAtCapacity marks a connection turned away because every handler slot was
 	// taken. It is distinct from Refused because the two say different things about the
@@ -339,9 +345,10 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 
 // blockedUpstreamError is returned by guardUpstream when a resolved address must
 // not be dialed: a non-public IP the rules do not explicitly authorize, or an
-// address the guard cannot parse (refused rather than dialed blind). handle uses
-// it to report the refusal as the guard's own decision rather than as the connection's own
-// decision.
+// address the guard cannot parse (refused rather than dialed blind). Its whole job is
+// to fail the dial - handle does not read it, and reports the refusal from the
+// dialRefusals record instead, which is the only place that says WHICH cause refused
+// and survives a name whose other address failed first.
 // What the CLIENT is told is deliberately identical to an ordinary dial failure:
 // telling the two apart classifies the name against the host's internal DNS.
 type blockedUpstreamError struct{ addr string }
@@ -374,8 +381,8 @@ type dialRefusals struct {
 	unparsed atomic.Bool
 	private  atomic.Bool
 	// nat64Blackout is whether one of those refusals was a NAT64 blackout - an address
-	// refused for no reason but that discovery was inconclusive. Kept apart from any
-	// because a name that also has an A record still connects, and a run that reached
+	// refused for no reason but that discovery was inconclusive. Kept apart from private,
+	// which it always accompanies, because a name that also has an A record still connects, and a run that reached
 	// its declared destination lost nothing to the blackout; handle reads this only on
 	// the arm where the whole dial failed.
 	nat64Blackout atomic.Bool
@@ -393,12 +400,20 @@ func refusalsOf(ctx context.Context) *dialRefusals {
 }
 
 // blockedDecision reports which refusal this dial makes of the connection, or "" if the
-// guard refused none of its addresses. The order is by ALERTING VALUE, not by how strictly
-// the guard refuses: host-reserved says a script reached for the host itself, and it must
-// not be hidden behind a routine refusal of another address of the same name. (classifyNAT64
-// ranks by strictness for a different question; the two orderings are unrelated.)
+// guard refused none of its addresses.
 //
-// The blackout is derived from the private arm rather than ranked as a fifth cause: it is
+// It ranks over a different POPULATION than classifyNAT64's own ordering, which is the
+// confusion to avoid: that one picks a verdict for ONE address out of the several Pref64
+// decodes that could apply to it, and takes the strictest because a decode it cannot rule
+// out must not lower one it already reached. This one picks a report for ONE DIAL out of
+// the verdicts its several resolved addresses reached, and takes the most ALERTING,
+// because what the operator must not lose is that something here reached for the host.
+// It also ranks a slot classifyNAT64 never sees: unparsed, which sits above private
+// because it is bento handing its own guard something it did not expect - a bug in bento
+// rather than a fact about the manifest - and a routine private refusal on another address
+// of the same name must not bury it.
+//
+// The blackout is derived from the private arm rather than ranked as a fourth slot: it is
 // the reason a private verdict was reached, not a cause beside it, and NAT64Blackouts
 // counts it whatever the other addresses of the same name did.
 func (r *dialRefusals) blockedDecision() Decision {
