@@ -317,7 +317,7 @@ type grantTargetJSON struct {
 // same directory, one of them naming a link the other had just called an alias.
 func grantTarget(literal, resolved string) (string, bool) {
 	if filepath.IsAbs(resolved) {
-		resolved = pathresolve.Existing(resolved)
+		resolved, _ = pathresolve.Existing(resolved)
 	}
 	return resolved, resolved != literal
 }
@@ -1305,9 +1305,11 @@ func shadowsABaseImageCommand(dir string, carried []string) (command, carriedIn 
 // grants a policy carries are not resolved yet here, and a per-user toolchain directory is
 // usually reached through a symlink, so either side alone misses a real match.
 func granted(p *policy.Policy, dir string) bool {
-	dirs := []string{dir, pathresolve.Existing(dir)}
+	landsAt, _ := pathresolve.Existing(dir)
+	dirs := []string{dir, landsAt}
 	return slices.ContainsFunc(slices.Concat(p.Read, p.Write), func(g string) bool {
-		for _, gs := range []string{g, pathresolve.Existing(g)} {
+		grantLands, _ := pathresolve.Existing(g)
+		for _, gs := range []string{g, grantLands} {
 			for _, ds := range dirs {
 				if policy.CoversResolved(gs, ds) {
 					return true
@@ -1334,7 +1336,9 @@ func carriesInterpreter(p *policy.Policy, dir string) bool {
 	if prefix == "" {
 		return false
 	}
-	return policy.CoversResolved(prefix, dir) || policy.CoversResolved(pathresolve.Existing(prefix), pathresolve.Existing(dir))
+	prefixLands, _ := pathresolve.Existing(prefix)
+	dirLands, _ := pathresolve.Existing(dir)
+	return policy.CoversResolved(prefix, dir) || policy.CoversResolved(prefixLands, dirLands)
 }
 
 // underHome reports whether a path lies in the host home tree, lexically: its caller

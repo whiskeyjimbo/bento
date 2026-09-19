@@ -1014,7 +1014,7 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 	// script path as the user typed it. Matching only the literal one would go quiet on
 	// exactly the grant this exists to name.
 	dirs := []string{filepath.Dir(script)}
-	if resolved := pathresolve.Existing(dirs[0]); resolved != dirs[0] {
+	if resolved, _ := pathresolve.Existing(dirs[0]); resolved != dirs[0] {
 		dirs = append(dirs, resolved)
 	}
 	var notes []accessNoteJSON

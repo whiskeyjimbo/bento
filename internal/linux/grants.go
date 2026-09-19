@@ -336,27 +336,30 @@ func checkGrantNotManagedMount(sb sandbox, p *policy.Policy) error {
 	return nil
 }
 
-// checkGrantNotLooped refuses a grant whose symlinks loop. pathresolve.Existing leaves
-// a loop unresolved on purpose - a shield on one still fails closed - but a grant
-// is then bound at the looping path itself, and --ro-bind-try tolerates only a
-// missing source (ENOENT), not ELOOP, so bwrap aborts the run naming itself
-// rather than the grant. A dangling symlink is not a loop and stays supported:
-// it resolves to a target that simply does not exist yet.
+// checkGrantNotLooped refuses a grant whose symlinks loop. pathresolve leaves a loop
+// unresolved on purpose - a shield on one still fails closed - but a grant is then bound
+// at the looping path itself, and --ro-bind-try tolerates only a missing source (ENOENT),
+// not ELOOP, so bwrap aborts the run naming itself rather than the grant. A dangling
+// symlink is not a loop and stays supported: it resolves to a target that simply does not
+// exist yet.
 //
-// The check asks the kernel (os.Stat/ELOOP) rather than the sandbox's resolver
-// seam, and stays that way deliberately. sb.resolve cannot report a loop - it
-// returns the path unchanged, which is also its answer for a path that is no
-// symlink at all - and a fake that walked only the granted leaf would miss a loop
-// in a parent component and pass where production refuses. A seam whose fake
-// disagrees with the kernel is worse than none, so the loop cases are covered
-// against real symlink trees instead (TestCheckGrantNotLoopedRealFilesystem).
+// It asks pathresolve.Existing's Loop arm, which is the resolver's own account of the
+// grant, and asks it directly rather than through sb.resolve. The seam carries the path
+// and not the outcome, and a fake supplying one would answer for the test rather than for
+// the host - so the loop cases stay covered against real symlink trees
+// (TestCheckGrantNotLoopedRealFilesystem).
+//
+// The Loop arm replaces an os.Stat/ELOOP of the same path. They agree by construction, not
+// by coincidence: pathresolve.MaxDepth is the kernel's own limit, so the budget runs out on
+// exactly the chains the kernel refuses. gate.LoopedGrantProblems reads the same arm, which
+// is what keeps the gate's sentence and this one about one fact.
 func checkGrantNotLooped(p *policy.Policy) error {
 	for _, g := range append(append([]string{}, p.Read...), p.Write...) {
 		abs, err := filepath.Abs(g)
 		if err != nil {
 			return fmt.Errorf("linux: %q: %w", g, err)
 		}
-		if _, err := os.Stat(abs); errors.Is(err, syscall.ELOOP) {
+		if _, outcome := pathresolve.Existing(abs); outcome == pathresolve.Loop {
 			return grantrefusal.Looped(g)
 		}
 	}
@@ -582,5 +585,9 @@ func resolve(path string) (string, error) {
 		}
 		abs = filepath.Clean(wd) + "/" + path
 	}
-	return pathresolve.Existing(abs), nil
+	// The outcome is dropped here and asked at checkGrantNotLooped instead: this is the
+	// sandbox's resolve seam, which fakes replace, and a signal a fake supplies is a
+	// signal that says what the test wanted rather than what the host is.
+	resolved, _ := pathresolve.Existing(abs)
+	return resolved, nil
 }

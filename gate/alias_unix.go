@@ -84,7 +84,7 @@ func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.Creden
 	partial := unread
 	seen := map[string]bool{}
 	for _, g := range slices.Concat(reads, writes) {
-		root := pathresolve.Existing(filepath.Clean(g))
+		root, _ := pathresolve.Existing(filepath.Clean(g))
 		if seen[root] {
 			continue
 		}
@@ -151,13 +151,15 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 	homes, _ := denylist.HomeAnchors()
 	roots := make([]string, 0, 128)
 	for _, a := range denylist.AliasAnchors(homes...) {
-		roots = append(roots, pathresolve.Existing(a))
+		resolved, _ := pathresolve.Existing(a)
+		roots = append(roots, resolved)
 	}
 	// A hidden FILE rule is an anchor too: it is named because it holds a secret, and a
 	// single file is cheap to stat.
 	for _, r := range set.Rules() {
 		if r.Deny == denylist.DenyAll && !r.Dir {
-			roots = append(roots, pathresolve.Existing(r.Path))
+			resolved, _ := pathresolve.Existing(r.Path)
+			roots = append(roots, resolved)
 		}
 	}
 	// A hidden DIRECTORY anchors only where the anchor list names it - except from these
@@ -167,7 +169,8 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 	// its own name, and nothing covers the half of one moved out from inside it.
 	for _, r := range slices.Concat(set.CallerDenies(), set.CredentialLinks()) {
 		if r.Deny == denylist.DenyAll && r.Dir {
-			roots = append(roots, pathresolve.Existing(r.Path))
+			resolved, _ := pathresolve.Existing(r.Path)
+			roots = append(roots, resolved)
 		}
 	}
 	optIns := shield.Targets(set.OptIns(reads))

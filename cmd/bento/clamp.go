@@ -43,7 +43,8 @@ func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, kep
 	// case-folding one, and dropping on it is right: the run refuses that grant outright,
 	// for either kind.
 	drop := func(g string) (denylist.Holds, bool) {
-		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+		lands, _ := pathresolve.Existing(g)
+		for _, spelling := range []string{g, lands} {
 			r, v := set.Contains(spelling, shield.Read, nil, nil)
 			if v != shield.Honored {
 				return r.Holds, true
@@ -85,7 +86,8 @@ func clampWriteShieldedGrants(set shield.Set, writes []string) (kept, dropped []
 	workspace := workspaceShields(writes)
 	for _, g := range writes {
 		shielded := false
-		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+		lands, _ := pathresolve.Existing(g)
+		for _, spelling := range []string{g, lands} {
 			if _, v := set.Contains(spelling, shield.Write, nil, workspace); v == shield.UnderWriteShield {
 				shielded = true
 				break
@@ -116,7 +118,8 @@ func aboveWriteShieldGrants(set shield.Set, writes []string) []string {
 		// Both spellings, as the clamps above: the observer records where a grant lands
 		// while the manifest may name the link, and a shield under one and not the other is
 		// still a shield the degraded run refuses over.
-		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+		lands, _ := pathresolve.Existing(g)
+		for _, spelling := range []string{g, lands} {
 			if _, v := set.Contains(spelling, shield.Write, nil, nil); v == shield.AboveWriteShield {
 				above = append(above, g)
 				break
@@ -184,7 +187,8 @@ func gitDirShields(checkout string) []denylist.Rule {
 		}
 	}
 	redirected := func(path string) {
-		if _, err := os.Lstat(path); err == nil && pathresolve.Existing(path) != path {
+		lands, _ := pathresolve.Existing(path)
+		if _, err := os.Lstat(path); err == nil && lands != path {
 			rules = append(rules, denylist.Rule{Path: path, Deny: denylist.DenyWrite, Dir: true})
 		}
 	}
@@ -313,19 +317,22 @@ func foreignHomeShields(grants []string) []string {
 	selves := map[string]bool{}
 	for _, self := range anchors {
 		selves[self] = true
-		selves[pathresolve.Existing(self)] = true
+		lands, _ := pathresolve.Existing(self)
+		selves[lands] = true
 	}
 	reaches := func(g string) bool {
 		// Judged where it LANDS as well as how it is spelled, the same as the clamps
 		// above: a link into another user's store (the target plants one in its own
 		// directory) is otherwise a grant this predicate reads as belonging to no home at
 		// all, and converge auto-accepts what it says nothing about.
-		for _, spelling := range []string{g, pathresolve.Existing(g)} {
+		lands, _ := pathresolve.Existing(g)
+		for _, spelling := range []string{g, lands} {
 			root, ok := homeRoot(spelling)
 			// The root is resolved against the anchors too, or the run's own home warns
 			// whenever the grant is spelled through the link: on an ostree host the anchors
 			// say /var/home/u while the stock /home symlink makes the same home /home/u.
-			if !ok || selves[root] || selves[pathresolve.Existing(root)] {
+			resolvedRoot, _ := pathresolve.Existing(root)
+			if !ok || selves[root] || selves[resolvedRoot] {
 				continue
 			}
 			for _, r := range denylist.Home(root) {
@@ -479,12 +486,12 @@ func withholdRedirectedWorkspace(p *policy.Policy) []refusedGrant {
 // checkout reached through a symlinked mount derives its shields there, and they resolve to
 // themselves. Asked of the spelling, every shield under the link would read as redirected.
 func redirectedWorkspaceProblem(w string) string {
-	w = pathresolve.Existing(w)
+	w, _ = pathresolve.Existing(w)
 	if w == "/" || !isDirFollowingLinks(w) {
 		return ""
 	}
 	for _, r := range workspaceShields([]string{w}) {
-		if real := pathresolve.Existing(r.Path); real != r.Path {
+		if real, _ := pathresolve.Existing(r.Path); real != r.Path {
 			return fmt.Sprintf("it shields %q, but a symlinked directory component redirects that to %q, so the shield would bind on the target while the link's own name stays writable inside the grant", r.Path, real)
 		}
 	}
@@ -566,14 +573,15 @@ func isBroadDir(path string) bool {
 	// names the link, and on a host where /home is itself a symlink the observer records
 	// /var/home/u while the anchor is spelled /home/u. Either way the grant binds the
 	// home, which is precisely what this refuses to propose.
-	for _, spelling := range []string{path, pathresolve.Existing(path)} {
+	lands, _ := pathresolve.Existing(path)
+	for _, spelling := range []string{path, lands} {
 		// A home container is every account at once, which /home and /Users happen to be
 		// caught by as top-level directories and /var/home and /export/home are not.
 		if spelling == "/" || filepath.Dir(spelling) == "/" || slices.Contains(profile.HomeContainers(), spelling) {
 			return true
 		}
 		for _, a := range anchors {
-			if spelling == a || spelling == pathresolve.Existing(a) {
+			if resolvedAnchor, _ := pathresolve.Existing(a); spelling == a || spelling == resolvedAnchor {
 				return true
 			}
 		}
@@ -585,7 +593,7 @@ func isBroadDir(path string) bool {
 // a message about a clamp that fired on the resolved name. Without it the line names a
 // path the reviewer can look at and see nothing wrong with.
 func resolvedNote(path string) string {
-	if r := pathresolve.Existing(path); r != path {
+	if r, _ := pathresolve.Existing(path); r != path {
 		return fmt.Sprintf(" (it resolves to %q)", r)
 	}
 	return ""

@@ -186,11 +186,13 @@ func refusals(set shield.Set, resolved *policy.Policy) []string {
 // LoopedGrantProblems reports the grants whose symlinks loop, read and write alike, since
 // the backend refuses either kind on the same fact and in the same sentence.
 //
-// ELOOP is the one stat error that decides anything here. It is the answer the backend
-// itself acts on (internal/linux checkGrantNotLooped matches ELOOP and nothing else), so
-// parity holds on every other error too: a grant bento cannot stat because a directory
-// above it is unreadable says nothing about what run will find, since the sandbox sees
-// that tree as a different user.
+// Asked of the resolver rather than of the kernel. pathresolve bounds symlink following
+// at the kernel's own ELOOP limit, so the paths it answers Loop for are the paths a stat
+// answers ELOOP on - and the backend's checkGrantNotLooped now reads the same signal, so
+// the two agree because they ask one question, not because two questions were argued into
+// parity. Nothing else the resolver reports is a problem here: an Unreadable component
+// says nothing about what run will find, since the sandbox sees that tree as a different
+// user.
 func LoopedGrantProblems(read, write []string) []string {
 	var problems []string
 	seen := map[string]bool{}
@@ -201,7 +203,7 @@ func LoopedGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		if _, err := os.Stat(pathresolve.Existing(g)); errors.Is(err, syscall.ELOOP) {
+		if _, outcome := pathresolve.Existing(g); outcome == pathresolve.Loop {
 			problems = append(problems, grantrefusal.Looped(g).Error())
 		}
 	}
@@ -231,7 +233,8 @@ func LoopedGrantProblems(read, write []string) []string {
 func FileWriteGrantProblems(write []string) []string {
 	var problems []string
 	for _, g := range write {
-		fi, err := os.Stat(pathresolve.Existing(g))
+		lands, _ := pathresolve.Existing(g)
+		fi, err := os.Stat(lands)
 		switch {
 		case err == nil && !fi.IsDir():
 			problems = append(problems, grantrefusal.WriteIsFile(g).Error())
@@ -264,7 +267,8 @@ func RootWriteProblems(write []string) []string {
 // the shield mirrors skip exactly what RootWriteProblems refuses: a grant the two answer
 // differently about is refused in nobody's words, or in the wrong ones.
 func isRootWrite(g string) bool {
-	return g == "/" || pathresolve.Existing(g) == "/"
+	lands, _ := pathresolve.Existing(g)
+	return g == "/" || lands == "/"
 }
 
 // MountGrantProblems reports the grants that land on a host process's /proc/<pid>
@@ -288,7 +292,7 @@ func MountGrantProblems(read, write []string) []string {
 			continue
 		}
 		seen[g] = true
-		lands := pathresolve.Existing(g)
+		lands, _ := pathresolve.Existing(g)
 		if i := slices.Index(denylist.ManagedMounts, lands); i >= 0 {
 			problems = append(problems, grantrefusal.GrantIsManagedMount(g, lands, denylist.ManagedMounts[i]).Error())
 			continue
@@ -402,7 +406,8 @@ func ShieldedReadProblems(set shield.Set, reads []string) []string {
 	optIns := shield.Targets(set.OptIns(reads))
 	var problems []string
 	for _, g := range reads {
-		r, v := set.Contains(pathresolve.Existing(g), shield.Read, optIns, nil)
+		landed, _ := pathresolve.Existing(g)
+		r, v := set.Contains(landed, shield.Read, optIns, nil)
 		// Enumerated rather than defaulted to one sentence: the InsideShield wording
 		// offers the read opt-in, which exists for bento's own shields and not for an
 		// embedder's deny. The arms mirror the backend's checkNotShielded so the two
@@ -463,7 +468,8 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 func ShieldCarveProblems(set shield.Set, reads, writes []string) []string {
 	resolved := make([]string, 0, len(writes))
 	for _, w := range writes {
-		resolved = append(resolved, pathresolve.Existing(w))
+		lands, _ := pathresolve.Existing(w)
+		resolved = append(resolved, lands)
 	}
 	optIns := shield.Targets(set.OptIns(reads))
 
@@ -553,7 +559,8 @@ func MissingReads(read []string) []string {
 func FileishWrites(write []string) []string {
 	var fileish []string
 	for _, g := range write {
-		if _, err := os.Stat(pathresolve.Existing(g)); !errors.Is(err, fs.ErrNotExist) {
+		lands, _ := pathresolve.Existing(g)
+		if _, err := os.Stat(lands); !errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		// A name that is all extension is a dotfile - `.env`, `.cache` - which is an
@@ -577,7 +584,8 @@ func FileishWrites(write []string) []string {
 // only miss a refusal; the second is the one a manifest alone can trigger, so it is the
 // one a reader of a clean verdict here has to know is unanswered.
 func writeShieldProblem(set shield.Set, g string) (string, bool) {
-	r, v := set.Contains(pathresolve.Existing(g), shield.Write, nil, nil)
+	landed, _ := pathresolve.Existing(g)
+	r, v := set.Contains(landed, shield.Write, nil, nil)
 	switch v {
 	case shield.InsideShield:
 		return grantrefusal.WriteInsideShield(g, r.Path).Error(), true

@@ -40,6 +40,15 @@ type FS struct {
 	IsDir func(string) bool
 	// Resolve follows a path's symlinks, including through components that do not exist
 	// yet, and returns the path unchanged where it cannot.
+	//
+	// Deliberately narrower than pathresolve.Existing, which now says WHICH of OK, Loop
+	// and Unreadable a path was: no rule here can act on that. The two moves available -
+	// dropping the rule or refusing the run - are the unsafe direction and a behaviour
+	// change no shield decision is scoped to make, so a second return would be threaded
+	// through every consumer and every fake to be discarded at each one. The property this
+	// package keeps meanwhile is the unchanged path being a spelling it already compares
+	// against (verdict.go asks a.Rule.Path alongside a.Resolved), so an unresolved answer
+	// narrows blame rather than losing it.
 	Resolve func(string) string
 	// SameFile reports whether two paths name the same host file. It answers one
 	// question the other seams cannot: whether the directory holding a shield folds
@@ -62,10 +71,18 @@ type FS struct {
 func Host() FS {
 	return FS{
 		IsDir:    hostIsDir,
-		Resolve:  pathresolve.Existing,
+		Resolve:  hostResolve,
 		ListDir:  hostListDir,
 		SameFile: hostSameFile,
 	}
+}
+
+// hostResolve drops pathresolve's outcome to fit the FS seam. Explicit rather than a
+// wrapper at each consumer, so the one place the signal is discarded is the one place the
+// seam's doc above argues it can be.
+func hostResolve(path string) string {
+	resolved, _ := pathresolve.Existing(path)
+	return resolved
 }
 
 // hostSameFile compares identity without following a final symlink: the shield binds at

@@ -510,7 +510,9 @@ func FlooredWrite(dir string) bool {
 	if flooredWrite(dir) || isSystemPath(dir) {
 		return true
 	}
-	resolved := pathresolve.Existing(dir)
+	// The outcome is not consulted: both spellings are compared either way, and the
+	// caller's own path is a spelling this must still judge.
+	resolved, _ := pathresolve.Existing(dir)
 	return resolved != dir && (isSystemPath(resolved) || flooredWrite(resolved))
 }
 
@@ -520,7 +522,9 @@ func ScratchWrite(dir string) bool {
 	if SandboxScratch(dir) {
 		return true
 	}
-	resolved := pathresolve.Existing(dir)
+	// The outcome is not consulted: both spellings are compared either way, and the
+	// caller's own path is a spelling this must still judge.
+	resolved, _ := pathresolve.Existing(dir)
 	return resolved != dir && SandboxScratch(resolved)
 }
 
@@ -595,7 +599,7 @@ func isForeignHomeTree(dir string) bool {
 		// and only one of them compares equal above. Resolved through pathresolve, the way
 		// the shields and the clamp resolve their own anchors, so a home that does not
 		// exist yet is not called someone else's account on a technicality.
-		if dir == pathresolve.Existing(home) {
+		if resolvedHome, _ := pathresolve.Existing(home); dir == resolvedHome {
 			return false
 		}
 	}

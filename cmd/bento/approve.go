@@ -332,7 +332,8 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 // manifest or the entrypoint as rewriting the file it points at, and is invisible to a
 // comparison against the resolved location alone.
 func leafNamePath(path string) string {
-	return filepath.Join(pathresolve.Existing(filepath.Dir(path)), filepath.Base(path))
+	dir, _ := pathresolve.Existing(filepath.Dir(path))
+	return filepath.Join(dir, filepath.Base(path))
 }
 
 // selfWriteGrants returns the resolved write grants covering the manifest and those covering
@@ -347,9 +348,10 @@ func selfWriteGrants(realPath, namedPath string, resolved *policy.Policy) (cover
 	// elsewhere and linked into the project is covered by a grant over that directory
 	// under the name the link carries, and replacing the link is how it rewrites its
 	// own code.
-	entrypoint, linkedEntrypoint := pathresolve.Existing(resolved.Entrypoint), leafNamePath(resolved.Entrypoint)
+	entrypoint, _ := pathresolve.Existing(resolved.Entrypoint)
+	linkedEntrypoint := leafNamePath(resolved.Entrypoint)
 	for _, g := range resolved.Write {
-		g = pathresolve.Existing(g)
+		g, _ = pathresolve.Existing(g)
 		if policy.CoversResolved(g, realPath) || policy.CoversResolved(g, namedPath) {
 			coversManifest = append(coversManifest, g)
 		}
