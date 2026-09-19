@@ -160,6 +160,11 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		// noteProbeDeadline to count.
 		canary, cerr := trueBinary()
 		if cerr != nil {
+			// The refusal is the reason verbatim, unlike the framed sentences the other arms
+			// return: it already names the writable component and a remedy, and wrapping it in
+			// "the canary does not run on this host" would read as a broken machine rather than
+			// as a binary nothing vouched for. preflightLimits keeps its refusal whole for the
+			// same reason.
 			return scopeVerdict{reason: cerr.Error()}, false
 		}
 		cctx, ccancel := context.WithTimeout(ctx, scopeProbeTimeout)
@@ -430,7 +435,11 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	if err != nil {
 		// Fail closed, like every other unreadable-delegation path here: an unknown set
 		// makes cpuDelegationState and hostSafetyDelegationState report Unavailable rather
-		// than Enforced. The refusal itself is reported where a launch is decided.
+		// than Enforced. The refusal itself is not reported from here, and on a host with no
+		// bwrap and a manifest with no limits nothing else resolves a shell either, so the
+		// only trace is the Unavailable reading. That is the fail-closed direction, and a
+		// second voice for the same refusal is what the namespace probe already is on every
+		// host that has bwrap.
 		return nil, false
 	}
 	args := []string{
@@ -495,8 +504,12 @@ var probeBinary = trustedProbeBinary
 // root-owned store path and passes. Whichever is taken is held to the same check, so the
 // plant this closes is refused in both.
 func trustedProbeBinary(name, conventional, role string) (string, error) {
-	p := conventional
-	if _, err := os.Stat(p); err != nil {
+	// LookPath on the absolute name rather than a stat: it consults no PATH for an absolute
+	// argument, and it checks the exec bit, so a /bin/sh that is a directory or not
+	// executable falls through to the name lookup instead of being handed to a probe that
+	// would then report the failed exec as a host verdict.
+	p, err := exec.LookPath(conventional)
+	if err != nil {
 		found, lookErr := exec.LookPath(name)
 		if lookErr != nil {
 			return "", fmt.Errorf("the %s is neither at %s nor on PATH (%w), so the probe has nothing to run", role, conventional, lookErr)

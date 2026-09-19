@@ -607,8 +607,10 @@ func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 // A host missing /bin/sh cannot be constructed here, so this drives the property
 // from the other side: with the resolver naming an `sh` that exits non-zero, the
 // probe must fail, which it can only do if the canary it ran was the resolved one.
-// Where that resolution looks - /bin/sh first, PATH where there is none - is
-// TestTrustedProbeBinaryRefusesAUserWritableCanary's subject, not this one's.
+// Where that resolution looks is not this test's subject: /bin/sh first is
+// TestProbeCanariesAcceptTheHostsOwn's, and the PATH fallback is the second subtest of
+// TestTrustedProbeBinaryRefusesAUserWritableCanary, which can only refuse a planted sh
+// there if PATH was consulted.
 func TestCanUnshareRunsTheResolvedCanary(t *testing.T) {
 	requireSandbox(t)
 

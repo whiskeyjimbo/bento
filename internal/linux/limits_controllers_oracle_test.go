@@ -20,7 +20,7 @@ import (
 // The impostor is no longer out of the threat model, though, which is where this comment
 // used to stop: a writable $PATH directory is exactly what a sandboxed target with a write
 // grant produces, so the shell is held to trustLauncherPath by trustedProbeBinary and a
-// planted one is refused before it runs (TestProbesRefuseAPlantedCanary). The systemd-run
+// planted one is refused before it runs (TestProbesRefuseARefusedCanary). The systemd-run
 // this reading resolves is still not, and cannot forge more than this reading, which
 // noteScopeLimits then answers from the kernel.
 func TestDelegatedControllersNeedsTheReadToHaveHappened(t *testing.T) {

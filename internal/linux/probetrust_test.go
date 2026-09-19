@@ -64,6 +64,9 @@ func mustShBinary(t *testing.T) string {
 	return p
 }
 
+// Called through probeBinary rather than trustedProbeBinary directly: the var is what the
+// probes read, so a rebinding that dropped the check would otherwise leave this green.
+//
 // The probes execute their canaries before any preflight - measureScope's bare `true` on
 // the host, and the delegated-controllers and namespace shells - so a planted one is code
 // execution as this user rather than a forged verdict, and nothing downstream recovers from
@@ -80,7 +83,7 @@ func TestTrustedProbeBinaryRefusesAUserWritableCanary(t *testing.T) {
 		dir := t.TempDir()
 		writeShim(t, dir, "sh", "#!/bin/sh\nexit 0\n")
 
-		p, err := trustedProbeBinary("sh", filepath.Join(dir, "sh"), "probe shell")
+		p, err := probeBinary("sh", filepath.Join(dir, "sh"), "probe shell")
 		if err == nil {
 			t.Fatalf("accepted a shell in a directory this user can write (%s)", p)
 		}
@@ -94,7 +97,7 @@ func TestTrustedProbeBinaryRefusesAUserWritableCanary(t *testing.T) {
 	t.Run("the PATH fallback", func(t *testing.T) {
 		dir := shimPATH(t, "sh", "#!/bin/sh\nexit 0\n")
 
-		p, err := trustedProbeBinary("sh", filepath.Join(dir, "absent-on-purpose"), "probe shell")
+		p, err := probeBinary("sh", filepath.Join(dir, "absent-on-purpose"), "probe shell")
 		if err == nil {
 			t.Fatalf("accepted a shell PATH resolved into a directory this user can write (%s)", p)
 		}
@@ -108,15 +111,29 @@ func TestTrustedProbeBinaryRefusesAUserWritableCanary(t *testing.T) {
 // false refusal here breaks every run and every doctor on a working machine, which is worse
 // than the hole it closes. A user-level shell ahead of /bin/sh - a Nix profile, a mise shim
 // - is the ordinary shape, not an attack, and must not be reached at all where /bin/sh is.
+//
+// The equality is asserted only where the conventional path exists, because a host without
+// one is the legitimate shape the PATH fallback is for (NixOS, a minimal image) and must not
+// fail here; that it accepts SOMETHING is the assertion that holds everywhere.
 func TestProbeCanariesAcceptTheHostsOwn(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root, where every path is writable and the question is vacuous")
 	}
-	if got := mustShBinary(t); got != "/bin/sh" {
-		t.Errorf("shBinary = %q, want /bin/sh: a host that has one must never consult PATH for its canary", got)
-	}
-	if got := mustTrueBinary(t); got != "/bin/true" {
-		t.Errorf("trueBinary = %q, want /bin/true", got)
+	for _, tc := range []struct {
+		conventional string
+		resolve      func(*testing.T) string
+	}{
+		{"/bin/sh", mustShBinary},
+		{"/bin/true", mustTrueBinary},
+	} {
+		got := tc.resolve(t)
+		if got == "" {
+			t.Errorf("no path for an accepted %s", tc.conventional)
+			continue
+		}
+		if _, err := os.Stat(tc.conventional); err == nil && got != tc.conventional {
+			t.Errorf("resolved %q, want %s: a host that has one must never consult PATH for its canary", got, tc.conventional)
+		}
 	}
 }
 
