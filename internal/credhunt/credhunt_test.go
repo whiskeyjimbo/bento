@@ -261,9 +261,7 @@ func TestHuntPrunesCheckoutsButNeverTheScanRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	atRoot := plant(t, home, ".some-tool-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
-	if err := os.MkdirAll(filepath.Join(home, "src/proj/.git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	gitdir(t, filepath.Join(home, "src/proj"))
 	inCheckout := plant(t, home, "src/proj/config/auth.go", 0o600, "const apiKey = \"0123456789abcdefghijklmnop\"\n")
 
 	got := paths(hunt(t, home))
@@ -489,23 +487,50 @@ func TestAMachineStoreEqualToTheScanRootIsNotPruned(t *testing.T) {
 // .git would let anyone who can write into a home hide the rest of it from every future
 // scan. A .git FILE is still a real checkout when it carries git's "gitdir:" pointer -
 // that is how a worktree and a submodule are spelled - and pruning those is what the
-// prune is for, so both directions are pinned here.
+// prune is for, so both directions are pinned here. "mkdir .git" is the same capability
+// as "touch .git", so the directory form is read too: its HEAD has to name a ref or a
+// commit, which a repo git itself created always does from the first init onward.
 func TestIsCheckoutReadsTheMarkerRatherThanTrustingItsName(t *testing.T) {
 	home := t.TempDir()
 	planted := plant(t, home, "work/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 	if err := os.WriteFile(filepath.Join(home, "work", ".git"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	bare := plant(t, home, "named/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	if err := os.MkdirAll(filepath.Join(home, "named", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	hidden := plant(t, home, "tree/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 	if err := os.WriteFile(filepath.Join(home, "tree", ".git"), []byte("gitdir: ../.git/worktrees/tree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	real := plant(t, home, "repo/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+	gitdir(t, filepath.Join(home, "repo"))
 
 	got := paths(hunt(t, home))
 	if !slices.Contains(got, planted) {
 		t.Errorf("an empty file named .git hid %s from the scan; the marker's content must decide, not its name. got %v", planted, got)
 	}
+	if !slices.Contains(got, bare) {
+		t.Errorf("an empty directory named .git hid %s from the scan; mkdir is no more capability than touch. got %v", bare, got)
+	}
 	if slices.Contains(got, hidden) {
 		t.Errorf("%s sits in a real git worktree, which spells its marker as a gitdir: file, and must still be pruned; got %v", hidden, got)
+	}
+	if slices.Contains(got, real) {
+		t.Errorf("%s sits in a real checkout and must still be pruned; got %v", real, got)
+	}
+}
+
+// gitdir writes the .git directory of a checkout as git itself lays one out at init: a
+// HEAD naming the branch it will create. Everything else under .git is the object store,
+// which this package never reads.
+func gitdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -206,6 +206,9 @@ func TestRunNamesEveryPathItSkipped(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(hostile, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(hostile, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	closed := filepath.Join(home, "closed")
 	if err := os.Mkdir(closed, 0o000); err != nil {
 		t.Fatal(err)
