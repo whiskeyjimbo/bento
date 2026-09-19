@@ -121,9 +121,13 @@ cmd/bento'
 # grant-derived half. Listed so a NEW package building rules still fails here.
 
 # gate hands a Rule to shield.Assemble as INPUT, which is the opposite of assembling a set.
-# Exempted per file rather than per directory, unlike the entries above: the justification is
-# about the test, so a production rule in the same package must still fail here.
-fixture_files='gate/problems_test.go'
+# cmd/denylist-audit's test reads the home list to check every reviewed upstream wildcard
+# is answered by a name bento shields; it assembles the set only to read it, and the rules
+# it reads are denylist.go's. Both are exempted per file rather than per directory, unlike
+# the entries above: the justification is about the test, so a production rule in the same
+# package must still fail here.
+fixture_files='gate/problems_test.go
+cmd/denylist-audit/main_test.go'
 
 # git's tracked set rather than a filesystem walk: an agent worktree under .claude/worktrees
 # is a whole second copy of the tree, and walking it reports every package in it as a new
