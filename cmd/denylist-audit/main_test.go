@@ -650,6 +650,7 @@ func TestReviewedGlobsNameInstancesBentoActuallyShields(t *testing.T) {
 	rules := denylist.Home(home)
 	for glob, reason := range audit.ReviewedGlobs {
 		var matched []string
+		levels := map[denylist.Deny]bool{}
 		for _, r := range rules {
 			rel, ok := strings.CutPrefix(r.Path, home+"/")
 			if !ok {
@@ -659,6 +660,7 @@ func TestReviewedGlobsNameInstancesBentoActuallyShields(t *testing.T) {
 				t.Fatalf("%q is not a valid pattern: %v", glob, err)
 			} else if ok {
 				matched = append(matched, rel)
+				levels[r.Deny] = true
 			}
 		}
 		_, residual := uncoveredGlobs[glob]
@@ -667,6 +669,19 @@ func TestReviewedGlobsNameInstancesBentoActuallyShields(t *testing.T) {
 			t.Errorf("reviewed glob %q says %q, but no rule in denylist.Home matches it; shield an instance or record it in uncoveredGlobs with why it cannot be", glob, reason)
 		case len(matched) > 0 && residual:
 			t.Errorf("reviewed glob %q is recorded as having no nameable instance, but denylist.Home shields %v; drop the residual record", glob, matched)
+		}
+		// A name alone does not make the record true: most reasons say at what level the
+		// instance is shielded, and a rule weakening from DenyAll to DenyWrite would leave
+		// the sentence false with the name still matching. The reason IS the expectation,
+		// so it is read rather than mirrored in a second table. One matching rule at the
+		// named level satisfies it, because the reason names a specific instance while the
+		// pattern also reaches siblings the list deliberately holds weaker - ".*coin" says
+		// .bitcoin is DenyAll and matches nothing else that has to be. A reason naming no
+		// level is out of this check's scope, which is the honest limit of reading prose.
+		for text, level := range map[string]denylist.Deny{"DenyAll": denylist.DenyAll, "DenyWrite": denylist.DenyWrite} {
+			if strings.Contains(reason, text) && len(matched) > 0 && !levels[level] {
+				t.Errorf("reviewed glob %q says %q, but no rule it matches (%v) is %s; the record outlived the level it claims", glob, reason, matched, text)
+			}
 		}
 	}
 	for glob := range uncoveredGlobs {
