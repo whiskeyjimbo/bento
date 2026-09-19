@@ -292,7 +292,7 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			"what a granted workspace needs" +
 			truncateResidual(truncateRestricted) + ioctlDevResidual(ioctlDevRestricted) +
 			resolveUnixResidual(resolveUnixRestricted) + unknownRightsResidual +
-			terminalResidual + capBoundResidual
+			terminalResidual + capBoundResidual + sysvIPCResidual
 		return l
 	default:
 		return status(enforce.Unavailable, joinReason(nsReason,
@@ -474,6 +474,21 @@ const capBoundResidual = ". The capability bounding set is attempted rather than
 	"namespace - the one this tier runs in, having no other. So on an ordinary host the set survives the run - inert rather than dropped, since no-new-privs is " +
 	"already set and a bounding set can only be spent through a setuid or file-capability exec. A run " +
 	"that does hold capabilities and cannot empty the set is refused instead of degraded"
+
+// sysvIPCResidual discloses the one tier divergence that is in the safe direction and
+// still costs the operator something: bwrap's --unshare-ipc gives the target a fresh
+// System V IPC namespace, so a target using SysV objects of its own works and simply
+// cannot see the host's. This tier has no namespace to give, so seccomp.BlockProcessReach
+// EPERMs the calls outright and such a target dies instead. It is named here because the
+// three seccomp blocks carry no applied-report line by design (internal/launcher/
+// degraded.go) - the fatality of the install is their attestation - so without this
+// sentence a target that dies on shmget is indistinguishable from a target that died.
+const sysvIPCResidual = ". Where bwrap gives the target its own System V IPC namespace, this tier has none " +
+	"to give and the cross-process block denies the SysV shared-memory, message-queue and semaphore calls " +
+	"with EPERM instead: the host's segments are out of reach either way, but a target that uses SysV IPC " +
+	"of its own - PostgreSQL's bootstrap segment, an X11 MIT-SHM client, some JVM and Oracle setups - fails " +
+	"here where it would run under bwrap, and nothing but this sentence says so, because the seccomp blocks " +
+	"have no line of their own in the applied report"
 
 // namespaceProbe is what the user-namespace probe could establish. The third state
 // is the point of the type: an unanswered probe - the canary reaped under memory

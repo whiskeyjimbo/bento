@@ -485,6 +485,23 @@ func TestDegradedConsequencesDiscloseTheUnrunSweep(t *testing.T) {
 	}
 }
 
+// The cross-process block closed the degraded tier's counterpart to --unshare-ipc by
+// denying the System V IPC calls outright rather than by giving the target a namespace of
+// its own. That is safe and it is a behaviour divergence: a target that uses SysV IPC
+// itself runs under bwrap and dies here. The three seccomp blocks have no applied-report
+// line, so the Consequences text is the only channel this can reach the operator through.
+func TestDegradedConsequencesDiscloseTheSysVIPCDivergence(t *testing.T) {
+	for cell := 0; cell < 1<<5; cell++ {
+		b := func(i int) bool { return cell&(1<<i) != 0 }
+		l := filesystemLayer(namespacesBlocked, "userns blocked here", true, b(0), b(1), b(2), b(3), b(4), true)
+		for _, want := range []string{"System V IPC namespace", "EPERM", "fails here where it would run under bwrap"} {
+			if !strings.Contains(l.Consequences, want) {
+				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
+			}
+		}
+	}
+}
+
 // The degraded tier's unix-socket disclosure has to track what the kernel can actually
 // restrict, not repeat one fixed sentence. From ABI 6 the tier scopes the abstract
 // namespace and from ABI 9 the ruleset handles resolve_unix, granting it only on the
