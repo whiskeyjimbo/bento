@@ -257,10 +257,9 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries them only sometimes,
 // and either may be empty on its own - see Refused. A guard refusal carries the CONNECT
-// target, not the address it resolved to, which no longer survives the dial anywhere:
-// what the operator needs from it - host infrastructure, an internal name, or a NAT64
-// blackout - is in the decision instead, which is why these four causes are separate
-// constants.
+// target, not the address it resolved to, which nothing host-side reads: what the
+// operator needs from it - host infrastructure, an internal name, or a NAT64 blackout -
+// is in the decision instead, which is why these four causes are separate constants.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
 }
