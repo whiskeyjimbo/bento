@@ -187,6 +187,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// added and the run is unchanged.
 	env := envSlice(sandboxEnv(proc.Env, scratch))
 	var stripEnv []string
+	var runner string
 	scoped := false
 	if !p.Limits.IsZero() {
 		if ok, _ := canCreateScope(ctx); ok {
@@ -195,9 +196,11 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 			// the enforcer's own environment would find the bus even when the sanitized
 			// one cannot, and the failure would then surface as systemd-run's exit code
 			// for a target that never ran.
-			if err := preflightLimits(ctx, p.Limits, env); err != nil {
+			r, err := preflightLimits(ctx, p.Limits, env)
+			if err != nil {
 				return enforce.Result{}, fmt.Errorf("linux: %w", err)
 			}
+			runner = r
 			scoped = true
 		}
 	}
@@ -229,7 +232,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// set below and the process-group sweep still reaches anything it leaks.
 	exe, cargs := sb.bentoPath, launcher.EncodeLaunchDegraded(cfg)
 	if scoped {
-		exe, cargs = wrapWithLimits(exe, cargs, p.Limits, opts.RunID)
+		exe, cargs = wrapWithLimits(runner, exe, cargs, p.Limits, opts.RunID)
 	}
 	if err := checkLauncher(sb.bentoPath); err != nil {
 		return enforce.Result{}, err

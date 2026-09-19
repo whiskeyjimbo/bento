@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,6 +27,61 @@ func plantScopeRunner(t *testing.T) string {
 	}
 	t.Setenv("PATH", dir)
 	return dir
+}
+
+// requireScopeRunner skips unless this host has a systemd-run wrapWithLimits will accept.
+// Wrapping resolves and vouches for the runner, so a test that only cares about the scope
+// ARGUMENTS still needs a resolvable one.
+func requireScopeRunner(t *testing.T) string {
+	t.Helper()
+	path, _, err := resolveScopeRunner()
+	if err != nil {
+		skipMissingDep(t, "no usable systemd-run: %v", err)
+	}
+	return path
+}
+
+// The check is worth nothing if the launch does not use what it checked. wrapWithLimits
+// used to return the bare name "systemd-run" and exec resolved it against PATH a SECOND
+// time, so the binary that ran was whatever won that later lookup - and the refusal test
+// below stayed green throughout, which is how the gap survived the commit that claimed to
+// close it. trustLauncherPath rules on the components of the binary it FOUND, not on the
+// PATH directories ahead of it, so a writable entry that was empty at the check can hold a
+// systemd-run by the time of the exec, and that one inherits fd 3 and fd 4.
+//
+// preflightLimits returns the path it vouched for and the launch sites hand it to
+// wrapWithLimits, so this asserts the two halves that make the launch name the checked
+// file: the preflight yields an absolute vouched path, and the wrap passes it through.
+func TestPreflightLimitsReturnsTheValidatedRunnerForTheLaunch(t *testing.T) {
+	want := requireScopeRunner(t)
+	if ok, reason := canCreateScope(t.Context()); !ok {
+		skipMissingDep(t, "this host cannot create a transient scope: %s", reason)
+	}
+
+	runner, err := preflightLimits(t.Context(), policy.Limits{Memory: "64M"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner != want {
+		t.Fatalf("preflightLimits returned %q, want the vouched-for path %q: anything exec resolves again is not the binary that was checked", runner, want)
+	}
+
+	exe, _ := wrapWithLimits(runner, "/bin/true", nil, policy.Limits{Memory: "64M"}, "")
+	if exe != runner {
+		t.Fatalf("wrapWithLimits launched %q, want the runner it was given, %q", exe, runner)
+	}
+
+	// The window itself. PATH changing between the check and the exec is the shape the
+	// bare name was vulnerable to, so plant a runner the way an attacker would and confirm
+	// the launch still names the file that was vouched for.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "systemd-run"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got := exec.Command(exe).Path; got != want {
+		t.Errorf("the launch would exec %q after PATH changed, want %q", got, want)
+	}
 }
 
 // Under limits the scope runner, not bwrap, is the outer process the host execs, and it
@@ -56,7 +112,7 @@ func TestResolveScopeRunnerRefusesAUserWritableRunner(t *testing.T) {
 func TestPreflightLimitsRefusesAUserWritableScopeRunner(t *testing.T) {
 	dir := plantScopeRunner(t)
 
-	err := preflightLimits(context.Background(), policy.Limits{Memory: "64M"}, nil)
+	_, err := preflightLimits(context.Background(), policy.Limits{Memory: "64M"}, nil)
 	if err == nil {
 		t.Fatal("preflightLimits admitted a run wrapped in a systemd-run this user can replace")
 	}

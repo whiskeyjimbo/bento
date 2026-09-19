@@ -31,9 +31,8 @@ import (
 // itself was already substituted. (checkLauncher, on that path and the bwrap one alike, is
 // the launchGuard test seam, not a verification. A scoped run of either tier is wrapped in
 // a systemd-run that inherits this descriptor in bwrap's place; resolveScopeRunner holds it
-// to the same provenance test resolveBwrap applies, though not yet to the same binding -
-// bwrap's vouched-for path is the one exec'd, while the scope runner's is re-resolved at
-// launch, which preflightLimits records as the residual it is.)
+// to the same provenance test resolveBwrap applies, and preflightLimits hands the path it
+// vouched for to the launch, so the checked binary is the one exec'd on both.)
 // parseApplied's job is narrower and stays what it was: refusing content
 // the genuine stage does not write.
 const appliedReportFD = 3

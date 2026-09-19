@@ -32,7 +32,7 @@ func TestScopeProbesAreBoundedWhenSomethingHoldsTheirOutput(t *testing.T) {
 
 	t.Run("runScopeProbe", func(t *testing.T) {
 		err, ok := within(t, bound, func() error {
-			return runScopeProbe(context.Background(), policy.Limits{Memory: "64M"}, nil)
+			return runScopeProbe(context.Background(), "systemd-run", policy.Limits{Memory: "64M"}, nil)
 		})
 		if !ok {
 			t.Fatalf("runScopeProbe was still blocked after %s while its documented bound is %s; the deadline killed systemd-run but the backgrounded holder of stdout keeps the output read waiting", bound, scopeProbeTimeout)

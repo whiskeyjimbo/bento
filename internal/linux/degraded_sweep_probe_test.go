@@ -27,7 +27,7 @@ func TestScopeDoesNotBreakProcessGroupSweep(t *testing.T) {
 	}
 	pidFile := filepath.Join(t.TempDir(), "sleeper.pid")
 	// A shell that backgrounds a long sleep (a leaked descendant) and records its pid.
-	exe, args := wrapWithLimits("sh", []string{
+	exe, args := wrapWithLimits(requireScopeRunner(t), "sh", []string{
 		"-c",
 		"sleep 300 & echo $! > " + pidFile + "; sleep 1",
 	}, policy.Limits{Memory: "64M"}, "")
@@ -153,7 +153,7 @@ func TestPdeathsigParentHelper(t *testing.T) {
 	switch os.Getenv("BENTO_TEST_PDEATHSIG") {
 	case "plain":
 	case "scoped":
-		exe, args = wrapWithLimits(exe, args, policy.Limits{Memory: "64M"}, "")
+		exe, args = wrapWithLimits(requireScopeRunner(t), exe, args, policy.Limits{Memory: "64M"}, "")
 	default:
 		t.Skip("child helper for the Pdeathsig tests")
 	}

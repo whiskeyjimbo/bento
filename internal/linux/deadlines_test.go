@@ -39,7 +39,7 @@ func TestProbeDeadlinesCountsTheProbesOwnExpiry(t *testing.T) {
 		shimPATH(t, "systemd-run", "#!/bin/sh\nexec sleep 60\n")
 
 		before := ProbeDeadlines()
-		if err := runScopeProbe(context.Background(), policy.Limits{Memory: "64M"}, nil); err == nil {
+		if err := runScopeProbe(context.Background(), "systemd-run", policy.Limits{Memory: "64M"}, nil); err == nil {
 			t.Fatal("the scope probe returned success from a shim that never answers")
 		}
 		if got := ProbeDeadlines() - before; got != 1 {
@@ -71,7 +71,7 @@ func TestProbeDeadlinesCountsTheProbesOwnExpiry(t *testing.T) {
 		cancel()
 
 		before := ProbeDeadlines()
-		if err := runScopeProbe(ctx, policy.Limits{Memory: "64M"}, nil); err == nil {
+		if err := runScopeProbe(ctx, "systemd-run", policy.Limits{Memory: "64M"}, nil); err == nil {
 			t.Fatal("the scope probe returned success under a cancelled caller")
 		}
 		if got := ProbeDeadlines() - before; got != 0 {

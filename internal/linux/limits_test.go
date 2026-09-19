@@ -17,7 +17,7 @@ import (
 )
 
 func TestWrapWithLimitsNoLimitsIsPassthrough(t *testing.T) {
-	exe, args := wrapWithLimits("bwrap", []string{"--die-with-parent"}, policy.Limits{}, "")
+	exe, args := wrapWithLimits("systemd-run", "bwrap", []string{"--die-with-parent"}, policy.Limits{}, "")
 	if exe != "bwrap" || len(args) != 1 || args[0] != "--die-with-parent" {
 		t.Errorf("no limits should pass the command through unchanged; got %s %v", exe, args)
 	}
@@ -45,7 +45,7 @@ func requireHostSafetyLimits(t *testing.T) {
 // limits create no scope at all, so the only honest answer there is an error - a nil
 // would be the fail-open direction the whole delegation check exists to refuse.
 func TestScopeProbeRefusesZeroLimits(t *testing.T) {
-	if err := runScopeProbe(t.Context(), policy.Limits{}, nil); err == nil {
+	if err := runScopeProbe(t.Context(), "systemd-run", policy.Limits{}, nil); err == nil {
 		t.Error("runScopeProbe returned success for zero limits, which create no scope")
 	}
 }
@@ -68,7 +68,7 @@ func TestTheLimitsProbesHonorTheCallersContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	if err := runScopeProbe(ctx, policy.Limits{Memory: "64M"}, nil); err == nil {
+	if err := runScopeProbe(ctx, "systemd-run", policy.Limits{Memory: "64M"}, nil); err == nil {
 		t.Error("a cancelled probe must not report that the limits will bind")
 	}
 	if _, known := measureDelegatedControllers(ctx); known {
@@ -88,11 +88,12 @@ func TestTheLimitsProbesHonorTheCallersContext(t *testing.T) {
 }
 
 func TestWrapWithLimitsBuildsScope(t *testing.T) {
-	exe, args := wrapWithLimits("bwrap", []string{"--proc", "/proc"}, policy.Limits{
+	const runner = "/usr/bin/systemd-run"
+	exe, args := wrapWithLimits(runner, "bwrap", []string{"--proc", "/proc"}, policy.Limits{
 		Memory: "128M", CPU: "100%", PIDs: 32,
 	}, "")
-	if exe != "systemd-run" {
-		t.Fatalf("exe = %q, want systemd-run", exe)
+	if exe != runner {
+		t.Fatalf("exe = %q, want %q", exe, runner)
 	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
@@ -113,7 +114,7 @@ func TestWrapWithLimitsBuildsScope(t *testing.T) {
 }
 
 func TestWrapWithLimitsOnlySetsWhatIsAsked(t *testing.T) {
-	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "")
+	_, args := wrapWithLimits("systemd-run", "bwrap", nil, policy.Limits{PIDs: 8}, "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "MemoryMax") || strings.Contains(joined, "CPUQuota") {
 		t.Errorf("only TasksMax was requested; got %q", joined)
@@ -421,7 +422,7 @@ func TestCacheProbeMemoizesOnlyAnsweredMeasurements(t *testing.T) {
 }
 
 func TestWrapWithLimitsNamesTheScopeForARunID(t *testing.T) {
-	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "job_17")
+	_, args := wrapWithLimits("systemd-run", "bwrap", nil, policy.Limits{PIDs: 8}, "job_17")
 	joined := strings.Join(args, " ")
 	// The supervisor computes this name before the run starts and reaps through it, so
 	// the spelling is the contract, not an implementation detail.
@@ -431,7 +432,7 @@ func TestWrapWithLimitsNamesTheScopeForARunID(t *testing.T) {
 }
 
 func TestWrapWithLimitsLeavesTheScopeUnnamedWithoutARunID(t *testing.T) {
-	_, args := wrapWithLimits("bwrap", nil, policy.Limits{PIDs: 8}, "")
+	_, args := wrapWithLimits("systemd-run", "bwrap", nil, policy.Limits{PIDs: 8}, "")
 	if joined := strings.Join(args, " "); strings.Contains(joined, "--unit") {
 		t.Errorf("no run id should leave systemd to generate the name; got %q", joined)
 	}

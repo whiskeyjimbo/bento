@@ -136,10 +136,11 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	// launched. What it does get is executed: this probe runs its PATH-resolved binaries
 	// on the host, unsandboxed, before any preflight, on every run and every doctor. That
 	// residual is open, not closed here.
-	if _, err := exec.LookPath("systemd-run"); err != nil {
+	runner, err := exec.LookPath("systemd-run")
+	if err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
 	}
-	if err := runScopeProbe(ctx, policy.Limits{Memory: "64M"}, nil); err != nil {
+	if err := runScopeProbe(ctx, runner, policy.Limits{Memory: "64M"}, nil); err != nil {
 		// A caller that gave up measured nothing about this host, and must not leave a
 		// verdict behind that says it did: the reason names the abandonment rather than
 		// blaming the user manager, and nothing is cached either way.
@@ -205,30 +206,34 @@ func hostSafetyDelegationState(ctrls map[string]bool, known bool, controller str
 // into a clear error up front, instead of letting systemd-run's own exit code
 // masquerade as the target's when the scope never starts.
 //
+// It also returns the scope runner it vouched for, and the caller launches with THAT
+// path rather than the name: resolving here and letting exec resolve "systemd-run" again
+// would leave the run confined by a binary nothing checked, since trustLauncherPath rules
+// on the file it found and not on the PATH directories ahead of it. Every wrapped launch
+// reaches this - the profiling path consults no scope verdict of its own - so it is the
+// one place a scoped run's provenance can be settled.
+//
 // env is the environment the real run will hand systemd-run, or nil to inherit the
 // enforcer's. Passing the real one matters on the degraded tier, whose command env is
 // the sanitized policy env: systemd-run needs the session bus variables to reach the
 // user manager, and a probe that inherited the host env would pass while the real run
 // died with the scope never created and the target never started.
-func preflightLimits(ctx context.Context, l policy.Limits, env []string) error {
+func preflightLimits(ctx context.Context, l policy.Limits, env []string) (string, error) {
 	if l.IsZero() {
-		return nil
+		return "", nil
 	}
-	// Ahead of the probe, because this is the one preflight every wrapped launch reaches -
-	// the profiling path consults no scope verdict of its own - and because a planted
-	// systemd-run would answer the probe as happily as the real one.
-	//
-	// The validated path is deliberately not threaded onward yet: wrapWithLimits returns
-	// the bare name and the launch re-resolves it against PATH, so this refuses a planted
-	// binary but does not pin the one it vouched for. Threading it is a signature change
-	// through three call sites outside this file.
-	if _, _, err := resolveScopeRunner(); err != nil {
-		return err
+	// Resolved before the probe rather than inside it so the refusal keeps its own words:
+	// a trust refusal surfacing from the probe would be dressed as "systemd could not
+	// apply the requested resource limits" below, which sends the operator to debug a
+	// user manager that is fine.
+	runner, _, err := resolveScopeRunner()
+	if err != nil {
+		return "", err
 	}
-	if err := runScopeProbe(ctx, l, env); err != nil {
-		return fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
+	if err := runScopeProbe(ctx, runner, l, env); err != nil {
+		return "", fmt.Errorf("systemd could not apply the requested resource limits: %w", err)
 	}
-	return nil
+	return runner, nil
 }
 
 // runScopeProbe creates a transient scope with the given limits running /bin/true
@@ -238,7 +243,7 @@ func preflightLimits(ctx context.Context, l policy.Limits, env []string) error {
 // when there is nothing to apply, so a zero-limit probe would run /bin/true bare,
 // never contact systemd, and report success - "the limits will bind" from a call that
 // proved nothing, in the seam the fail-closed limits story rests on.
-func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
+func runScopeProbe(ctx context.Context, runner string, l policy.Limits, env []string) error {
 	if l.IsZero() {
 		return fmt.Errorf("internal: the scope probe was asked to prove zero limits, which creates no scope")
 	}
@@ -250,7 +255,7 @@ func runScopeProbe(ctx context.Context, l policy.Limits, env []string) error {
 	// that one would hold the same unit name, and the probe running first would either
 	// take the name the run then fails to claim or - once --collect has reaped it - hand
 	// the supervisor a window in which the name exists but belongs to /bin/true.
-	exe, args := wrapWithLimits(trueBinary(), nil, l, "")
+	exe, args := wrapWithLimits(runner, trueBinary(), nil, l, "")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Env = env
 	cmd.WaitDelay = probeWaitDelay
@@ -532,7 +537,15 @@ func (e *Enforcer) screenRunID(ctx context.Context, p *policy.Policy, runID stri
 // limits. With no limits set it returns the command unchanged, so the scope is
 // only paid for when a manifest asks for it. runID, when set, names the scope so a
 // supervisor can kill the tree; empty leaves systemd to generate a name.
-func wrapWithLimits(exe string, args []string, l policy.Limits, runID string) (string, []string) {
+//
+// runner is the systemd-run to exec, resolved by the caller and returned as the command,
+// so the binary that was vouched for is the binary that runs. A bare "systemd-run" here
+// would be resolved against PATH a second time at exec, and whatever won that later lookup
+// would be what actually ran - with the applied-report descriptor and the bridge liveness
+// pipe - however carefully the first one was checked. Taking the path rather than resolving
+// it is how canUnshare and the rest of this package are shaped, and it keeps the trust
+// decision at the one place that can refuse a run.
+func wrapWithLimits(runner, exe string, args []string, l policy.Limits, runID string) (string, []string) {
 	if l.IsZero() {
 		return exe, args
 	}
@@ -557,5 +570,5 @@ func wrapWithLimits(exe string, args []string, l policy.Limits, runID string) (s
 		scope = append(scope, "-p", "TasksMax="+strconv.Itoa(l.PIDs))
 	}
 	scope = append(scope, "--", exe)
-	return "systemd-run", append(scope, args...)
+	return runner, append(scope, args...)
 }

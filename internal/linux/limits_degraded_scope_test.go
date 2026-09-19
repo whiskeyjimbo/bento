@@ -73,7 +73,7 @@ func TestScopedCommandRunsWithSanitizedPolicyEnv(t *testing.T) {
 		t.Skip("host sets no session bus variables; the sanitized-env case cannot be exercised")
 	}
 
-	exe, args := wrapWithLimits(shBinary(), []string{
+	exe, args := wrapWithLimits(requireScopeRunner(t), shBinary(), []string{
 		"-c", "env > " + marker,
 	}, policy.Limits{Memory: "64M"}, "")
 	cmd := exec.Command(exe, args...)
@@ -101,7 +101,7 @@ func TestScopedCommandRunsWithSanitizedPolicyEnv(t *testing.T) {
 // them (or any policy value) in argv would publish them in /proc/self/cmdline, which a
 // same-uid host process can read - this tier has no PID namespace to hide it.
 func TestScopeArgvCarriesNoEnvValues(t *testing.T) {
-	exe, args := wrapWithLimits("/usr/bin/bento", []string{"--strip-env", "DBUS_SESSION_BUS_ADDRESS"}, policy.Limits{Memory: "64M"}, "")
+	exe, args := wrapWithLimits("/usr/bin/systemd-run", "/usr/bin/bento", []string{"--strip-env", "DBUS_SESSION_BUS_ADDRESS"}, policy.Limits{Memory: "64M"}, "")
 	line := exe + " " + strings.Join(args, " ")
 	if strings.Contains(line, "unix:path=") || strings.Contains(line, "=/run/user") {
 		t.Fatalf("argv carries an environment value: %q", line)
