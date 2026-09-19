@@ -192,11 +192,11 @@ func TestProbesRefuseARefusedCanary(t *testing.T) {
 // is that nothing ran, not that a reason reads a particular way. A bare exec.LookPath here
 // finds the PATH plant and runs it as this user, before any preflight, on every Run and
 // every doctor.
+//
+// No root skip, unlike its neighbours: the refusal is injected through the probeBinary
+// override rather than read off a writable directory, so the question is the same at every
+// uid.
 func TestProbesDoNotExecuteAnUnvouchedScopeRunner(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("running as root, where every path is writable and the question is vacuous")
-	}
-
 	run := func(t *testing.T, probe func()) {
 		t.Helper()
 		sentinel := filepath.Join(t.TempDir(), "ran")

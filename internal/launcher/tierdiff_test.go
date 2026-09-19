@@ -137,12 +137,22 @@ var tierProbes = []tierProbe{
 	},
 	{
 		name: "process-vm-read",
-		// The bwrap cell reading "permitted" is the finding, not a hole in the arm, and it
-		// is the same shape as inet-socket's: the bwrap tier installs no seccomp, so
-		// process_vm_readv is reachable inside its sandbox and --unshare-pid only decides
-		// WHICH processes can be named. What the row pins is the other side - that the
-		// degraded tier's substitute covers the memory-read half directly, rather than
-		// only through the System V calls the sysv-ipc row reaches.
+		// The bwrap cell reading "permitted" is a fact about the TIER, not a gap in the arm,
+		// and it is not inet-socket's shape: that cell is permitted because the arm omits
+		// --unshare-net, a flag the real tier does pass. Here the real tier passes nothing
+		// that would deny this. It does install seccomp - BlockIoUring and
+		// installExecFilter, both in Run - but no filter of its own lists
+		// process_vm_readv, and BlockProcessReach is degraded-only (degraded.go:109).
+		// --unshare-pid only decides WHICH processes can be named, not whether the call is
+		// reachable.
+		//
+		// This row produces no red the suite does not already have: dropping
+		// process_vm_readv from the filter list reds
+		// internal/seccomp/process_reach_linux_test.go, and dropping BlockProcessReach from
+		// the degraded arm reds sysv-ipc as well. It is here so the table NAMES the
+		// memory-read half of BlockProcessReach in the same place as the rest of the
+		// differential, rather than leaving that fence represented only by the System V
+		// calls - legibility, not a unique red.
 		why:      "grid row 3, cross-process reach: BlockProcessReach is the degraded tier's whole substitute for the pid namespace it cannot create, and process_vm_readv is the memory-read half of it; sysv-ipc pins only the System V half",
 		unfenced: "permitted",
 		degraded: "denied",
