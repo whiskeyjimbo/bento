@@ -4,9 +4,9 @@ package launcher
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -123,14 +123,15 @@ var bwrapDevNodes = map[string]bool{
 }
 
 // verifyDevMount is the launcher's own check that /dev is the minimal device directory
-// bwrap builds, for verifyFreshTmp's reason and with the same consequence: /dev is a
-// granted write, so a host /dev left in place hands the target the machine's device nodes
-// under a report saying the filesystem layer was enforced.
+// bwrap builds plus whatever this run's own grants added, for verifyFreshTmp's reason and
+// with the same consequence: /dev is a granted write, so a host /dev left in place hands
+// the target the machine's device nodes under a report saying the filesystem layer was
+// enforced.
 //
 // statfs cannot answer this one. The host's /dev is a devtmpfs, which reports
 // TMPFS_MAGIC, so verifyFreshTmp's single syscall accepts the host's directory as
 // readily as bwrap's. The directory listing is the evidence that does distinguish them.
-func verifyDevMount() error {
+func verifyDevMount(granted []string) error {
 	entries, err := os.ReadDir(sandboxDev)
 	if err != nil {
 		return fmt.Errorf("launcher: reading %s to verify the sandbox's device mount: %w", sandboxDev, err)
@@ -139,11 +140,7 @@ func verifyDevMount() error {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	var devSt unix.Stat_t
-	if err := unix.Lstat(sandboxDev, &devSt); err != nil {
-		return fmt.Errorf("launcher: lstat of %s to verify the sandbox's device mount: %w", sandboxDev, err)
-	}
-	if extra := foreignDevNodes(names, ownMountUnderDev(devSt.Dev)); len(extra) > 0 {
+	if extra := foreignDevNodes(names, granted); len(extra) > 0 {
 		// Named and capped for verifyPidNamespace's reason: a host /dev holds hundreds, and
 		// an operator needs enough to tell a shimmed bwrap from a bento bug.
 		return fmt.Errorf("launcher: %s is not the device directory bwrap builds; it holds %d name(s) bwrap did not create, including %s, so the target holds a granted write over the host's device nodes",
@@ -153,15 +150,26 @@ func verifyDevMount() error {
 }
 
 // foreignDevNodes names every entry in a /dev listing that neither bwrap's --dev created
-// nor bento's own argv mounted. ownMount decides the second case; see ownMountUnderDev.
+// nor this run's own grants asked for. granted is Config.GrantedDevNames: the top-level
+// names internal/linux derived from the run's resolved read and write grants.
+//
+// The grant set is what makes the allowlist exact. A policy naming a path inside /dev is
+// permitted - internal/linux's checkGrantNotManagedMount refuses only the whole root - and
+// the grant binds after baseFlags, so bwrap carves the mount point into the sandbox's own
+// /dev and a run reading /dev/dri or /dev/net/tun legitimately puts a name there that
+// --dev never creates. Before Config carried the grants this was answered by asking the
+// kernel whether the name was a mount of its own, which could not tell bento's grant bind
+// from a shim's: a "--dev-bind /dev/mem /dev/mem" appended to the argv is a mount too, and
+// so is every entry of a host /dev assembled from per-node binds the way a rootless
+// container runtime builds one. Comparing against what was granted refuses both.
 //
 // Kept separate from foreignPids rather than sharing a filter: the two lists answer
 // different questions, and verifyPidNamespace is one of two legs holding the pid-namespace
 // claim up (see internal/linux's sessionProof).
-func foreignDevNodes(names []string, ownMount func(string) bool) []string {
+func foreignDevNodes(names, granted []string) []string {
 	var extra []string
 	for _, name := range names {
-		if bwrapDevNodes[name] || ownMount(name) {
+		if bwrapDevNodes[name] || slices.Contains(granted, name) {
 			continue
 		}
 		extra = append(extra, name)
@@ -169,48 +177,92 @@ func foreignDevNodes(names []string, ownMount func(string) bool) []string {
 	return extra
 }
 
-// ownMountUnderDev reports whether a name under /dev is a mount of its own rather than an
-// entry of the device directory itself, given /dev's own st_dev.
+// verifyShields is the launcher's own check that the deny-list shields this run applied
+// are really in place, for verifyFreshTmp's reason: every shield is a bwrap argument, and
+// the PATH-resolved bwrap that would be dropping one is the same binary the host asked to
+// apply it. A shim that drops a single --ro-bind argument pair exposes that credential
+// store for the whole run under a report saying the filesystem layer was enforced, and the
+// Landlock backstop does not cover it - the backstop read-grants "/", so no read fence has
+// one.
 //
-// This is what keeps the allowlist from refusing a legitimate run. A grant naming a path
-// inside /dev is permitted - internal/linux's checkGrantNotManagedMount refuses only the
-// whole root, and the grant binds after baseFlags, so bwrap carves the mount point into
-// the sandbox's own /dev - which means a policy reading /dev/dri or /dev/net/tun puts a
-// name there that bwrap's --dev never creates. Config carries the write grants but not the
-// read ones, so the set cannot be assembled from configuration; the kernel answers it
-// instead, and a mount is exactly what bento's argv can add and what a host device node
-// is not.
+// Only the shapes are checked, not the deny rules: hidden means nothing readable is left
+// at the path, read-only means writes are rejected there. internal/linux decides which is
+// which off the same shieldMount that built the argv (see shieldChecks), so a shield whose
+// shape depends on what is on the host - a path that is a directory on one machine and a
+// file on another - is compared against what was actually mounted for it.
 //
-// The residual, and it is the honest cost of having no grant set here: mount-ness cannot
-// tell bento's own grant bind from a shim's. A --dev-bind /dev/mem /dev/mem appended to
-// the argv is a mount too, so it passes, while the host's /dev mounted whole is still
-// refused - its plain device nodes (kvm, mem, sda, the tty and loop sets) share /dev's
-// st_dev. So this fence catches the wholesale substitution and not single-node injection.
-// A leaked host /dev's own submounts, mqueue and hugepages, pass for the same reason.
-// What would close it is comparing against what the run actually granted, which means the
-// grant set reaching Config from internal/linux.
-//
-// A grant is usually nested - /dev/net/tun, /dev/dri/card0, /dev/snd/pcmC0D0p - and bwrap
-// creates the intermediate directories as plain entries of /dev's tmpfs, so only the leaf
-// is a mount. The top-level name is therefore accepted when any mount sits beneath it. A
-// leaked host /dev's own plain directories (disk, block, char, input) hold only symlinks
-// and nodes on /dev's st_dev, so they stay foreign.
-func ownMountUnderDev(devFS uint64) func(string) bool {
-	return func(name string) bool {
-		found := false
-		// A path bento cannot inspect is not one it may vouch for, so a walk error counts
-		// for nothing and the walk goes on, in case a sibling is the mount.
-		_ = filepath.WalkDir(sandboxDev+"/"+name, func(path string, d fs.DirEntry, walkErr error) error {
-			var st unix.Stat_t
-			if walkErr == nil && unix.Lstat(path, &st) == nil && st.Dev != devFS {
-				found = true
-				return fs.SkipAll
-			}
-			return nil
-		})
-		return found
+// A path that is absent is not a failure: a shield over a path bwrap had no mount point to
+// create, or one the run's own grants never made reachable, leaves nothing there, and
+// nothing there is the strongest form of hidden.
+func verifyShields(hidden, readOnly []string) error {
+	for _, path := range hidden {
+		empty, err := shieldHidden(path)
+		if err != nil {
+			return err
+		}
+		if !empty {
+			return fmt.Errorf("launcher: %s is not the empty stand-in this run's deny-list shielded it with; the host's own content is readable there, so the target holds an ungranted read of a path bento reported as hidden", path)
+		}
 	}
+	for _, path := range readOnly {
+		writable, err := shieldWritable(path)
+		if err != nil {
+			return err
+		}
+		if writable {
+			return fmt.Errorf("launcher: %s is on a writable mount, and this run's deny-list shielded it read-only; the target can rewrite a path bento reported as protected", path)
+		}
+	}
+	return nil
 }
+
+// shieldHidden reports whether nothing of the host's own content is left at a hidden
+// shield's path. The two mounts that hide one are a tmpfs over a directory and an empty
+// read-only bind over a file, so an empty listing and a zero-length file are what "hidden"
+// looks like from in here; a populated directory or a non-empty file is the real thing
+// showing through.
+//
+// Both are read through the ordinary filesystem calls rather than statfs, because statfs
+// cannot tell bwrap's tmpfs from the host's /tmp (verifyFreshTmp's own problem) and says
+// nothing at all about a bind of the real file.
+func shieldHidden(path string) (bool, error) {
+	st, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("launcher: stat of %s to verify the deny-list shield over it: %w", path, err)
+	}
+	if !st.IsDir() {
+		return st.Size() == 0, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("launcher: reading %s to verify the deny-list shield over it: %w", path, err)
+	}
+	return len(entries) == 0, nil
+}
+
+// shieldWritable reports whether a read-only shield's path sits on a mount that still
+// accepts writes. The mount flags are the kernel's own answer and the only one that holds
+// for a path a write grant covers: the sandbox root is remounted read-only, so a path
+// outside every write grant reads read-only whether or not its shield survived, and the
+// paths where the shield is the only thing standing are exactly the ones inside a grant.
+func shieldWritable(path string) (bool, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("launcher: statfs of %s to verify the deny-list shield over it: %w", path, err)
+	}
+	return !isReadOnlyMount(int64(st.Flags)), nil
+}
+
+// isReadOnlyMount reports whether statfs mount flags carry ST_RDONLY. Split from the
+// syscall for isTmpfs' reason: a test cannot mount anything read-only on a host that
+// restricts unprivileged user namespaces, so the verdict is exercised here instead.
+func isReadOnlyMount(flags int64) bool { return flags&unix.ST_RDONLY != 0 }
 
 // procSelfStatus carries the caller's capability sets, among much else. It is read from
 // inside the sandbox for verifyEmptyNetns' reason: the kernel's own answer is the one leg

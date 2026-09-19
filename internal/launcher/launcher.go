@@ -92,6 +92,23 @@ type Config struct {
 	// there; DegradedConfig carries no counterpart field and EncodeLaunchDegraded no
 	// flag, and refuseNetworkStdio refuses with that stated.
 	AllowNetworkStdio bool
+	// HiddenShields and ReadOnlyShields are the deny-list shields the host's argv
+	// applied, split by the shape each one has inside the sandbox: hidden means nothing
+	// readable is left at the path (a tmpfs over a directory, an empty file over a file),
+	// read-only means the host's content with writes rejected. verifyShields confirms
+	// them from in here, which is the only place a shield argument dropped from the argv
+	// on its way to bwrap shows up - the host side would report the layer enforced.
+	//
+	// They are carried as the SHAPE rather than as the deny rules because that is what
+	// the launcher can measure; internal/linux derives them from the same shieldMount
+	// that built the argv, so the two cannot disagree about which shape a path got.
+	HiddenShields   []string
+	ReadOnlyShields []string
+	// GrantedDevNames are the top-level names under /dev this run's own grants put there.
+	// bwrap's --dev builds that directory from nothing, so verifyDevMount can treat every
+	// other name as foreign - which it cannot do without this, because a policy may grant
+	// a path inside /dev and the grant binds after --dev.
+	GrantedDevNames []string
 	// Target is the absolute command to run: interpreter, script, and args.
 	Target []string
 }
@@ -157,7 +174,13 @@ func Run(cfg Config) (int, error) {
 	}
 	// The other half of the filesystem assumption, and the one statfs cannot settle
 	// because a host devtmpfs answers TMPFS_MAGIC too. See verifyDevMount.
-	if err := verifyDevMount(); err != nil {
+	if err := verifyDevMount(cfg.GrantedDevNames); err != nil {
+		return 0, err
+	}
+	// And the deny-list half, which nothing else covers at all: the Landlock backstop
+	// read-grants "/", so a dropped shield argument leaves no second layer. See
+	// verifyShields.
+	if err := verifyShields(cfg.HiddenShields, cfg.ReadOnlyShields); err != nil {
 		return 0, err
 	}
 	// And the process half, which nothing backstops at all: Landlock has no

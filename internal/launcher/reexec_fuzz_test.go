@@ -29,11 +29,11 @@ func fuzzList(s string) []string {
 // makes StrictBlock imply Block, and execModeString panics on the out-of-contract
 // pair rather than encode it as the weakest mode.
 func FuzzLaunchCodecRoundTrip(f *testing.F) {
-	f.Add("/proxy.sock", 4, 3, 5, "/tmp\n/w/out", "/bin/sh\n/w/run.sh\n-x", uint8(0b11111))
-	f.Add("", 0, 0, 0, "", "/bin/echo\n--not-a-launch-flag\n-n", uint8(0))
-	f.Add("--socket", 0, 0, 0, "--rw\n\n--", "--\n--exec\nall", uint8(0b00011))
+	f.Add("/proxy.sock", 4, 3, 5, "/tmp\n/w/out", "/h/.ssh\n/h/.aws", "/h/.gitconfig", "net\ndri", "/bin/sh\n/w/run.sh\n-x", uint8(0b11111))
+	f.Add("", 0, 0, 0, "", "", "", "", "/bin/echo\n--not-a-launch-flag\n-n", uint8(0))
+	f.Add("--socket", 0, 0, 0, "--rw\n\n--", "--shield-ro", "--dev-grant", "--shield-hidden", "--\n--exec\nall", uint8(0b00011))
 
-	f.Fuzz(func(t *testing.T, socket string, livenessFD, observeFD, appliedFD int, writable, target string, bits uint8) {
+	f.Fuzz(func(t *testing.T, socket string, livenessFD, observeFD, appliedFD int, writable, hidden, readOnly, devNames, target string, bits uint8) {
 		cfg := Config{
 			Socket:            socket,
 			BridgeLivenessFD:  livenessFD,
@@ -44,6 +44,9 @@ func FuzzLaunchCodecRoundTrip(f *testing.F) {
 			ObserveFD:         observeFD,
 			AppliedFD:         appliedFD,
 			Writable:          fuzzList(writable),
+			HiddenShields:     fuzzList(hidden),
+			ReadOnlyShields:   fuzzList(readOnly),
+			GrantedDevNames:   fuzzList(devNames),
 			Target:            fuzzList(target),
 		}
 		got, err := DecodeLaunch(EncodeLaunch(cfg))
@@ -69,6 +72,15 @@ func FuzzLaunchCodecRoundTrip(f *testing.F) {
 		// to the nil it was handed.
 		if !slices.Equal(got.Writable, cfg.Writable) || !slices.Equal(got.Target, cfg.Target) {
 			t.Fatalf("paths did not round-trip\n got %+v\nwant %+v", got, cfg)
+		}
+		// The shields and the /dev names are what the in-sandbox verifications compare
+		// against, so one that arrives short reports a sandbox as correct that is not, and
+		// one that arrives long refuses a run nothing is wrong with. Four repeated flags
+		// now share the namespace --rw was alone in.
+		if !slices.Equal(got.HiddenShields, cfg.HiddenShields) ||
+			!slices.Equal(got.ReadOnlyShields, cfg.ReadOnlyShields) ||
+			!slices.Equal(got.GrantedDevNames, cfg.GrantedDevNames) {
+			t.Fatalf("the grant set did not round-trip\n got %+v\nwant %+v", got, cfg)
 		}
 	})
 }

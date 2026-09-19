@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -112,13 +113,12 @@ func TestRunRefusesTheHostsPidNamespace(t *testing.T) {
 // showing through a recursive bind - and /dev is a granted write, so those nodes are
 // writable too. The names are real entries from an ordinary host's /dev.
 func TestForeignDevNodesNamesNodesBwrapDidNotCreate(t *testing.T) {
-	noMounts := func(string) bool { return false }
 	host := []string{"null", "zero", "kvm", "pts", "mem", "shm", "sda", "tty", "net"}
-	if got := foreignDevNodes(host, noMounts); !slices.Equal(got, []string{"kvm", "mem", "sda", "net"}) {
+	if got := foreignDevNodes(host, nil); !slices.Equal(got, []string{"kvm", "mem", "sda", "net"}) {
 		t.Fatalf("foreignDevNodes = %v, want the host's own nodes; a stripped --dev would go unnoticed", got)
 	}
 	bwrapDev := []string{"core", "fd", "full", "null", "ptmx", "pts", "random", "shm", "stderr", "stdin", "stdout", "tty", "urandom", "zero"}
-	if got := foreignDevNodes(bwrapDev, noMounts); len(got) != 0 {
+	if got := foreignDevNodes(bwrapDev, nil); len(got) != 0 {
 		t.Errorf("foreignDevNodes = %v, want none: this is exactly what bwrap's --dev builds", got)
 	}
 }
@@ -126,13 +126,16 @@ func TestForeignDevNodesNamesNodesBwrapDidNotCreate(t *testing.T) {
 // A policy may grant a path inside /dev - internal/linux's checkGrantNotManagedMount
 // refuses only the whole root - and bwrap carves that bind into the sandbox's own /dev, so
 // the name is one --dev never creates. Refusing it would fail a legitimate run with a
-// message blaming a shimmed bwrap, and a host device node showing through is not a mount,
-// which is what tells the two apart.
+// message blaming a shimmed bwrap, and the run's own grant set is what tells the two apart.
+//
+// The names this is handed are Config.GrantedDevNames, which the host derived from the
+// resolved grants; "mem" here is the shim's injected node and stays foreign precisely
+// because no grant named it. That is the half mount-ness could never answer: an injected
+// --dev-bind is a mount exactly as a grant's bind is.
 func TestForeignDevNodesAcceptsAGrantBentoMounted(t *testing.T) {
-	granted := map[string]bool{"dri": true, "net": true}
-	names := []string{"null", "dri", "net", "kvm", "sda"}
-	if got := foreignDevNodes(names, func(n string) bool { return granted[n] }); !slices.Equal(got, []string{"kvm", "sda"}) {
-		t.Fatalf("foreignDevNodes = %v, want only the host's own nodes: a granted /dev/dri run must not be refused", got)
+	names := []string{"null", "dri", "net", "kvm", "sda", "mem"}
+	if got := foreignDevNodes(names, []string{"dri", "net"}); !slices.Equal(got, []string{"kvm", "sda", "mem"}) {
+		t.Fatalf("foreignDevNodes = %v, want only the names no grant reached: a granted /dev/dri run must not be refused, and an injected /dev/mem must not be let past", got)
 	}
 }
 
@@ -164,7 +167,7 @@ func TestRunRefusesTheHostsDev(t *testing.T) {
 // passes just as well with the allowlist short of every name a policy can add.
 func TestRunAcceptsAGrantInsideDev(t *testing.T) {
 	if os.Getenv(sentinelVerifyRun) != "" {
-		if _, err := Run(Config{Target: []string{"/bin/true"}}); err != nil {
+		if _, err := Run(Config{GrantedDevNames: []string{"net"}, Target: []string{"/bin/true"}}); err != nil {
 			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
 			os.Exit(1)
 		}
@@ -175,6 +178,37 @@ func TestRunAcceptsAGrantInsideDev(t *testing.T) {
 	inSandbox(t, cmd, "devgrant")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Run refused a sandbox carrying a granted path inside /dev: %v\n%s", err, out)
+	}
+}
+
+// The residual the grant set closes, and the reason it is on Config at all: a shim that
+// APPENDS a device bind to bwrap's argv leaves a /dev holding one extra name, mounted
+// exactly as a legitimate grant's bind is. Against a mount test the two are the same
+// thing; against the run's grant set the injected one is a name nobody granted.
+//
+// The same sandbox as TestRunAcceptsAGrantInsideDev, and Run is handed the same shape of
+// Config - a grant on /dev/net/tun - so what differs between the two is only which name is
+// there.
+func TestRunRefusesADeviceNodeNoGrantNamed(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{GrantedDevNames: []string{"net"}, Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "devinject")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded with a device node no grant named:\n%s", out)
+	}
+	if !strings.Contains(string(out), "is not the device directory bwrap builds") {
+		t.Errorf("Run failed without the device-mount refusal: %q", out)
+	}
+	if !strings.Contains(string(out), "mem") {
+		t.Errorf("the refusal did not name the injected node: %q", out)
 	}
 }
 
@@ -248,5 +282,107 @@ func TestStrayChildVerdictTurnsOnTheBridgePid(t *testing.T) {
 	}
 	if err := verifyNoStrayChild(pid); err != nil {
 		t.Errorf("the bridge this stage started itself must not be a stray child: %v", err)
+	}
+}
+
+// The deny-list shields are the one filesystem layer with no backstop: the Landlock
+// ruleset read-grants "/", so a --ro-bind argument pair dropped on the way to bwrap leaves
+// the credential store readable for the whole run while the report says the filesystem
+// layer was enforced. From inside, an unshielded store looks like host content where the
+// empty stand-in should be.
+func TestShieldHiddenTellsTheStandInFromTheRealThing(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := shieldHidden(store); err != nil || !got {
+		t.Errorf("shieldHidden(empty dir) = %v, %v; want true: a tmpfs over a directory is what hides one", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "id_rsa"), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := shieldHidden(store); err != nil || got {
+		t.Errorf("shieldHidden(populated dir) = %v, %v; want false: this is the store showing through a dropped shield", got, err)
+	}
+
+	file := filepath.Join(dir, "netrc")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := shieldHidden(file); err != nil || !got {
+		t.Errorf("shieldHidden(empty file) = %v, %v; want true: an empty read-only bind is what hides a file", got, err)
+	}
+	if err := os.WriteFile(file, []byte("machine x login y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := shieldHidden(file); err != nil || got {
+		t.Errorf("shieldHidden(nonempty file) = %v, %v; want false", got, err)
+	}
+
+	// Absent is the strongest hiding there is, and it is a state bento reaches: a shield
+	// over a path bwrap had no mount point to create leaves nothing behind.
+	if got, err := shieldHidden(filepath.Join(dir, "never")); err != nil || !got {
+		t.Errorf("shieldHidden(absent) = %v, %v; want true", got, err)
+	}
+}
+
+// isReadOnlyMount's verdict, unit-tested for isTmpfs' reason: a test cannot mount anything
+// read-only on a host that restricts unprivileged user namespaces.
+func TestIsReadOnlyMountReadsTheFlag(t *testing.T) {
+	if isReadOnlyMount(0) {
+		t.Error("a mount with no flags is writable; calling it read-only would vouch for an unshielded path")
+	}
+	if !isReadOnlyMount(unix.ST_RDONLY | unix.ST_NOSUID) {
+		t.Error("ST_RDONLY alongside another flag is still read-only")
+	}
+}
+
+// The checks are worth nothing if Run stops calling them, so this is the wiring: a real
+// sandbox, and a Config naming a shield the sandbox does not carry. /etc stands in for a
+// credential store whose --ro-bind a shim filtered out - it is populated in every sandbox
+// inSandbox builds, which is exactly what an unshielded store looks like.
+func TestRunRefusesAnUnshieldedDenyPath(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{HiddenShields: []string{"/etc"}, Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded with a deny path the sandbox never shielded:\n%s", out)
+	}
+	if !strings.Contains(string(out), "is not the empty stand-in") {
+		t.Errorf("Run failed without the shield refusal: %q", out)
+	}
+}
+
+// The read-only half, and the case that distinguishes the check from asking whether the
+// sandbox root is read-only: /tmp is the fresh writable tmpfs every run gets, so a
+// read-only shield claimed over it is a shield that is not there. Outside a write grant
+// the root remount already answers read-only, which is why the assertion has to be made
+// somewhere a grant makes the path writable.
+func TestRunRefusesAWritableReadOnlyShield(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{ReadOnlyShields: []string{"/tmp"}, Target: []string{"/bin/true"}}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Run proceeded with a read-only shield over a writable mount:\n%s", out)
+	}
+	if !strings.Contains(string(out), "is on a writable mount") {
+		t.Errorf("Run failed without the shield refusal: %q", out)
 	}
 }

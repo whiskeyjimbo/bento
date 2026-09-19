@@ -52,6 +52,14 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	if weaken == "devgrant" {
 		args = append(args, "--ro-bind", "/dev/null", "/dev/net/tun")
 	}
+	// A single device node injected into an otherwise correct /dev, which is what a shim
+	// APPENDING to the argv leaves rather than what one filtering it out does. It is a
+	// mount like a grant's, so only the run's grant set tells the two apart; /dev/mem is
+	// the node that makes the case real and /dev/null stands in for its content, since a
+	// test cannot bind the host's own /dev/mem without privilege.
+	if weaken == "devinject" {
+		args = append(args, "--ro-bind", "/dev/null", "/dev/mem")
+	}
 	// The host's own /tmp in place of the fresh one, which is what a shim filtering
 	// --tmpfs out of argv leaves behind - and it keeps /tmp writable, so the binary bind
 	// below still has somewhere to land.

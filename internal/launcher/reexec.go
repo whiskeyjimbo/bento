@@ -50,6 +50,15 @@ func EncodeLaunch(cfg Config) []string {
 	for _, w := range cfg.Writable {
 		args = append(args, "--rw", w)
 	}
+	for _, p := range cfg.HiddenShields {
+		args = append(args, "--shield-hidden", p)
+	}
+	for _, p := range cfg.ReadOnlyShields {
+		args = append(args, "--shield-ro", p)
+	}
+	for _, n := range cfg.GrantedDevNames {
+		args = append(args, "--dev-grant", n)
+	}
 	args = append(args, "--")
 	return append(args, cfg.Target...)
 }
@@ -71,6 +80,9 @@ func DecodeLaunch(args []string) (Config, error) {
 		appliedFD  int
 		livenessFD int
 		writable   stringList
+		hidden     stringList
+		readOnly   stringList
+		devGrants  stringList
 		netStdio   bool
 		recordExec bool
 	)
@@ -80,6 +92,9 @@ func DecodeLaunch(args []string) (Config, error) {
 	fs.IntVar(&observeFD, "observe-fd", 0, "")
 	fs.IntVar(&appliedFD, "applied-fd", 0, "")
 	fs.Var(&writable, "rw", "")
+	fs.Var(&hidden, "shield-hidden", "")
+	fs.Var(&readOnly, "shield-ro", "")
+	fs.Var(&devGrants, "dev-grant", "")
 	fs.BoolVar(&netStdio, "allow-network-stdio", false, "")
 	fs.BoolVar(&recordExec, "record-exec", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -98,6 +113,9 @@ func DecodeLaunch(args []string) (Config, error) {
 		ObserveFD:         observeFD,
 		AppliedFD:         appliedFD,
 		AllowNetworkStdio: netStdio,
+		HiddenShields:     hidden,
+		ReadOnlyShields:   readOnly,
+		GrantedDevNames:   devGrants,
 		RecordExec:        recordExec,
 		Target:            fs.Args(),
 	}, nil

@@ -417,6 +417,13 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	// (Both layers are still stricter on the deny-list shields, by design - a
 	// shield denies the write and that is the intent.) Deriving both from this
 	// one place keeps them in sync.
+	// The launcher's own in-sandbox checks need the run's grant set, not just the write
+	// half Landlock takes: without it verifyDevMount can only ask whether a name under
+	// /dev is a mount (which bento's grant bind and a shim's injected node both are), and
+	// nothing confirms the shields at all. Derived from the same reads/writes and the same
+	// applied rules the argv above was built from, so a shield the argv did not emit is
+	// not one the launcher demands.
+	hiddenShields, readOnlyShields := shieldChecks(sb, appliedShields)
 	block, strictBlock := execBlockFlags(execMode, seccompSupported())
 	cfg := launcher.Config{
 		Socket:            socket,
@@ -427,6 +434,9 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		ObserveFD:         observeFD,
 		AppliedFD:         appliedFD,
 		AllowNetworkStdio: proc.AllowNetworkStdio,
+		HiddenShields:     hiddenShields,
+		ReadOnlyShields:   readOnlyShields,
+		GrantedDevNames:   grantedDevNames(reads, writes),
 		// Passed on whatever the exec mode, though only exec: all can honour it: the block
 		// execveats the target over the launcher, leaving no supervisor to be the tracer.
 		// Withholding the flag there would leave the host with no section to read and no

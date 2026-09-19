@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -350,9 +351,12 @@ func redirectedPath(sb sandbox, path string) []denylist.Rule {
 // rule instead of being descended (see redirectedEntries), so no link ever costs depth and
 // no planted loop can drive this recursion. What it bounds is a deeply-nested real tree a
 // prior run could plant to spin setup, and reaching it is not a reason to stop shielding -
-// the cutoff fails closed on the subtree. Real submodule nesting is a handful deep. Kept
-// identical to internal/shield's maxWalkDepth, which walks the same host trees.
-const maxGitdirDepth = 64
+// the cutoff fails closed on the subtree. Real submodule nesting is a handful deep.
+//
+// It reads internal/shield's bound rather than repeating the number: the two walk the
+// same host trees, so one source is what keeps them identical, in the way
+// limitControllers does for the scope-limit names.
+const maxGitdirDepth = shield.MaxWalkDepth
 
 // denyArgs shields every deny-list rule that a grant could otherwise expose.
 //
@@ -781,4 +785,53 @@ func reportedOptIns(optIns []shield.OptIn) []enforce.ShieldedGrant {
 		out = append(out, g)
 	}
 	return out
+}
+
+// shieldChecks splits the shields a run applied into the two shapes the launcher can
+// observe from inside the sandbox: hidden (nothing readable at the path) and read-only
+// (the host's content, writes rejected). It is what lets internal/launcher's
+// verifyShields compare the mounts it finds against what this run actually shielded,
+// rather than trusting that the argv reached bwrap intact.
+//
+// The shape is read off shieldMount's own output rather than re-derived from the rule:
+// shieldMount picks by what is on disk, not by the declared r.Dir, so a second reading of
+// the rule here would disagree with the mount for exactly the paths that differ between
+// hosts - which is the drift the launcher-side check exists to catch.
+func shieldChecks(sb sandbox, rules []denylist.Rule) (hidden, readOnly []string) {
+	for _, r := range rules {
+		m := shieldMount(r, sb)
+		// A tmpfs hides a directory; an empty-file bind hides a file. Anything else is a
+		// bind of the path onto itself, which is the read-only shape.
+		if m[0] == "--tmpfs" || m[1] == sb.emptyFile {
+			hidden = append(hidden, r.Path)
+			continue
+		}
+		readOnly = append(readOnly, r.Path)
+	}
+	return hidden, readOnly
+}
+
+// grantedDevNames are the top-level names under /dev that this run's own grants make
+// bwrap mount into the sandbox's device directory. bwrap's --dev builds that directory
+// from nothing, so every other name in it is foreign; a policy may still grant a path
+// inside /dev (checkGrantNotManagedMount refuses only the whole root), and those grants
+// bind after baseFlags, putting names there that --dev never created.
+//
+// Top-level, because a nested grant (/dev/net/tun) has bwrap create the intermediate
+// directories, and the listing the launcher checks is /dev's own. That widens a grant of
+// /dev/net/tun to accepting the name "net", which is the cost of checking a listing; what
+// it buys is that a name no grant reaches at all is foreign again, however it was mounted.
+func grantedDevNames(reads, writes []string) []string {
+	var names []string
+	for _, p := range append(append([]string{}, reads...), writes...) {
+		rest, ok := strings.CutPrefix(p, "/dev/")
+		if !ok {
+			continue
+		}
+		top, _, _ := strings.Cut(rest, "/")
+		if top != "" && !slices.Contains(names, top) {
+			names = append(names, top)
+		}
+	}
+	return names
 }

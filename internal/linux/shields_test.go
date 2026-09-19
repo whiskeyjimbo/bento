@@ -12,6 +12,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -1035,16 +1036,20 @@ func TestGitDirShieldsFailsClosedOnUnreadableWorktrees(t *testing.T) {
 // a bound on the walk, not a licence to drop what it did not reach: the cutoff shields the
 // truncation point read-only, exactly as the unreadable-directory branch does.
 //
-// This is what pins maxGitdirDepth to a number: the rule lands at the path the bound picks
-// out, so a different bound puts it somewhere else and this fails.
+// This is what pins maxGitdirDepth to a number, and it is spelled shield.MaxWalkDepth
+// rather than maxGitdirDepth so it also pins the two bounds together: the rule lands at the
+// path the bound picks out, so a maxGitdirDepth that stopped reading the shield walk's
+// constant would cut somewhere else and this fails. That is the whole of the parity claim
+// shields.go:354 and internal/shield/rules.go make - measured here, not asserted by
+// comparing the two names, which after the shared source would hold by construction.
 func TestGitDirShieldsFailsClosedAtTheDepthCutoff(t *testing.T) {
 	root := t.TempDir()
 	deep := filepath.Join(root, ".git", "modules")
 	// One level past the last the walk descends into, which is where the cutoff bites.
 	cutoff := ""
-	for i := 0; i <= maxGitdirDepth; i++ {
+	for i := 0; i <= shield.MaxWalkDepth; i++ {
 		deep = filepath.Join(deep, "d")
-		if i == maxGitdirDepth {
+		if i == shield.MaxWalkDepth {
 			cutoff = deep
 		}
 	}
@@ -1450,4 +1455,88 @@ func TestReportedShieldKindMatchesTheMount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every shield the argv applies must reach the launcher as something it can check, or the
+// in-sandbox verification vouches for a set smaller than the one bwrap was asked for and a
+// dropped --ro-bind goes unnoticed (internal/launcher's verifyShields).
+//
+// The expected set is read back out of the SHIELD ARGUMENTS this same argv carries, not
+// recomputed by calling shieldChecks again: the claim is that the two halves of one argv
+// agree, and asking the same function twice would hold whatever it answered.
+func TestCompilePassesEveryShieldToTheLauncher(t *testing.T) {
+	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa", "/home/u/.gitconfig", "/home/u/proj/src")
+	args, _, err := compile(&policy.Policy{
+		Entrypoint: "/home/u/proj/src/run.py",
+		Read:       []string{"/home/u"},
+		Write:      []string{"/home/u/proj"},
+	}, enforce.Process{}, sb)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantHidden, wantReadOnly := map[string]bool{}, map[string]bool{}
+	for i := 0; i+1 < len(args); i++ {
+		switch {
+		case args[i] == "--tmpfs":
+			wantHidden[args[i+1]] = true
+		case args[i] == "--ro-bind" && args[i+1] == sb.emptyFile:
+			wantHidden[args[i+2]] = true
+		case args[i] == "--ro-bind" && i+2 < len(args) && args[i+1] == args[i+2]:
+			// A self-bind is the read-only shield's shape, and also the entrypoint's and
+			// the interpreter's. Only the ones the launcher was told about are asserted
+			// below; what this set is for is catching a shield that reached neither.
+			wantReadOnly[args[i+1]] = true
+		}
+	}
+	gotHidden, gotReadOnly := flagValues(args, "--shield-hidden"), flagValues(args, "--shield-ro")
+
+	if len(gotHidden) == 0 {
+		t.Fatal("no --shield-hidden reached the launcher; this policy shields ~/.ssh, so verifyShields would check nothing")
+	}
+	for _, p := range gotHidden {
+		if !wantHidden[p] {
+			t.Errorf("the launcher is told %s is hidden, but the argv does not hide it: the check would refuse a correct sandbox", p)
+		}
+	}
+	for _, p := range gotReadOnly {
+		if !wantReadOnly[p] {
+			t.Errorf("the launcher is told %s is read-only, but the argv does not bind it so", p)
+		}
+	}
+	// The reverse direction, restricted to the home the shields live under: the argv also
+	// carries the runtime scratch mounts (--tmpfs /tmp, --dev /dev), which are pseudoFSFlags
+	// rather than shields and have verifications of their own.
+	for p := range wantHidden {
+		if strings.HasPrefix(p, "/home/u/") && !containsStr(gotHidden, p) {
+			t.Errorf("the argv hides %s and the launcher was not told, so a dropped shield there is invisible from inside", p)
+		}
+	}
+	if !containsStr(gotHidden, "/home/u/.ssh") {
+		t.Errorf("~/.ssh is the shield this policy exists to test and it did not reach the launcher; got %v", gotHidden)
+	}
+}
+
+// A policy granting a path inside /dev has to reach the launcher as the top-level name,
+// or verifyDevMount refuses the run it was built for; a path elsewhere must not, or the
+// allowlist widens to a name no grant reached.
+func TestGrantedDevNamesCarriesOnlyTheDevGrants(t *testing.T) {
+	got := grantedDevNames([]string{"/dev/net/tun", "/home/u", "/devil"}, []string{"/dev/dri", "/dev/net/tun2"})
+	if !slices.Equal(got, []string{"net", "dri"}) {
+		t.Errorf("grantedDevNames = %v, want [net dri]: the nested grant's top-level name once each, and nothing outside /dev", got)
+	}
+	if len(grantedDevNames([]string{"/dev"}, nil)) != 0 {
+		t.Error("a grant of /dev itself names no entry; checkGrantNotManagedMount refuses it anyway, and widening the allowlist on it would accept every host node")
+	}
+}
+
+// flagValues collects the values of one repeated flag out of an emitted argv.
+func flagValues(args []string, flag string) []string {
+	var out []string
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
 }
