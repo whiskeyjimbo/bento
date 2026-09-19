@@ -340,6 +340,19 @@ path from any other package, so it does not try: keep secrets out of derivations
 The same reasoning applies to the read-only base - a credential someone parked in
 `/usr` is readable too.
 
+**NAT64 discovery is a snapshot.** The proxy learns the host's DNS64 prefixes once,
+before it accepts its first connection, and the guard reads that answer for the rest
+of the run. A run that starts on a network with no DNS64 and later joins one - a
+Wi-Fi change, a VPN coming up - keeps the old answer: the Go resolver follows the new
+network, so an allowlisted name can now resolve to a synthesis wrapping an RFC1918
+address, and the guard has nothing left that says the site runs DNS64, so it passes
+that address as ordinary public IPv6. The window is the remainder of a single run,
+and it needs a network change mid-run plus a name that resolves into the new
+network's synthesis. Re-running discovery would cost the guard its lock-free read of
+a value fixed before the accept loop, which is why the snapshot stands. The opposite
+order is already safe: discovery that saw a prefix, or that could not answer at all,
+fails closed for the whole run.
+
 **Datagram `sendmsg` to a socket.** Putting sockets on the consent surface via a
 `connect()` hook is a usability win, not a control: a datagram `sendmsg` skips
 `connect()` entirely. Runtime safety here comes from the filesystem `/run`

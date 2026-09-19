@@ -399,27 +399,35 @@ func TestNAT64BlackoutsCountTheConnectionsTheRunActuallyLost(t *testing.T) {
 		addrs      []string
 		wantTunnel bool
 		want       int
+		// wantDecision is what the observer must be told, which is a separate question
+		// from the count: a blackout and a name that resolved into RFC1918 on its own
+		// bytes are both refused by the same guard arm, and only the decision says which
+		// remedy the operator has - fix DNS, or name the address as a literal rule.
+		wantDecision Decision
 	}{
 		// Reachable only over IPv6, and no transition prefix decodes it: the run lost the
 		// destination for nothing but the failed lookup.
-		{"IPv6-only host", []string{"2606:4700::1111"}, false, 1},
+		{"IPv6-only host", []string{"2606:4700::1111"}, false, 1, GuardBlockedNAT64},
 		// The case nat64.go's own comment calls survivable. Nothing was lost, so nothing
 		// is disclosed - degrading here would cost the exit code of a run whose declared
 		// egress all went through.
-		{"dual-stack host falls back to its A record", []string{"2606:4700::1111", "93.184.216.34"}, true, 0},
+		{"dual-stack host falls back to its A record", []string{"2606:4700::1111", "93.184.216.34"}, true, 0, Allowed},
 		// One destination lost, not one per address.
-		{"several undecodable AAAAs", []string{"2606:4700::1111", "2001:db8::2", "2001:db8::3"}, false, 1},
+		{"several undecodable AAAAs", []string{"2606:4700::1111", "2001:db8::2", "2001:db8::3"}, false, 1, GuardBlockedNAT64},
 		// Refused on its own bytes; inconclusive discovery took nothing from this run.
-		{"host resolving to RFC1918", []string{"10.0.0.5"}, false, 0},
-		{"well-known Pref64 wrapping RFC1918", []string{"64:ff9b::c0a8:101"}, false, 0},
+		{"host resolving to RFC1918", []string{"10.0.0.5"}, false, 0, GuardBlockedPrivate},
+		{"well-known Pref64 wrapping RFC1918", []string{"64:ff9b::c0a8:101"}, false, 0, GuardBlockedPrivate},
 		// Never demoted at all.
-		{"ordinary public IPv4", []string{"93.184.216.34"}, true, 0},
+		{"ordinary public IPv4", []string{"93.184.216.34"}, true, 0, Allowed},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
-				return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
-			}))
+			var decision Decision
+			p := New(egressRules,
+				WithObserver(func(d Decision, _, _ string) { decision = d }),
+				WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+					return nil, &net.DNSError{Err: "connection refused", Name: ipv4onlyName}
+				}))
 			// Stands in for net.Dialer: it walks the name's resolved addresses in order and
 			// runs the production guardUpstream on each, so a refusal on one candidate and a
 			// connect on the next is the same sequence a dual-stack dial really takes.
@@ -452,6 +460,9 @@ func TestNAT64BlackoutsCountTheConnectionsTheRunActuallyLost(t *testing.T) {
 			stop()
 			if got := p.NAT64Blackouts(); got != c.want {
 				t.Errorf("NAT64Blackouts() = %d, want %d", got, c.want)
+			}
+			if decision != c.wantDecision {
+				t.Errorf("observer reported %q, want %q", decision, c.wantDecision)
 			}
 		})
 	}
@@ -489,5 +500,41 @@ func TestNAT64BlackoutIsNotNotedWhenALiteralGrantReachesIt(t *testing.T) {
 	}
 	if refusals.nat64Blackout.Load() {
 		t.Error("a blackout was noted for an address the run reached")
+	}
+}
+
+// The site-prefix screen is decided once, at Serve start, and never revisited: p.nat64 is
+// written before the accept loop so the guard reads it without a lock. A host that joins a
+// DNS64/NAT64 network afterwards - a Wi-Fi change, a VPN coming up - moves the Go
+// resolver's answers and not this, so a synthesis the new network would produce passes the
+// guard as ordinary public IPv6 for the rest of the run.
+//
+// This pins that limit rather than the fix, because it is what docs/threat-model.md
+// discloses under "NAT64 discovery is a snapshot": a claim about behaviour in another file
+// that would otherwise drift with nothing failing. The same address is run against both
+// conclusions, so the only difference is what discovery saw.
+func TestNAT64SitePrefixScreenIsFixedAtDiscovery(t *testing.T) {
+	// A /96 synthesis of 10.0.0.5 under a site prefix: dangerous only to a proxy that
+	// knows the site runs DNS64.
+	target := net.JoinHostPort("2001:db8:64::a00:5", "443")
+	screen := func(discovered []net.IP) error {
+		p := New(egressRules, WithNAT64Discovery(func(context.Context) ([]net.IP, error) {
+			if len(discovered) == 0 {
+				return nil, &net.DNSError{Err: "no such host", Name: ipv4onlyName, IsNotFound: true}
+			}
+			return discovered, nil
+		}))
+		p.discoverNAT64(t.Context())
+		var refusals dialRefusals
+		return p.guardUpstream(withDialRefusals(t.Context(), &refusals), "tcp", target, nil)
+	}
+
+	if err := screen(nil); err != nil {
+		t.Errorf("a run whose discovery concluded no DNS64 refused %s: %v", target, err)
+	}
+	// The synthesized ipv4only.arpa answer the same site would give: 192.0.0.170 wrapped
+	// at /96, which is what makes the prefix known.
+	if err := screen([]net.IP{net.ParseIP("2001:db8:64::c000:aa")}); err == nil {
+		t.Errorf("a run that discovered the site prefix still reached %s, which wraps 10.0.0.5", target)
 	}
 }
