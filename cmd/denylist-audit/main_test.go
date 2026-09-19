@@ -633,7 +633,6 @@ var uncoveredGlobs = map[string]string{
 	".*.bak":       "generic backup copy of an arbitrary dotfile, same class as .*~",
 	".*_history_*": "rotated history variants; the rotation suffix is not part of any name bento can shield",
 	".Xdefaults-*": "per-host xrdb variant; the base .Xdefaults is shielded DenyWrite but the hostname suffix puts every variant outside the pattern",
-	".sendgmail.*": "no home-root sendgmail file is shielded; .config/sendgmail is the only sendgmail store in the list, and it is not what this pattern names",
 }
 
 // The glob half of the audit's report is prose: each entry in audit.ReviewedGlobs says a

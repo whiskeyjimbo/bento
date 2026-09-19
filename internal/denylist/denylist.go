@@ -675,6 +675,7 @@ func Home(home string) []Rule {
 		".mcabberrc",             // mcabber XMPP config, holds the account password
 		".pinerc",                // pine/alpine config, which carries the account password inline
 		".pinercex",              // its per-host companion
+		".sendgmail.json",        // sendgmail's default credential file: the Gmail app password
 		".config/mailtransports", // Akonadi SMTP transports, incl. stored passwords
 		"wallet.dat",             // Bitcoin Core wallet at the home root: the spending keys
 
