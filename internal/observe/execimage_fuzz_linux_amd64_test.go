@@ -4,6 +4,8 @@ package observe
 
 import (
 	"bytes"
+	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -53,6 +55,48 @@ func refShebangImage(head []byte) (image string, complete bool) {
 	return name, true
 }
 
+// refELFInterp restates the PT_INTERP decode over the RAW bytes: the ELF64 little-endian
+// program header table walked by hand, rather than through debug/elf as execImage does.
+// Reading the same field by a different route is the whole point - a reference that called
+// debug/elf back would agree with the implementation whatever either of them did.
+//
+// known is false where this declines to answer: anything that is not ELF64 little-endian,
+// or a header table that runs off the end. The caller gates on debug/elf having parsed the
+// file at all, which is execImage's own precondition for reaching this branch.
+func refELFInterp(file []byte) (name string, complete, known bool) {
+	const ehdrSize = 64
+	if len(file) < ehdrSize || string(file[:4]) != "\x7fELF" || file[4] != 2 || file[5] != 1 {
+		return "", false, false
+	}
+	phoff := binary.LittleEndian.Uint64(file[32:])
+	phentsize := uint64(binary.LittleEndian.Uint16(file[54:]))
+	phnum := uint64(binary.LittleEndian.Uint16(file[56:]))
+	if phentsize < 56 || phoff+phentsize*phnum > uint64(len(file)) {
+		return "", false, false
+	}
+	for i := range phnum {
+		ph := file[phoff+i*phentsize:]
+		if binary.LittleEndian.Uint32(ph) != uint32(elf.PT_INTERP) {
+			continue
+		}
+		off := binary.LittleEndian.Uint64(ph[8:])
+		size := binary.LittleEndian.Uint64(ph[32:])
+		// The bound execImage puts on Filesz, and the short read past it: an ELF the
+		// profiled target execs is not trusted input, so neither is a loss the observer
+		// reports rather than a name it invents.
+		if size > unix.PathMax || off+size > uint64(len(file)) {
+			return "", false, true
+		}
+		interp, _, _ := strings.Cut(string(file[off:off+size]), "\x00")
+		if !filepath.IsAbs(interp) || strings.ContainsRune(interp, '\n') {
+			return "", false, true
+		}
+		return interp, true, true
+	}
+	// No PT_INTERP: a static binary, which names no image and loses nothing.
+	return "", true, true
+}
+
 // imageDecodeViolation grades one execImage answer against the bytes it decoded. It is a
 // pure function so the positive control below can hand it a wrong answer and watch it
 // object; an oracle only reachable through the code it grades cannot be shown to have
@@ -77,6 +121,20 @@ func imageDecodeViolation(file []byte, got string, ok bool) error {
 		}
 	}
 	if !bytes.HasPrefix(file, []byte("#!")) {
+		// execImage reaches PT_INTERP only for a file debug/elf parsed, and answers
+		// ("", true) for one it did not - so that is the precondition, not an answer to
+		// grade. Without it the reference would object to every ELF only one of the two
+		// parsers accepts, which is a disagreement about ELF and not about the image.
+		if _, err := elf.NewFile(bytes.NewReader(file)); err != nil {
+			return nil
+		}
+		wantInterp, wantOK, known := refELFInterp(file)
+		if !known {
+			return nil
+		}
+		if got != wantInterp || ok != wantOK {
+			return fmt.Errorf("decoded %q %v; the program headers name the loader %q %v", got, ok, wantInterp, wantOK)
+		}
 		return nil
 	}
 	head := file
@@ -254,6 +312,32 @@ func TestImageDecodeOracleRejectsAWrongAnswer(t *testing.T) {
 			}
 		})
 	}
+	// The ELF branch's own teeth, on the harm the shebang cases cannot reach: a loader the
+	// program headers name, silently dropped. The file has to be a real parseable ELF, so
+	// it is built with the helper the hand-written PT_INTERP test already uses.
+	withInterp, err := os.ReadFile(writeELFWithInterp(t, filepath.Join(t.TempDir(), "elf"), "/lib64/ld.so\x00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wrong := range []struct {
+		name string
+		got  string
+		ok   bool
+	}{
+		{"a named loader dropped silently", "", true},
+		{"a named loader reported as a loss", "", false},
+		{"a different loader than the headers name", "/lib64/ld-other.so", true},
+	} {
+		t.Run(wrong.name, func(t *testing.T) {
+			if err := imageDecodeViolation(withInterp, wrong.got, wrong.ok); err == nil {
+				t.Errorf("the oracle accepted %q %v for an ELF naming /lib64/ld.so", wrong.got, wrong.ok)
+			}
+		})
+	}
+	if err := imageDecodeViolation(withInterp, "/lib64/ld.so", true); err != nil {
+		t.Errorf("the oracle rejected the correct ELF decode: %v", err)
+	}
+
 	// And it must accept the right answer, or it objects to everything and is just as blind.
 	if err := imageDecodeViolation([]byte("#!/bin/sh -eu\n"), "/bin/sh", true); err != nil {
 		t.Errorf("the oracle rejected the correct decode: %v", err)
