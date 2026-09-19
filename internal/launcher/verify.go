@@ -302,26 +302,48 @@ func verifyNoStrayChild(bridge int) error {
 
 // ownChildren is every live child pid of this process, as the kernel reports them across
 // the process's threads.
+//
+// The calling thread's own list is read first and its absence is fatal, because that is
+// the one thread that cannot have exited: a kernel built without CONFIG_PROC_CHILDREN has
+// no such file anywhere, and tolerating that alongside the vanished-thread case would
+// return an empty list on such a host and vouch for a stage nothing had looked at.
 func ownChildren() ([]string, error) {
+	self := strconv.Itoa(unix.Gettid())
+	children, err := threadChildren(self)
+	if err != nil {
+		return nil, err
+	}
 	tasks, err := os.ReadDir(procSelfTasks)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s to verify the stage's children: %w", procSelfTasks, err)
 	}
-	var children []string
 	for _, t := range tasks {
-		// A thread that exited between the listing and the read takes its children with
-		// it (they reparent, and are then no longer this process's), so a vanished entry
-		// is not a read bento was denied.
-		data, err := os.ReadFile(filepath.Join(procSelfTasks, t.Name(), "children"))
+		if t.Name() == self {
+			continue
+		}
+		others, err := threadChildren(t.Name())
 		if err != nil {
+			// A thread that exited between the listing and the read takes its children
+			// with it (they reparent, and are then no longer this process's), so a
+			// vanished entry is not a read bento was denied. The file itself exists on
+			// this kernel - the read above proved it - so this arm is only ever that race.
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("reading the children of thread %s: %w", t.Name(), err)
+			return nil, err
 		}
-		children = append(children, strings.Fields(string(data))...)
+		children = append(children, others...)
 	}
 	return children, nil
+}
+
+// threadChildren is one thread's live children.
+func threadChildren(tid string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(procSelfTasks, tid, "children"))
+	if err != nil {
+		return nil, fmt.Errorf("reading the children of thread %s to verify the stage's: %w", tid, err)
+	}
+	return strings.Fields(string(data)), nil
 }
 
 // strayChildren names every child pid other than the one the stage started itself.

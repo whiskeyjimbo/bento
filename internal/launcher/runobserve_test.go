@@ -158,6 +158,13 @@ func runObserveChild(mode string) {
 			os.Exit(1)
 		}
 		defer func() { _ = stray.Process.Kill() }()
+		// The state Run leaves this process in before the observe dispatch: a
+		// non-dumpable process's /proc entry reparents to root, so reading its own
+		// children back is exactly what a check placed after that prctl has to do.
+		if _, _, errno := unix.Syscall(unix.SYS_PRCTL, unix.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+			fmt.Fprintln(os.Stdout, "making the stage non-dumpable:", errno)
+			os.Exit(1)
+		}
 	case "advanced-offset":
 		// More than the Scanner's 64 KiB token limit, so a report written past the
 		// offset is not merely ugly but unparseable by the host.
