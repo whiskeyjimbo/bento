@@ -125,7 +125,7 @@ func imageDecodeViolation(file []byte, got string, ok bool) error {
 		// ("", true) for one it did not - so that is the precondition, not an answer to
 		// grade. Without it the reference would object to every ELF only one of the two
 		// parsers accepts, which is a disagreement about ELF and not about the image.
-		if _, err := elf.NewFile(bytes.NewReader(file)); err != nil {
+		if !parsesAsELF(file) {
 			return nil
 		}
 		wantInterp, wantOK, known := refELFInterp(file)
@@ -342,6 +342,12 @@ func TestImageDecodeOracleRejectsAWrongAnswer(t *testing.T) {
 	if err := imageDecodeViolation([]byte("#!/bin/sh -eu\n"), "/bin/sh", true); err != nil {
 		t.Errorf("the oracle rejected the correct decode: %v", err)
 	}
+}
+
+// parsesAsELF is execImage's precondition for reaching the PT_INTERP branch at all.
+func parsesAsELF(file []byte) bool {
+	_, err := elf.NewFile(bytes.NewReader(file))
+	return err == nil
 }
 
 func fileExists(path string) bool {
