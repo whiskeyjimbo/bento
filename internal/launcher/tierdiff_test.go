@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -192,46 +193,197 @@ var tierProbes = []tierProbe{
 	},
 }
 
-// The grid's other restrictions, and why each is not a row here. Recorded next to the
-// table because that is where the next person widening it looks, and because "not
-// comparable" with no reason is the claim this repo asks for a test or a bead for. Each
-// was checked against the arms as they are built, not reasoned from the grid text.
+// The grid's thirteen restrictions as data rather than as prose, so a fourteenth fence
+// cannot be added without saying what covers it. Each entry resolves to probe rows in the
+// table above or to a NAMED exemption, and TestEveryRestrictionIsAccountedFor is what
+// makes that mandatory: an entry with neither fails, naming the restriction.
 //
-// Identical in both tiers, so a differential row would assert nothing:
+// Why data and not a comment: the launcher grid counts a code comment as a NON-channel and
+// a comment-only residual as state D, the forbidden direction. Every sweep finding of the
+// form "one tier has it, the sibling does not, nothing recorded the drop" has that shape,
+// and a paragraph listing the restrictions is exactly what stops noticing when the list
+// grows.
+type exemption string
+
+const (
+	// The tiers apply the same thing, so a differential row would assert nothing.
+	exemptIdentical exemption = "identical in both tiers"
+	// Real in both tiers and different, but outside what the arms model. Widening the
+	// arms is the price, and it costs the differential its property that each arm models
+	// exactly one documented flag set.
+	exemptOutOfArmScope exemption = "outside the arms' declared scope"
+	// Not a property a probe running inside the child can ask about at all.
+	exemptNotObservable exemption = "not observable from inside the child"
+)
+
+// The disclosure channels a restriction's exemption may cite, and the whole list of them:
+// a channel is somewhere an OPERATOR reads what a run did, which a code comment is not.
+// Checked against this set rather than accepted as free text, because "it is explained in
+// a comment" is state D wearing the exemption's clothes.
+type channel string
+
+const (
+	channelNone channel = ""
+	// internal/launcher/applied.go, written before the target is reached.
+	channelAppliedReport channel = "the applied-layer report"
+	// internal/linux/degraded.go's degradedProbe, which rewrites LayerFilesystem and
+	// LayerNetwork with the degraded tier's own consequences.
+	channelDegradedProbe channel = "degradedProbe's LayerFilesystem/LayerNetwork rewrite"
+	// Exposed and ShieldedGrants on the Result: what a bwrap run would have shielded and
+	// this one did not.
+	channelExposedShields channel = "Exposed/ShieldedGrants on the Result"
+)
+
+var realChannels = []channel{channelAppliedReport, channelDegradedProbe, channelExposedShields}
+
+// restriction is one row of docs/state-grid-launcher-order.md's grid A.
+type restriction struct {
+	row  int
+	name string
+	// probes names the rows of tierProbes that measure this restriction. Non-empty means
+	// the restriction is covered and no exemption is needed.
+	probes []string
+	// why the restriction has no probe row. Required when probes is empty.
+	exempt exemption
+	reason string
+	// discloses names where an operator learns about the gap, when the exemption claims
+	// one at all. It must be a real channel; see channel.
+	discloses channel
+}
+
+var restrictions = []restriction{
+	{
+		row:    1,
+		name:   "filesystem fence (mount ns + binds + deny-list vs Landlock path ruleset)",
+		exempt: exemptIdentical,
+		reason: "both tiers confine, by different mechanisms, and the degraded arm omits Landlock on purpose (see TestTierProbeHelper) because it would confine the probes' own reads - so any row would measure the arm's omission rather than the tier's",
+		// The mount-namespace half IS dropped on the degraded tier, and that is recorded
+		// rather than left to a comment, which is what keeps this an exemption and not a
+		// silent drop.
+		discloses: channelExposedShields,
+	},
+	{
+		row:    2,
+		name:   "network / egress fence (netns + bridge vs seccomp egress block)",
+		probes: []string{"inet-socket"},
+	},
+	{
+		row:    3,
+		name:   "pid namespace / cross-process reach",
+		probes: []string{"pid-namespace", "process-vm-read"},
+	},
+	{
+		row:       4,
+		name:      "exec-block seccomp filter",
+		exempt:    exemptIdentical,
+		reason:    "one shared installExecFilter, called by both tiers; the degraded arm omits it for the same reason as Landlock",
+		discloses: channelAppliedReport,
+	},
+	{
+		row:       5,
+		name:      "Landlock",
+		exempt:    exemptIdentical,
+		reason:    "both tiers apply it and the degraded arm omits it because it would confine the probes' own reads; the asymmetry that remains is the allowed direction, bwrap warns and proceeds where degraded is fatal",
+		discloses: channelAppliedReport,
+	},
+	{
+		row:    6,
+		name:   "terminal detach (--new-session vs TIOCSTI/TIOCLINUX block)",
+		probes: []string{"controlling-terminal", "tty-inject-ioctl"},
+	},
+	{
+		row:    7,
+		name:   "pseudo-FS: /proc, /dev, /tmp",
+		exempt: exemptOutOfArmScope,
+		reason: "the bwrap arm is --dev-bind / / and models namespaceFlags+sessionFlags only; pseudoFSFlags is outside it. This is also why the arm sees the host's process table despite --unshare-pid, which is worth knowing before anyone writes a \"host process table\" row and misreads the result",
+	},
+	{
+		row:    8,
+		name:   "environment / HOME / TMPDIR / proxy vars",
+		exempt: exemptNotObservable,
+		reason: "both tiers build from the shared sandboxEnv and the child sees whatever the parent passed, so a row would measure this test's own env plumbing",
+	},
+	{
+		row:    9,
+		name:   "inherited FDs + stdio refusal + non-dumpable",
+		exempt: exemptNotObservable,
+		reason: "the FD drop and the stdio refusal both happen in the parent before exec. The non-dumpable half is set by both tiers (Run at launcher.go and RunDegraded at degraded.go), so mirroring it into the degraded arm alone would MANUFACTURE a difference production does not have; it is also a property of the launcher process rather than of the target, since execve resets dumpable",
+	},
+	{
+		row:    10,
+		name:   "capability bounding set",
+		probes: []string{"cap-bounding-set"},
+	},
+	{
+		row:    11,
+		name:   "IPC / UTS / cgroup namespaces",
+		probes: []string{"sysv-ipc", "ipc-namespace", "uts-namespace", "cgroup-namespace"},
+	},
+	{
+		row:    12,
+		name:   "limits (systemd scope) + teardown",
+		exempt: exemptNotObservable,
+		reason: "neither the scope limits nor the teardown is a property of the child",
+	},
+	{
+		row:    13,
+		name:   "in-sandbox self-verification",
+		exempt: exemptNotObservable,
+		reason: "it IS the verification, not a restriction a probe can ask about",
+	},
+}
+
+// The enforcement half of the differential, and the reason the list above is data: today a
+// fourteenth fence would be added to one tier, get no row and no exemption, and nothing
+// would notice. This fails when that happens, and names the restriction.
 //
-//   - Row 1 filesystem fence and row 5 Landlock. The degraded arm omits Landlock on
-//     purpose (see TestTierProbeHelper) because it would confine the probes' own reads,
-//     so any row would measure the arm's omission rather than the tier's.
-//   - Row 4 exec-block filter. One installExecFilter, called by both tiers, and the
-//     degraded arm omits it for the same reason as Landlock.
-//   - Row 9's non-dumpable half. Both tiers set it - Run at launcher.go:229 and
-//     RunDegraded at degraded.go:282 - so there is no difference to measure. Mirroring
-//     it into the degraded arm alone, which is what this row was once filed as, would
-//     MANUFACTURE a difference production does not have. It is also a property of the
-//     launcher process rather than of the target: execve resets dumpable, so nothing the
-//     probes run as ever carries it.
+// It checks both directions. An unclaimed tierProbe is the same drift read the other way -
+// a row measuring something the grid no longer lists, which is how a probe outlives the
+// restriction it was written for.
 //
-// Out of the arms' declared scope:
-//
-//   - Row 7 pseudo-FS /proc /dev /tmp. The bwrap arm is --dev-bind / / and models
-//     namespaceFlags+sessionFlags only; pseudoFSFlags is outside it. This is also why
-//     the arm sees the host's process table despite --unshare-pid, which is worth knowing
-//     before anyone writes a "host process table" row and misreads the result.
-//
-// Not observable from inside the child at all, so the differential is the wrong
-// instrument:
-//
-//   - Row 8 environment/HOME/TMPDIR. Both tiers build from the shared sandboxEnv and the
-//     child sees whatever the parent passed, so a row would measure this test's own env
-//     plumbing.
-//   - Row 9's inherited-FD and stdio refusals. Both happen in the parent before exec.
-//   - Row 12 systemd scope limits and teardown. Neither is a property of the child.
-//   - Row 13 in-sandbox self-verification. It IS the verification, not a restriction a
-//     probe can ask about.
-//
-// So the ceiling for this table is roughly 7 of 13, not 13 of 13, unless the arms grow
-// Landlock and pseudoFSFlags - which would cost the differential its property that each
-// arm models exactly one documented flag set.
+// The ceiling here is roughly 7 of 13 rather than 13 of 13, and that is the honest number:
+// four restrictions are not comparable as the arms are built and four are not observable
+// from inside the child at all. Raising it means growing the arms to carry Landlock and
+// pseudoFSFlags, which costs the differential its property that each arm models exactly one
+// documented flag set.
+func TestEveryRestrictionIsAccountedFor(t *testing.T) {
+	claimed := map[string]int{}
+	for _, r := range restrictions {
+		if len(r.probes) > 0 {
+			if r.exempt != "" || r.reason != "" || r.discloses != channelNone {
+				t.Errorf("row %d (%s) has probe rows AND an exemption; a covered restriction is not also exempt", r.row, r.name)
+			}
+			for _, name := range r.probes {
+				if !slices.ContainsFunc(tierProbes, func(p tierProbe) bool { return p.name == name }) {
+					t.Errorf("row %d (%s) names probe row %q, which is not in tierProbes: the restriction is recorded as covered by a row that does not exist", r.row, r.name, name)
+				}
+				claimed[name] = r.row
+			}
+			continue
+		}
+		// The whole of the bead: neither a row nor an exemption is the state the list
+		// exists to make impossible.
+		if r.exempt == "" {
+			t.Errorf("row %d (%s) has no probe row and no exemption: add a row to tierProbes, or say which of the three categories it falls in and why", r.row, r.name)
+			continue
+		}
+		if !slices.Contains([]exemption{exemptIdentical, exemptOutOfArmScope, exemptNotObservable}, r.exempt) {
+			t.Errorf("row %d (%s) claims exemption %q, which is not one of the three categories", r.row, r.name, r.exempt)
+		}
+		if r.reason == "" {
+			t.Errorf("row %d (%s) is exempt with no reason; the category alone is the claim this repo asks for a reason for", r.row, r.name)
+		}
+		if r.discloses != channelNone && !slices.Contains(realChannels, r.discloses) {
+			t.Errorf("row %d (%s) cites %q as a disclosure channel, and that is not one: the grid counts a code comment as a non-channel and a comment-only residual as the forbidden direction", r.row, r.name, r.discloses)
+		}
+	}
+	for _, p := range tierProbes {
+		if _, ok := claimed[p.name]; !ok {
+			t.Errorf("probe row %q is claimed by no restriction: either it outlived the restriction it measures, or the grid gained one the list does not carry", p.name)
+		}
+	}
+}
+
 func TestTierDifferential(t *testing.T) {
 	if reexecUnderTerminal(t) {
 		return
