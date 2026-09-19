@@ -40,10 +40,12 @@ const MaxDepth = 40
 // "Unresolved" means the caller's own path, symlink components and all - not a
 // could-not-resolve signal. Nothing in this package makes that safe, so do not read the
 // return as a fail-closed guarantee this package provides. Where it does hold, it holds
-// because the CONSUMER meets the same barrier the resolver met: for EACCES, landlock's
-// add-rule has to open the path and bwrap's --ro-bind-try tolerates only a missing
-// source, so the kernel stops the enforcer exactly where it stopped the walk. That
-// symmetry is the whole property.
+// because the CONSUMER meets the same barrier the resolver met: for EACCES, bwrap's
+// --ro-bind-try tolerates only a missing source (ENOENT), so it aborts the run at the
+// path the walk could not read. That symmetry is the whole property, and bwrap is what
+// carries it - a Landlock stat failure on the same path is warn-and-proceed under the
+// bwrap tier, and fatal only on the degraded tier, where RestrictDegraded is the
+// enforcement rather than a backstop.
 //
 // It is not symmetric for a transient errno. The branch below catches EIO and ESTALE from
 // a network mount alongside EACCES (internal/landlock/landlock_linux.go reasons about the
