@@ -296,13 +296,13 @@ func TestShieldHiddenTellsTheStandInFromTheRealThing(t *testing.T) {
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := shieldHidden(store); err != nil || !got {
+	if got, err := shieldHidden(store, nil); err != nil || !got {
 		t.Errorf("shieldHidden(empty dir) = %v, %v; want true: a tmpfs over a directory is what hides one", got, err)
 	}
 	if err := os.WriteFile(filepath.Join(store, "id_rsa"), []byte("key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := shieldHidden(store); err != nil || got {
+	if got, err := shieldHidden(store, nil); err != nil || got {
 		t.Errorf("shieldHidden(populated dir) = %v, %v; want false: this is the store showing through a dropped shield", got, err)
 	}
 
@@ -310,19 +310,19 @@ func TestShieldHiddenTellsTheStandInFromTheRealThing(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := shieldHidden(file); err != nil || !got {
+	if got, err := shieldHidden(file, nil); err != nil || !got {
 		t.Errorf("shieldHidden(empty file) = %v, %v; want true: an empty read-only bind is what hides a file", got, err)
 	}
 	if err := os.WriteFile(file, []byte("machine x login y"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := shieldHidden(file); err != nil || got {
+	if got, err := shieldHidden(file, nil); err != nil || got {
 		t.Errorf("shieldHidden(nonempty file) = %v, %v; want false", got, err)
 	}
 
 	// Absent is the strongest hiding there is, and it is a state bento reaches: a shield
 	// over a path bwrap had no mount point to create leaves nothing behind.
-	if got, err := shieldHidden(filepath.Join(dir, "never")); err != nil || !got {
+	if got, err := shieldHidden(filepath.Join(dir, "never"), nil); err != nil || !got {
 		t.Errorf("shieldHidden(absent) = %v, %v; want true", got, err)
 	}
 }
@@ -384,5 +384,67 @@ func TestRunRefusesAWritableReadOnlyShield(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "is on a writable mount") {
 		t.Errorf("Run failed without the shield refusal: %q", out)
+	}
+}
+
+// The deny-list shields a symlink's target at its own path, and a credential store holding
+// a link INTO ITSELF therefore gets a rule nested inside its own DenyAll rule. bwrap has to
+// create that nested mount point inside the parent's tmpfs, so the parent is legitimately
+// non-empty and a bare emptiness test refuses an ordinary run - which is what it did on a
+// host with GitKraken's CLI installed, where ~/.local/share/GitKrakenCLI/gk links to
+// versions/<v>/<v> under the same store.
+//
+// What must still fail is a name bento did not put there. The two cases differ only in
+// whether the entry is one of the run's own nested shields, so they are asserted together.
+func TestShieldHiddenAllowsOnlyBentosOwnNestedMountPoints(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "store")
+	nested := filepath.Join(store, "versions", "v3", "gk")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nested, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	own := nestedShieldNames(store, []string{store, nested, "/elsewhere/.netrc"})
+	if !slices.Equal(own, []string{"versions"}) {
+		t.Fatalf("nestedShieldNames = %v, want [versions]: the component bwrap had to create in the store's tmpfs, and nothing from outside it", own)
+	}
+	if got, err := shieldHidden(store, own); err != nil || !got {
+		t.Errorf("shieldHidden(store with only its own nested mount point) = %v, %v; want true: this is an ordinary run, not a shimmed argv", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "token.json"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := shieldHidden(store, own); err != nil || got {
+		t.Errorf("shieldHidden(store holding a name no shield put there) = %v, %v; want false: that is the store showing through", got, err)
+	}
+}
+
+// The positive control the refusals need: every other in-sandbox shield test asserts a
+// REFUSAL, so all of them would pass just as well with verifyShields refusing everything.
+// This runs a real sandbox whose shields ARE in place and requires Run to proceed.
+//
+// The shape it uses is the one that made verifyShields refuse ordinary runs before
+// shieldHidden learned about nesting: a hidden shield inside another hidden shield, which
+// leaves bwrap's own mount point showing in the parent's listing. A credential store holding
+// a symlink into itself produces exactly that, and it is common enough to be on this host.
+func TestRunAcceptsShieldsTheSandboxHonours(t *testing.T) {
+	if os.Getenv(sentinelVerifyRun) != "" {
+		if _, err := Run(Config{
+			HiddenShields: []string{nestedShieldParent, nestedShieldChild},
+			// /etc is on the sandbox's read-only bind of the host root.
+			ReadOnlyShields: []string{"/etc"},
+			Target:          []string{"/bin/true"},
+		}); err != nil {
+			os.Stdout.WriteString("RUN_ERR " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), sentinelVerifyRun+"=1")
+	inSandbox(t, cmd, "nestedshield")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Run refused a sandbox whose shields are all in place: %v\n%s", err, out)
 	}
 }

@@ -255,8 +255,8 @@ var restrictions = []restriction{
 	{
 		row:    1,
 		name:   "filesystem fence (mount ns + binds + deny-list vs Landlock path ruleset)",
-		exempt: exemptIdentical,
-		reason: "both tiers confine, by different mechanisms, and the degraded arm omits Landlock on purpose (see TestTierProbeHelper) because it would confine the probes' own reads - so any row would measure the arm's omission rather than the tier's",
+		exempt: exemptOutOfArmScope,
+		reason: "both tiers confine, by different mechanisms, but neither mechanism is in an arm: the bwrap arm is --dev-bind / / and models namespaceFlags+sessionFlags only, so it carries no binds and no deny-list, and the degraded arm omits Landlock on purpose (see TestTierProbeHelper) because it would confine the probes' own reads. A row would measure the arms rather than the tiers",
 		// The mount-namespace half IS dropped on the degraded tier, and that is recorded
 		// rather than left to a comment, which is what keeps this an exemption and not a
 		// silent drop.
@@ -334,18 +334,26 @@ var restrictions = []restriction{
 }
 
 // The enforcement half of the differential, and the reason the list above is data: today a
-// fourteenth fence would be added to one tier, get no row and no exemption, and nothing
-// would notice. This fails when that happens, and names the restriction.
+// fourteenth fence would get no row and no exemption, and nothing would notice. This fails
+// when that happens, and names the restriction.
 //
-// It checks both directions. An unclaimed tierProbe is the same drift read the other way -
-// a row measuring something the grid no longer lists, which is how a probe outlives the
-// restriction it was written for.
+// Three directions, and the third is what keeps the other two from being a lint on a table
+// nobody has to update. An entry with neither a row nor an exemption fails. A tierProbe no
+// entry claims fails, which is the same drift read backwards - a row measuring something the
+// grid no longer lists. And the table's row numbers are checked against the GRID ITSELF, so
+// a fourteenth restriction added to docs/state-grid-launcher-order.md fails here until it is
+// carried; without that leg the table is only ever as current as the last person to edit it.
 //
-// The ceiling here is roughly 7 of 13 rather than 13 of 13, and that is the honest number:
-// four restrictions are not comparable as the arms are built and four are not observable
-// from inside the child at all. Raising it means growing the arms to carry Landlock and
-// pseudoFSFlags, which costs the differential its property that each arm models exactly one
-// documented flag set.
+// What this does NOT do, stated so nobody reads more into it: it cannot see a fence added to
+// internal/linux or internal/launcher that reaches neither the grid nor this table. The grid
+// is the record of what the two tiers apply, and keeping that record honest is a review
+// step, not a test.
+//
+// The ceiling here is 5 of 13 today and roughly 7 of 13 at best, and that is the honest
+// number: four restrictions are not comparable as the arms are built (rows 1, 4, 5, 7) and
+// four are not observable from inside the child at all (rows 8, 9, 12, 13). Raising it means
+// growing the arms to carry Landlock and pseudoFSFlags, which costs the differential its
+// property that each arm models exactly one documented flag set.
 func TestEveryRestrictionIsAccountedFor(t *testing.T) {
 	claimed := map[string]int{}
 	for _, r := range restrictions {
@@ -367,9 +375,6 @@ func TestEveryRestrictionIsAccountedFor(t *testing.T) {
 			t.Errorf("row %d (%s) has no probe row and no exemption: add a row to tierProbes, or say which of the three categories it falls in and why", r.row, r.name)
 			continue
 		}
-		if !slices.Contains([]exemption{exemptIdentical, exemptOutOfArmScope, exemptNotObservable}, r.exempt) {
-			t.Errorf("row %d (%s) claims exemption %q, which is not one of the three categories", r.row, r.name, r.exempt)
-		}
 		if r.reason == "" {
 			t.Errorf("row %d (%s) is exempt with no reason; the category alone is the claim this repo asks for a reason for", r.row, r.name)
 		}
@@ -382,6 +387,41 @@ func TestEveryRestrictionIsAccountedFor(t *testing.T) {
 			t.Errorf("probe row %q is claimed by no restriction: either it outlived the restriction it measures, or the grid gained one the list does not carry", p.name)
 		}
 	}
+	for i, r := range restrictions {
+		if r.row != i+1 {
+			t.Fatalf("the table is not the grid's rows in order: entry %d is row %d", i+1, r.row)
+		}
+	}
+	if n := gridRows(t); n != len(restrictions) {
+		t.Errorf("docs/state-grid-launcher-order.md has %d restrictions and this table carries %d: a restriction the grid gained has no row here and no exemption, which is the state this test exists to make impossible", n, len(restrictions))
+	}
+}
+
+// gridRows counts the numbered rows of grid A in docs/state-grid-launcher-order.md, which
+// is the record of what the two tiers apply. Read rather than duplicated: a count copied
+// into a constant here would drift from the document exactly as the prose list did.
+//
+// A grid that cannot be read is a failure and not a skip: the leg this supplies is the only
+// one that notices the grid GROWING, and a silent skip would leave the table self-approving.
+func gridRows(t *testing.T) int {
+	t.Helper()
+	doc, err := os.ReadFile("../../docs/state-grid-launcher-order.md")
+	if err != nil {
+		t.Fatalf("reading the launcher grid, which is what the restriction table is checked against: %v", err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(doc), "\n") {
+		// The rows are "| <n> | <restriction> | ...". Other tables in the same document
+		// (the ordering pairs, the commit ledger) do not lead with a bare number.
+		f := strings.SplitN(line, "|", 3)
+		if len(f) < 3 {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(f[1])); err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 func TestTierDifferential(t *testing.T) {

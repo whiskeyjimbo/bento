@@ -1465,7 +1465,11 @@ func TestReportedShieldKindMatchesTheMount(t *testing.T) {
 // recomputed by calling shieldChecks again: the claim is that the two halves of one argv
 // agree, and asking the same function twice would hold whatever it answered.
 func TestCompilePassesEveryShieldToTheLauncher(t *testing.T) {
-	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa", "/home/u/.gitconfig", "/home/u/proj/src")
+	// .git/config has to be ON the fixture's host, or every DenyWrite rule is absent and
+	// gets an empty bind instead of a self-bind - which leaves the read-only half of this
+	// test looping over nothing.
+	sb := testSandbox("/home/u/.ssh", "/home/u/.ssh/id_rsa", "/home/u/.gitconfig",
+		"/home/u/proj/src", "/home/u/proj/.git", "/home/u/proj/.git/config")
 	args, _, err := compile(&policy.Policy{
 		Entrypoint: "/home/u/proj/src/run.py",
 		Read:       []string{"/home/u"},
@@ -1494,6 +1498,9 @@ func TestCompilePassesEveryShieldToTheLauncher(t *testing.T) {
 	if len(gotHidden) == 0 {
 		t.Fatal("no --shield-hidden reached the launcher; this policy shields ~/.ssh, so verifyShields would check nothing")
 	}
+	if len(gotReadOnly) == 0 {
+		t.Fatal("no --shield-ro reached the launcher; this policy write-grants the checkout, so its .git/config is shielded read-only and verifyShields' other half would check nothing")
+	}
 	for _, p := range gotHidden {
 		if !wantHidden[p] {
 			t.Errorf("the launcher is told %s is hidden, but the argv does not hide it: the check would refuse a correct sandbox", p)
@@ -1514,6 +1521,9 @@ func TestCompilePassesEveryShieldToTheLauncher(t *testing.T) {
 	}
 	if !containsStr(gotHidden, "/home/u/.ssh") {
 		t.Errorf("~/.ssh is the shield this policy exists to test and it did not reach the launcher; got %v", gotHidden)
+	}
+	if !containsStr(gotReadOnly, "/home/u/proj/.git/config") {
+		t.Errorf("the checkout's .git/config is the read-only shield this policy exists to test and it did not reach the launcher; got %v", gotReadOnly)
 	}
 }
 
