@@ -223,6 +223,12 @@ Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** 
    fix and green after; the two the reviews found are pinned by
    `TestExecImageRefusesATruncatedNameThatExists` and
    `TestPT_INTERPTerminationMatchesTheKernel`, which ask the kernel directly).
+   Since then `execImage` walks the program header table itself rather than reaching it
+   through `debug/elf`, so it accepts every image the kernel does - and the ELF arm of the
+   differential compares two runs of one algorithm and holds by construction. What still
+   has teeth there is the narrowing invariant over the raw bytes; the ELF decode's oracle
+   is `TestPT_INTERPTerminationMatchesTheKernel` plus
+   `TestExecImageNamesTheLoaderOfAnELFDebugELFRefuses`, both exec-backed.
 2. **`gate`** - `Check` and eleven `*Problems` predicates, no target. The oracle is already
    written by hand: `TestShieldedGrantProblemsMirrorTheRunsRefusals` asserts gate-vs-`internal/linux`
    agreement over a table. A fuzzer generalises that table directly, and this is a second mirror

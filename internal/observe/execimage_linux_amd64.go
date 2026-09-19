@@ -2,6 +2,7 @@ package observe
 
 import (
 	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -21,9 +22,10 @@ const (
 	// chain reported complete names fewer images than this.
 	execChainDepth = 6
 	// execHeadSize is BINPRM_BUF_SIZE: the buffer binfmt_script decodes a #! line out of,
-	// and the reason a longer line is unreadable rather than absent. The decode below is
-	// held to the kernel's rules over the same span, which FuzzExecImageDecode
-	// differentials against a restatement of them.
+	// and the reason a longer line is unreadable rather than absent. It is also enough of
+	// an ELF to reach the program header table from, which is all the loader itself reads.
+	// The decode below is held to the kernel's rules over the same span, which
+	// FuzzExecImageDecode differentials against a restatement of them.
 	execHeadSize = 256
 )
 
@@ -135,8 +137,8 @@ func execImage(pid int, path string) (string, bool) {
 	defer f.Close()
 
 	// One short read is enough for either decision: execHeadSize is the kernel's own
-	// shebang buffer, and an ELF's program headers are found through the header this
-	// leaves to debug/elf.
+	// shebang buffer, and it covers an ELF header of either class, which is where the
+	// program header table's location is written.
 	var buf [execHeadSize]byte
 	n, _ := io.ReadFull(f, buf[:])
 	head := string(buf[:n])
@@ -184,30 +186,93 @@ func execImage(pid int, path string) (string, bool) {
 		}
 		return name, true
 	}
-	e, err := elf.NewFile(f)
-	if err != nil {
-		// An ELF this cannot parse is not an ELF that will not RUN: the kernel's loader
-		// reads the program headers and never looks at the section headers debug/elf
-		// validates, so a binary with a corrupt e_shstrndx execs perfectly well and opens
-		// its PT_INTERP loader. Reporting that complete would put the loader out of the
-		// manifest with Dropped at 0. Without the magic there is no image to name and no
-		// exec that could have succeeded either, which is the shebang branch's answer for
-		// a header naming nothing.
-		return "", !strings.HasPrefix(head, elf.ELFMAG)
+	return elfInterp(f, buf[:n])
+}
+
+// elfInterp names the PT_INTERP loader the kernel's ELF loader will open for this image,
+// or "" when the image names none.
+//
+// The program header table is walked out of the raw bytes rather than through debug/elf,
+// because debug/elf validates what the loader never reads: it refuses an e_shstrndx out
+// of range ($GOROOT/src/debug/elf/file.go), while fs/binfmt_elf.c reaches PT_INTERP from
+// e_phoff alone and never touches a section header. A binary with a corrupt e_shstrndx
+// execs perfectly well and opens its loader, and a decoder that cannot see that either
+// drops the loader from the manifest or reports the run short for no reason. Walking the
+// headers accepts every image the kernel does.
+//
+// The cost is that the fuzz target's ELF reference is now this same algorithm, so that
+// side of the differential holds by construction. What still has teeth there is the
+// narrowing invariant over the raw bytes; the ELF decode's oracle is the exec-backed
+// table, which runs real images and reads the kernel's own verdict off the errno.
+//
+// ok is false for what cannot be named honestly: an image this does not understand (an
+// ELF class or byte order it cannot decode is still an image some loader on this host
+// runs), a header table that will not read, and a segment binfmt_elf itself refuses. A
+// silent "" there would put a loader out of the manifest with nothing saying it is
+// missing, which is the failure this file exists to stop.
+func elfInterp(f *os.File, head []byte) (string, bool) {
+	if !strings.HasPrefix(string(head), elf.ELFMAG) {
+		// No magic: no image to name, and no exec that could have succeeded either. This
+		// is the shebang branch's answer for a header naming nothing.
+		return "", true
 	}
-	for _, p := range e.Progs {
-		if p.Type != elf.PT_INTERP {
+	// The two layouts of the same table. Only little-endian is decoded: this file builds
+	// for amd64 alone, where every image the kernel loads - native or through the 32-bit
+	// compat loader - is ELFDATA2LSB.
+	// ehdrSize is also where the header ends; phSize is the width of the offset and size
+	// fields, which is the only thing that differs between the two layouts besides where
+	// the fields sit.
+	var ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt int
+	switch {
+	case len(head) < 6 || head[5] != byte(elf.ELFDATA2LSB):
+		return "", false
+	case head[4] == byte(elf.ELFCLASS64):
+		ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt = 64, 8, 56, 32, 54, 8, 32
+	case head[4] == byte(elf.ELFCLASS32):
+		ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt = 52, 4, 32, 28, 42, 4, 16
+	default:
+		return "", false
+	}
+	if len(head) < ehdrSize {
+		return "", false
+	}
+	num := func(b []byte, at, size int) uint64 {
+		if size == 4 {
+			return uint64(binary.LittleEndian.Uint32(b[at:]))
+		}
+		return binary.LittleEndian.Uint64(b[at:])
+	}
+	phoff := num(head, phoffAt, phSize)
+	phentsize := int(binary.LittleEndian.Uint16(head[phentAt:]))
+	phnum := int(binary.LittleEndian.Uint16(head[phentAt+2:]))
+	// binfmt_elf's own bound on the table, and the reason an unbounded read of a
+	// fuzzer-chosen e_phnum cannot happen here: the kernel refuses an image whose header
+	// table does not fit in 64KiB, so one that claims more is not an image that runs.
+	if phentsize < phentMin || phnum < 1 || phnum*phentsize > 65536 {
+		return "", false
+	}
+	table := make([]byte, phnum*phentsize)
+	if _, err := f.ReadAt(table, int64(phoff)); err != nil {
+		// A table that runs off the end is not a table; the exec reads the same bytes and
+		// finds the same nothing, but the observer cannot say what it would have opened.
+		return "", false
+	}
+	for i := range phnum {
+		ph := table[i*phentsize:]
+		if binary.LittleEndian.Uint32(ph) != uint32(elf.PT_INTERP) {
 			continue
 		}
-		// binfmt_elf's own bounds on the segment: PATH_MAX above, and at least two bytes so
-		// that a name and its terminator fit. Filesz comes straight out of the file - an
-		// ELF the profiled target execs is not trusted input, and an unbounded make() here
-		// would let one kill the observer rather than be recorded by it.
-		if p.Filesz > unix.PathMax || p.Filesz < 2 {
+		off := num(ph, offAt, phSize)
+		filesz := num(ph, fileszAt, phSize)
+		// binfmt_elf's own bounds on the segment: PATH_MAX above, and at least two bytes
+		// so that a name and its terminator fit. Filesz comes straight out of the file -
+		// an ELF the profiled target execs is not trusted input, and an unbounded make()
+		// here would let one kill the observer rather than be recorded by it.
+		if filesz > unix.PathMax || filesz < 2 {
 			return "", false
 		}
-		name := make([]byte, p.Filesz)
-		if _, err := p.ReadAt(name, 0); err != nil {
+		name := make([]byte, filesz)
+		if _, err := f.ReadAt(name, int64(off)); err != nil {
 			return "", false
 		}
 		// The kernel takes the segment as a C string, so it ends at the FIRST NUL and
@@ -230,5 +295,6 @@ func execImage(pid int, path string) (string, bool) {
 		}
 		return interp, true
 	}
+	// No PT_INTERP: a static binary, which names no image and loses nothing.
 	return "", true
 }

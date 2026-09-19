@@ -61,13 +61,18 @@ func refShebangImage(head []byte) (image string, complete bool) {
 }
 
 // refELFInterp restates the PT_INTERP decode over the RAW bytes: the ELF64 little-endian
-// program header table walked by hand, rather than through debug/elf as execImage does.
-// Reading the same field by a different route is the whole point - a reference that called
-// debug/elf back would agree with the implementation whatever either of them did.
+// program header table walked by hand.
+//
+// execImage walks the same table, so this is no longer a second route to the field and the
+// comparison it feeds holds by construction - see imageDecodeViolation, which says what
+// still has teeth on that arm. It is kept because it is the only reader here that works on
+// a byte slice, which is what lets the fuzz target grade a file it never opened; the
+// oracle for the decode itself is TestPT_INTERPTerminationMatchesTheKernel, which execs
+// real images and reads the kernel's verdict off the errno.
 //
 // known is false where this declines to answer: anything that is not ELF64 little-endian,
-// or a header table that runs off the end. The caller gates on debug/elf having parsed the
-// file at all, which is execImage's own precondition for reaching this branch.
+// or a header table that runs off the end. execImage decodes ELF32 too, so this is a
+// narrower reader than the implementation and the caller grades only what both understand.
 func refELFInterp(file []byte) (name string, complete, known bool) {
 	const ehdrSize = 64
 	if len(file) < ehdrSize || string(file[:4]) != "\x7fELF" || file[4] != 2 || file[5] != 1 {
@@ -132,11 +137,12 @@ func imageDecodeViolation(file []byte, got string, ok bool) error {
 	}
 	if !bytes.HasPrefix(file, []byte("#!")) {
 		// A loss the decoder DECLARES is acceptable here: the manifest is short and says
-		// so, which is the honest answer when debug/elf refuses an ELF the kernel would
-		// have run. What is not acceptable is a silent drop, and that is the one thing
-		// gating this arm on debug/elf parsing would have hidden - the kernel's loader
-		// reads the program headers this reference walks and never the section headers
-		// debug/elf validates.
+		// so. What is not acceptable is a silent drop, and that is what this arm grades.
+		// Since execImage walks the program headers itself, this reference is no longer an
+		// independent route to the same field and the comparison below holds by
+		// construction; the teeth on this arm are the narrowing invariant above, over the
+		// raw bytes, and the oracle for the decode proper is the exec-backed
+		// TestPT_INTERPTerminationMatchesTheKernel.
 		if !ok {
 			return nil
 		}
@@ -425,25 +431,39 @@ func TestPT_INTERPTerminationMatchesTheKernel(t *testing.T) {
 			if _, complete, _ := refELFInterp(file); complete != tc.complete {
 				t.Errorf("refELFInterp complete = %v, want %v", complete, tc.complete)
 			}
-			if _, ok := execImage(os.Getpid(), path); ok != tc.complete {
-				t.Errorf("execImage ok = %v, want %v", ok, tc.complete)
+			// The name as well as the verdict: with the walk in execImage this table is the
+			// only check on the ELF decode that the kernel itself backs, so a decode that
+			// agreed about refusing and then named the wrong loader would pass it.
+			got, complete := execImage(os.Getpid(), path)
+			if complete != tc.complete {
+				t.Errorf("execImage ok = %v, want %v", complete, tc.complete)
+			}
+			want, _, _ := strings.Cut(tc.interp, "\x00")
+			if tc.complete && got != want {
+				t.Errorf("execImage named %q, but the segment the kernel accepted holds %q", got, want)
 			}
 		})
 	}
 }
 
-// An ELF debug/elf cannot parse is not an ELF that will not RUN. The kernel's loader reads
-// the program headers and never the section headers debug/elf validates, so a binary whose
-// e_shstrndx is corrupt execs perfectly well and opens its PT_INTERP loader - and reporting
-// that as "nothing names an image" drops the loader from the manifest with Dropped at 0,
-// which is the one failure this file exists to stop. It is a lost observation instead.
-func TestExecImageReportsAnUnparseableELFAsALoss(t *testing.T) {
+// An ELF debug/elf cannot parse is not an ELF that will not RUN, and the decoder names
+// its loader anyway. The kernel's loader reads the program headers and never the section
+// headers debug/elf validates, so a binary whose e_shstrndx is corrupt execs perfectly
+// well and opens its PT_INTERP loader - and this asserts the decoder opens the same one,
+// against a real exec and a real debug/elf refusal rather than a claim about either.
+//
+// The weaker answer the walk replaced - reporting it a lost observation - kept the run
+// short for an image nothing was wrong with. The answer before THAT, "nothing names an
+// image", dropped the loader from the manifest with Dropped at 0, which is the one
+// failure this file exists to stop; a regression to it fails the loader comparison here.
+func TestExecImageNamesTheLoaderOfAnELFDebugELFRefuses(t *testing.T) {
 	binary_, err := os.ReadFile("/bin/true")
 	if err != nil {
 		skipMissingDep(t, "/bin/true not readable")
 	}
-	if _, ok := execImage(os.Getpid(), "/bin/true"); !ok {
-		t.Skip("/bin/true names no image the observer can read here")
+	loader, ok := execImage(os.Getpid(), "/bin/true")
+	if !ok || loader == "" {
+		t.Skip("/bin/true names no loader the observer can read here")
 	}
 	// e_shstrndx, which the kernel never looks at and debug/elf refuses out of range.
 	binary.LittleEndian.PutUint16(binary_[62:], 0xfff0)
@@ -454,8 +474,17 @@ func TestExecImageReportsAnUnparseableELFAsALoss(t *testing.T) {
 	if err := exec.Command(path).Run(); err != nil {
 		t.Skipf("the kernel did not run it either: %v", err)
 	}
-	if _, ok := execImage(os.Getpid(), path); ok {
-		t.Error("an ELF the observer cannot parse but the kernel runs was reported complete, so its loader leaves the manifest with nothing saying it is missing")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := elf.NewFile(f); err == nil {
+		t.Fatal("debug/elf parsed the corrupted image, so this proves nothing about the walk")
+	}
+	got, complete := execImage(os.Getpid(), path)
+	if got != loader || !complete {
+		t.Errorf("execImage = %q %v for an image the kernel runs and opens %q for", got, complete, loader)
 	}
 }
 

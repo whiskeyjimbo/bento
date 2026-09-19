@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -169,6 +170,42 @@ func writeELFWithInterp(t testing.TB, path, interp string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// An i386 image is one this host's kernel loads through its compat loader, and its
+// program header table has a different shape: 32-bit offsets, a 52-byte header, 32-byte
+// entries. debug/elf read both, so the hand-rolled walk that replaced it has to as well -
+// a walk that understood only ELF64 would answer "no image" for a 32-bit binary and drop
+// its loader from the manifest with nothing saying it is missing.
+//
+// The image is built rather than found because a host need not have one installed, and it
+// is not executed: nothing is mapped in it, and what is under test is the decode.
+func TestExecImageNamesAnELF32Loader(t *testing.T) {
+	const ehdrSize, phdrSize = 52, 32
+	const interp = "/lib/ld-linux.so.2\x00"
+	var b bytes.Buffer
+	b.Write([]byte{0x7f, 'E', 'L', 'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	put := func(vals ...any) {
+		for _, v := range vals {
+			if err := binary.Write(&b, binary.LittleEndian, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	put(uint16(elf.ET_EXEC), uint16(elf.EM_386), uint32(1), uint32(0), uint32(ehdrSize), uint32(0),
+		uint32(0), uint16(ehdrSize), uint16(phdrSize), uint16(1), uint16(0), uint16(0), uint16(0))
+	put(uint32(elf.PT_INTERP), uint32(ehdrSize+phdrSize), uint32(0), uint32(0),
+		uint32(len(interp)), uint32(len(interp)), uint32(elf.PF_R), uint32(1))
+	b.WriteString(interp)
+
+	path := filepath.Join(t.TempDir(), "elf32")
+	if err := os.WriteFile(path, b.Bytes(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := execImage(os.Getpid(), path)
+	if want := strings.TrimSuffix(interp, "\x00"); got != want || !ok {
+		t.Errorf("execImage = %q %v, want %q true", got, ok, want)
+	}
 }
 
 // A #! chain is walked, not resolved once: the kernel opens the interpreter, then the
