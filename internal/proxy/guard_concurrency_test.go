@@ -42,22 +42,23 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	// wrap a host-reserved v4 address in a public-looking v6 one - those are the ones a
 	// crossed verdict could hide behind.
 	// The decision each one must be reported as is spelled out rather than derived from
-	// the guard's own classification: the two causes carry opposite operator remedies -
-	// host-reserved says a script reached for the host itself, private-no-grant says a
-	// permitted name landed on the LAN - and a table computed the way the code computes it
-	// would agree with a guard that had lost the distinction entirely.
+	// the guard's own classification: the causes carry different operator remedies -
+	// metadata says a script went for the instance's credentials, host-reserved says it
+	// reached for the host itself, private-no-grant says a permitted name landed on the
+	// LAN - and a table computed the way the code computes it would agree with a guard
+	// that had lost the distinction entirely.
 	nonPublic := []struct {
 		ip   string
 		want Decision
 	}{
 		{"127.0.0.1", GuardBlockedReserved},
 		{"10.0.0.5", GuardBlockedPrivate},
-		{"169.254.169.254", GuardBlockedReserved},
+		{"169.254.169.254", GuardBlockedMetadata},
 		{"fd00::1", GuardBlockedPrivate},
 		{"100.64.0.1", GuardBlockedPrivate},              // CGNAT: infrastructure, but reachable by literal
-		{"64:ff9b::a9fe:a9fe", GuardBlockedReserved},     // well-known NAT64 prefix wrapping the metadata address
-		{"::ffff:169.254.169.254", GuardBlockedReserved}, // IPv4-mapped metadata
-		{"2002:a9fe:a9fe::1", GuardBlockedReserved},      // 6to4 wrapping the same
+		{"64:ff9b::a9fe:a9fe", GuardBlockedMetadata},     // well-known NAT64 prefix wrapping the metadata address
+		{"::ffff:169.254.169.254", GuardBlockedMetadata}, // IPv4-mapped metadata
+		{"2002:a9fe:a9fe::1", GuardBlockedMetadata},      // 6to4 wrapping the same
 		{"198.18.0.1", GuardBlockedReserved},             // RFC 2544 benchmarking
 		{"240.0.0.1", GuardBlockedReserved},              // reserved v4
 	}

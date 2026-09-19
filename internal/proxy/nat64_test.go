@@ -264,8 +264,11 @@ func TestRFC8215LocalUsePrefixDecodesEveryLength(t *testing.T) {
 			if got := classifyIP(build([4]byte{192, 168, 1, 1})); got != ipPrivate {
 				t.Errorf("RFC1918 wrapped at /%d classified %d, want ipPrivate (%d)", length, got, ipPrivate)
 			}
-			if got := classifyIP(build([4]byte{169, 254, 169, 254})); got != ipHostReserved {
-				t.Errorf("cloud metadata wrapped at /%d classified %d, want ipHostReserved (%d)", length, got, ipHostReserved)
+			// ipMetadata rather than ipHostReserved: the escalation out of local-use
+			// space must carry the cause as well as the refusal, or a wrapped probe is
+			// reported as an ordinary loopback dial.
+			if got := classifyIP(build([4]byte{169, 254, 169, 254})); got != ipMetadata {
+				t.Errorf("cloud metadata wrapped at /%d classified %d, want ipMetadata (%d)", length, got, ipMetadata)
 			}
 			// Local-use space is never public, but a public payload must stay merely
 			// private: the zero padding a wrong length reads leads with 0.x.x.x, and
@@ -295,9 +298,9 @@ func TestRFC8215ThisNetworkStaysHostReserved(t *testing.T) {
 }
 
 // The same shape with the two verdicts that actually differ in reach: host-reserved
-// is refused outright, private is dialable under a matching literal grant. The /32
-// decodes the cloud metadata address, so the answer must be host-reserved even though
-// the /96 decodes RFC1918 and a manifest may name that literal.
+// (and the metadata address inside it) is refused outright, private is dialable under a
+// matching literal grant. The /32 decodes the cloud metadata address, so the answer must
+// be ipMetadata even though the /96 decodes RFC1918 and a manifest may name that literal.
 func TestNAT64MultiplePrefixesPreferHostReserved(t *testing.T) {
 	short := net.ParseIP("2001:db8::").To16()
 	short[4], short[5], short[6], short[7] = 192, 0, 0, 170
@@ -310,8 +313,8 @@ func TestNAT64MultiplePrefixesPreferHostReserved(t *testing.T) {
 		if len(p.nat64) != 2 {
 			t.Fatalf("discovery = %+v, want both prefixes", p.nat64)
 		}
-		if got := p.classify(target); got != ipHostReserved {
-			t.Errorf("answers %v: classify(%v) = %d, want ipHostReserved (%d)", order, target, got, ipHostReserved)
+		if got := p.classify(target); got != ipMetadata {
+			t.Errorf("answers %v: classify(%v) = %d, want ipMetadata (%d)", order, target, got, ipMetadata)
 		}
 	}
 }

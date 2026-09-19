@@ -229,8 +229,9 @@ func (p *Proxy) classifyNAT64(ip net.IP) (class ipClass, blackout bool) {
 	// alone, so a short prefix matches every address under it and decodes a different
 	// IPv4 than the specific one does. Taking the strictest verdict over all matches
 	// keeps the guard independent of the order discovery happened to append them.
-	// Host-reserved is the strictest of the three: handle refuses it outright, where
-	// private is still reachable under a matching literal grant.
+	// Host-reserved (and the metadata address it contains) is the strictest: handle
+	// refuses it outright, where private is still reachable under a matching literal
+	// grant.
 	matched := false
 	strictest := c
 	for _, pfx := range p.nat64 {
@@ -239,9 +240,9 @@ func (p *Proxy) classifyNAT64(ip net.IP) (class ipClass, blackout bool) {
 			continue
 		}
 		matched = true
-		switch classifyIP(v4) {
-		case ipHostReserved:
-			return ipHostReserved, false
+		switch c := classifyIP(v4); c {
+		case ipMetadata, ipHostReserved:
+			return c, false
 		case ipPrivate:
 			strictest = ipPrivate
 		case ipPublic:

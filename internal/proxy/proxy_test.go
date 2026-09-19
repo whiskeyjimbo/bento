@@ -1060,18 +1060,26 @@ func TestClassifyIP(t *testing.T) {
 		// Never reachable through the proxy, not even with an explicit rule.
 		ipHostReserved: {
 			"127.0.0.1", "::1", "::ffff:127.0.0.1", // loopback
-			"169.254.169.254", "fe80::1", // link-local (incl. cloud metadata)
+			"169.254.1.1", "fe80::1", // link-local (the metadata address is ipMetadata)
 			"0.0.0.0", "::", // unspecified
 			"0.1.2.3",                      // this-network 0.0.0.0/8 beyond 0.0.0.0 itself
 			"198.18.0.1", "198.19.255.255", // RFC 2544 benchmarking 198.18.0.0/15
 			"240.0.0.1", "255.255.255.254", // reserved 240.0.0.0/4
 			"255.255.255.255",    // limited broadcast (within 240/4)
-			"64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254 (metadata)
 			"64:ff9b::7f00:1",    // NAT64 of 127.0.0.1
 			"64:ff9b::c612:1",    // NAT64 of 198.18.0.1 (benchmarking)
 			"ff05::1", "ff0e::1", // site-local and global multicast
-			"::a9fe:a9fe",        // IPv4-compatible ::169.254.169.254 (metadata)
 			"fec0::1", "feff::1", // deprecated IPv6 site-local fec0::/10 (RFC 3879)
+		},
+		// Refused exactly as ipHostReserved is, and reported apart: the one refusal
+		// that says a script went looking for the instance's credentials.
+		ipMetadata: {
+			"169.254.169.254",
+			"::ffff:169.254.169.254", // IPv4-mapped
+			"::a9fe:a9fe",            // IPv4-compatible
+			"64:ff9b::a9fe:a9fe",     // well-known NAT64 prefix
+			"2002:a9fe:a9fe::1",      // 6to4
+			"64:ff9b:1::a9fe:a9fe",   // RFC 8215 local-use /48
 		},
 		// Reachable only via an explicit IP-literal rule.
 		ipPrivate: {
@@ -2209,5 +2217,60 @@ func TestUnclassifiableDialTargetIsReportedAsItsOwnCause(t *testing.T) {
 		if got := refusals.blockedDecision(); got != GuardBlockedUnparsed {
 			t.Errorf("guardUpstream(%q) refused as %q, want %q", addr, got, GuardBlockedUnparsed)
 		}
+	}
+}
+
+// A script dialing 169.254.169.254 is asking the instance metadata service for the
+// host's credentials; a script dialing 127.0.0.1 is almost always a misconfigured
+// client. Both are refused, and folded into one cause the first cannot be alerted on
+// without the second firing constantly - which is the whole reason the guard's refusals
+// are split. So the decision must separate them, on every form that reaches the address:
+// the literal, the transition wrappers that carry it, and a synthesis under a discovered
+// site prefix. The wants are written out rather than derived from classify, because a
+// table computed the way the guard computes it would agree with a guard that had lost the
+// distinction entirely.
+//
+// The rest of link-local is deliberately NOT metadata: 169.254/16 and fe80::/10 are APIPA
+// and mDNS noise, and an alert that fires on them is an alert nobody reads.
+func TestGuardReportsAMetadataProbeApartFromALocalhostDial(t *testing.T) {
+	cases := []struct {
+		addr string
+		want Decision
+		why  string
+	}{
+		{"169.254.169.254", GuardBlockedMetadata, "the metadata address itself"},
+		{"::ffff:169.254.169.254", GuardBlockedMetadata, "IPv4-mapped"},
+		{"2002:a9fe:a9fe::1", GuardBlockedMetadata, "6to4 wrapping it"},
+		{"64:ff9b::a9fe:a9fe", GuardBlockedMetadata, "well-known Pref64 wrapping it"},
+		{"64:ff9b:1::a9fe:a9fe", GuardBlockedMetadata, "RFC 8215 local-use /48 wrapping it"},
+		{"127.0.0.1", GuardBlockedReserved, "loopback stays the routine refusal"},
+		{"169.254.1.1", GuardBlockedReserved, "other link-local is APIPA, not an attack signal"},
+		{"fe80::1", GuardBlockedReserved, "IPv6 link-local likewise"},
+		{"10.0.0.5", GuardBlockedPrivate, "RFC1918 is a manifest decision, not a probe"},
+	}
+	p := New(nil)
+	for _, c := range cases {
+		var refusals dialRefusals
+		ctx := withDialRefusals(t.Context(), &refusals)
+		if err := p.guardUpstream(ctx, "tcp", net.JoinHostPort(c.addr, "80"), nil); err == nil {
+			t.Fatalf("guardUpstream(%q) permitted the dial (%s)", c.addr, c.why)
+		}
+		if got := refusals.blockedDecision(); got != c.want {
+			t.Errorf("guardUpstream(%q) reported %q, want %q (%s)", c.addr, got, c.want, c.why)
+		}
+	}
+
+	// A site NAT64 wraps the same address under its own Pref64, which only discovery can
+	// decode - the arm in classifyNAT64 rather than classifyIP, and the one place the
+	// cause can be lost while the refusal still lands.
+	site := New(egressRules, WithNAT64Discovery(fakeLookup(net.ParseIP("2001:db8:1:2:3:4:c000:aa"))))
+	site.discoverNAT64(t.Context())
+	var refusals dialRefusals
+	ctx := withDialRefusals(t.Context(), &refusals)
+	if err := site.guardUpstream(ctx, "tcp", "[2001:db8:1:2:3:4:a9fe:a9fe]:80", nil); err == nil {
+		t.Fatal("guardUpstream permitted a site-Pref64 synthesis of the metadata address")
+	}
+	if got := refusals.blockedDecision(); got != GuardBlockedMetadata {
+		t.Errorf("site-Pref64 metadata synthesis reported %q, want %q", got, GuardBlockedMetadata)
 	}
 }

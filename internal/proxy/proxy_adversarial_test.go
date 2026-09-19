@@ -30,7 +30,7 @@ func TestAdversarialClassifyIP(t *testing.T) {
 		{
 			name:      "block_ipv4_link_local_cloud_metadata",
 			ipStr:     "169.254.169.254",
-			wantClass: ipHostReserved,
+			wantClass: ipMetadata,
 		},
 		{
 			name:      "block_ipv4_this_network_zero",
@@ -122,7 +122,7 @@ func TestAdversarialClassifyIP(t *testing.T) {
 			// on the tunnel uses.
 			name:      "classify_ipv6_isatap_embedded_metadata",
 			ipStr:     "2001:db8::200:5efe:169.254.169.254",
-			wantClass: ipHostReserved,
+			wantClass: ipMetadata,
 		},
 		{
 			name:      "classify_ipv6_v4translated_embedded_private",

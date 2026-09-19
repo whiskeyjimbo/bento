@@ -71,9 +71,9 @@ const (
 	// traffic - and distinct from a bare parse failure because it names the destination
 	// the request line addressed.
 	Untunneled Decision = "untunneled"
-	// The four constants below are one decision split four ways. Each marks a connection
+	// The five constants below are one decision split five ways. Each marks a connection
 	// the allowlist (or a gate) permitted by name and the upstream guard then refused,
-	// because the name resolved to an address the sandbox must not reach. All four are
+	// because the name resolved to an address the sandbox must not reach. All five are
 	// distinct from Denied because widening the allowlist cannot fix a guard block, and
 	// the client is told nothing that separates any of them from an ordinary dial
 	// failure, so the observer is the only place they survive. They are split from each
@@ -82,15 +82,29 @@ const (
 	// without firing on the routine ones. Decision.GuardRefused reports whether a
 	// decision is one of them.
 
+	// GuardBlockedMetadata marks a refusal of the cloud instance metadata address
+	// 169.254.169.254, whether the dial named it outright or through a transition form
+	// wrapping it. It is split out of GuardBlockedReserved because it is the only guard
+	// refusal that is an attack signal rather than a configuration fact: that address
+	// serves the instance's own credentials, nothing in a sandboxed run has a reason to
+	// ask for it, and a script that did was reaching for them. The remedy is to
+	// investigate the script. The cut is that address alone rather than all of
+	// link-local, because the rest of 169.254/16 and fe80::/10 are APIPA and mDNS noise
+	// from misconfigured clients, and folding those in makes the alert unactionable -
+	// which is the failure splitting the causes was meant to avoid.
+	//
+	// ponytail: the AWS ECS task-metadata address 169.254.170.2 is not covered and
+	// reports GuardBlockedReserved; add it here if runs on ECS make it worth the noise.
+	GuardBlockedMetadata Decision = "blocked-metadata"
 	// GuardBlockedReserved marks a refusal of everything classifyIP calls ipHostReserved -
-	// loopback, link-local (including the 169.254.169.254 cloud metadata address),
-	// multicast, IPv6 site-local, the unspecified address, and the v4 ranges that are
-	// never a valid destination (0/8, 198.18/15, 240/4) - whether the address says so
-	// itself or through a transition form wrapping one. See ipHostReserved for the list
-	// that governs. Those name the host itself and its infrastructure, which no rule may
-	// reach, not even an explicit IP literal, so a sandboxed script that reached one was
-	// reaching for the host. It is the only one of the four that is an attack signal
-	// rather than a configuration fact, and the remedy is to investigate the script.
+	// loopback, link-local, multicast, IPv6 site-local, the unspecified address, and the
+	// v4 ranges that are never a valid destination (0/8, 198.18/15, 240/4) - whether the
+	// address says so itself or through a transition form wrapping one. See
+	// ipHostReserved for the list that governs. Those name the host itself and its
+	// infrastructure, which no rule may reach, not even an explicit IP literal. The
+	// remedy is usually to fix the client: a sandboxed script dialing loopback or an
+	// APIPA address is nearly always misconfigured rather than hostile, and the one
+	// address in this set that is not is reported as GuardBlockedMetadata instead.
 	GuardBlockedReserved Decision = "blocked-reserved"
 	// GuardBlockedUnparsed marks a refusal of a dial target the guard could not classify:
 	// an address that does not split into host and port, or a host that is not a plain
@@ -140,11 +154,13 @@ const (
 )
 
 // GuardRefused reports whether d is one of the upstream guard's refusals. Consumers that
-// only need to know the guard stopped a connection ask this rather than listing the four
-// constants, so a cause added later reaches them without an edit.
+// only need to know the guard stopped a connection ask this rather than listing the
+// constants; a cause added later then reaches them by editing this one function instead
+// of every caller. A consumer that switches on the constants directly does not get that,
+// so a new cause must be walked to those too.
 func (d Decision) GuardRefused() bool {
-	return d == GuardBlockedReserved || d == GuardBlockedUnparsed ||
-		d == GuardBlockedPrivate || d == GuardBlockedNAT64
+	return d == GuardBlockedMetadata || d == GuardBlockedReserved ||
+		d == GuardBlockedUnparsed || d == GuardBlockedPrivate || d == GuardBlockedNAT64
 }
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
@@ -373,10 +389,11 @@ type dialRefusalsKey struct{}
 // refuse at once. Read only after dial returns, so a late store from an attempt still
 // winding down can be missed, never torn.
 type dialRefusals struct {
-	// reserved, unparsed and private are whether the guard refused any address of this
-	// dial for that cause. Separate flags rather than one winner, because the addresses
-	// of one name can be refused for different causes at once and which one the
+	// metadata, reserved, unparsed and private are whether the guard refused any address
+	// of this dial for that cause. Separate flags rather than one winner, because the
+	// addresses of one name can be refused for different causes at once and which one the
 	// connection reports is blockedDecision's call, not the order the goroutines landed.
+	metadata atomic.Bool
 	reserved atomic.Bool
 	unparsed atomic.Bool
 	private  atomic.Bool
@@ -408,6 +425,10 @@ func refusalsOf(ctx context.Context) *dialRefusals {
 // out must not lower one it already reached. This one picks a report for ONE DIAL out of
 // the verdicts its several resolved addresses reached, and takes the most ALERTING,
 // because what the operator must not lose is that something here reached for the host.
+// Metadata sits at the top for that reason: it is the one refusal that says a script went
+// looking for the instance's credentials, and a dual-stack name whose other address is a
+// routine loopback or private refusal must not bury it.
+//
 // It also ranks a slot classifyNAT64 never sees: unparsed, which sits above private
 // because it is bento handing its own guard something it did not expect - a bug in bento
 // rather than a fact about the manifest - and a routine private refusal on another address
@@ -418,6 +439,8 @@ func refusalsOf(ctx context.Context) *dialRefusals {
 // counts it whatever the other addresses of the same name did.
 func (r *dialRefusals) blockedDecision() Decision {
 	switch {
+	case r.metadata.Load():
+		return GuardBlockedMetadata
 	case r.reserved.Load():
 		return GuardBlockedReserved
 	case r.unparsed.Load():
@@ -438,6 +461,8 @@ func (r *dialRefusals) blockedDecision() Decision {
 func blocked(ctx context.Context, cause Decision) *blockedUpstreamError {
 	if seen := refusalsOf(ctx); seen != nil {
 		switch cause {
+		case GuardBlockedMetadata:
+			seen.metadata.Store(true)
 		case GuardBlockedReserved:
 			seen.reserved.Store(true)
 		case GuardBlockedUnparsed:
@@ -445,7 +470,7 @@ func blocked(ctx context.Context, cause Decision) *blockedUpstreamError {
 		case GuardBlockedPrivate:
 			seen.private.Store(true)
 		default:
-			// The three arms above are every cause the guard refuses for; GuardBlockedNAT64
+			// The four arms above are every cause the guard refuses for; GuardBlockedNAT64
 			// is derived from the private flag rather than passed, and nothing else is a
 			// refusal at all. Unreached, and left to fall through rather than named, so a
 			// cause added without a flag beside it does not read as handled here.
@@ -455,8 +480,8 @@ func blocked(ctx context.Context, cause Decision) *blockedUpstreamError {
 }
 
 // guardUpstream rejects connecting to a resolved address that names a
-// host-internal or infrastructure target (loopback, link-local including
-// 169.254.169.254 cloud metadata, private/ULA, CGNAT, unspecified). Since the
+// host-internal or infrastructure target (loopback, link-local including the
+// 169.254.169.254 cloud metadata address, private/ULA, CGNAT, unspecified). Since the
 // allowlist matches on the CONNECT hostname, a permitted name that resolves to
 // such an address would otherwise let a sandboxed script reach services the host
 // can see but the sandbox must not. The exception is an address the CONNECT
@@ -487,11 +512,16 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	}
 	class, nat64Blackout := p.classifyNAT64(ip)
 	switch class {
+	case ipMetadata:
+		// Refused on the same terms as ipHostReserved, and reported apart: the instance
+		// metadata address serves the host's own credentials, so a sandboxed script that
+		// asked for it was reaching for them. See GuardBlockedMetadata.
+		return blocked(ctx, GuardBlockedMetadata)
 	case ipHostReserved:
-		// Loopback, link-local (incl. cloud metadata), and unspecified name the host
-		// itself or its infrastructure. The proxy runs on the host, so dialing these
-		// reaches the HOST's own services - never a legitimate sandbox egress target,
-		// so no rule may reach them, not even an explicit IP literal.
+		// Loopback, link-local, and unspecified name the host itself or its
+		// infrastructure. The proxy runs on the host, so dialing these reaches the
+		// HOST's own services - never a legitimate sandbox egress target, so no rule
+		// may reach them, not even an explicit IP literal.
 		return blocked(ctx, GuardBlockedReserved)
 	case ipPrivate:
 		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only for
@@ -564,13 +594,24 @@ type ipClass int
 const (
 	// ipPublic is a routable address the allowlist alone governs.
 	ipPublic ipClass = iota
-	// ipHostReserved names the host or its infrastructure - loopback, link-local
-	// (incl. cloud metadata), unspecified. No rule may reach it through the proxy.
+	// ipHostReserved names the host or its infrastructure - loopback, link-local,
+	// unspecified. No rule may reach it through the proxy.
 	ipHostReserved
 	// ipPrivate is RFC1918/ULA/CGNAT space: reachable only when a rule names the
 	// exact IP literal, never by resolving a permitted hostname to it.
 	ipPrivate
+	// ipMetadata is the cloud instance metadata address, 169.254.169.254. It is
+	// refused exactly as ipHostReserved is - it sits inside link-local - and kept a
+	// class of its own only so the refusal can be reported as the attack signal it is;
+	// see GuardBlockedMetadata. Every reader that refuses ipHostReserved must refuse
+	// this too, so a new comparison against ipHostReserved alone is a way to weaken the
+	// guard: classifyRFC8215 and classifyNAT64 are the two that already exist.
+	ipMetadata
 )
+
+// metadataIPv4 is the cloud instance metadata address every major provider serves at
+// (RFC 3927 link-local, so classifyIP refuses it either way; see ipMetadata).
+var metadataIPv4 = net.IPv4(169, 254, 169, 254)
 
 // isIPv6SiteLocal reports whether ip is in the deprecated IPv6 site-local range
 // fec0::/10 (RFC 3879). net.IP has no predicate for it - IsPrivate matches only ULA
@@ -586,6 +627,9 @@ func isIPv6SiteLocal(ip net.IP) bool {
 // IPv4 that To4 does not surface, so a synthesized address (DNS64/NAT64 is the
 // live case on IPv6-only subnets) is classified by its embedded IPv4.
 func classifyIP(ip net.IP) ipClass {
+	if ip.Equal(metadataIPv4) {
+		return ipMetadata
+	}
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() ||
 		ip.IsUnspecified() || isIPv6SiteLocal(ip) {
 		return ipHostReserved
@@ -652,6 +696,13 @@ func isRFC8215LocalUse(ip net.IP) bool {
 // wrong in.
 func classifyRFC8215(ip net.IP) ipClass {
 	ip16 := ip.To16()
+	// Ranked rather than first-hit: the carves are guesses, and a wrong-length read of a
+	// wrapped metadata address lands on its own padding and spells some other reserved
+	// address (a /48 carve read at /64 gives 254.169.254.0, inside 240/4). Returning the
+	// first host-reserved hit would refuse it correctly and report it as an ordinary
+	// loopback dial, so the most alerting decode over all lengths wins - the same rule,
+	// and the same reason, as blockedDecision's.
+	strictest := ipPrivate
 	for _, length := range rfc6052Lengths {
 		if length < 48 {
 			continue
@@ -667,11 +718,17 @@ func classifyRFC8215(ip net.IP) ipClass {
 		if v4.IsUnspecified() {
 			continue
 		}
-		if classifyIP(v4) == ipHostReserved {
-			return ipHostReserved
+		switch classifyIP(v4) {
+		case ipMetadata:
+			return ipMetadata
+		case ipHostReserved:
+			strictest = ipHostReserved
+		case ipPublic, ipPrivate:
+			// Local-use space is not routable, so a public or private decode cannot
+			// lower the ipPrivate floor this starts at, nor a verdict already raised.
 		}
 	}
-	return ipPrivate
+	return strictest
 }
 
 // embeddedIPv4 returns the IPv4 carried by an IPv6 transition address, or nil.
