@@ -467,6 +467,24 @@ func TestDegradedConsequencesDiscloseTheTierParityResiduals(t *testing.T) {
 	}
 }
 
+// The process-group sweep is disclosed as best-effort, but the direction that matters is
+// the one where it never runs: a SIGKILLed bento executes no teardown, and Pdeathsig on
+// the launcher reaches the target only where the target was execveat'd over it. On the
+// supervising dispatch the target outlives the run entirely, which is a larger residual
+// than a setsid() escape and was for a long time disclosed only in a source comment.
+// Unconditional, because the probe describes the tier and not one run's dispatch.
+func TestDegradedConsequencesDiscloseTheUnrunSweep(t *testing.T) {
+	for cell := 0; cell < 1<<5; cell++ {
+		b := func(i int) bool { return cell&(1<<i) != 0 }
+		l := filesystemLayer(namespacesBlocked, "userns blocked here", true, b(0), b(1), b(2), b(3), b(4), true)
+		for _, want := range []string{"if bento itself is killed outright", "execveat'd over the launcher", "supervises"} {
+			if !strings.Contains(l.Consequences, want) {
+				t.Errorf("cell %05b: consequences omit %q: %q", cell, want, l.Consequences)
+			}
+		}
+	}
+}
+
 // The degraded tier's unix-socket disclosure has to track what the kernel can actually
 // restrict, not repeat one fixed sentence. From ABI 6 the tier scopes the abstract
 // namespace and from ABI 9 the ruleset handles resolve_unix, granting it only on the

@@ -283,7 +283,7 @@ func filesystemLayer(ns namespaceProbe, nsReason string, landlockAvail, truncate
 			" - though seccomp blocks the cross-process memory read/write and ptrace injection " +
 			"that would let it take one over - and a background process it leaves is swept only best-effort by " +
 			"killing the run's process group, which a setsid() escapes and which also stops a target that reads " +
-			"an interactive terminal), and no network namespace (" + netFenceClause(netTCPRestricted) +
+			"an interactive terminal" + teardownResidual + "), and no network namespace (" + netFenceClause(netTCPRestricted) +
 			unixSocketClause(resolveUnixRestricted, scopedIPCRestricted) + ")" +
 			". Landlock has no right for file metadata at any ABI, so on any host path it can name - including " +
 			"one outside every grant - the target can still stat, chmod and chgrp what it owns, set timestamps " +
@@ -450,6 +450,18 @@ const terminalResidual = ". Nor does it detach the target from a controlling ter
 	"sequences the emulator acts on, resize the window (TIOCSWINSZ), and - by claiming the foreground " +
 	"group with tcsetpgrp, which the attached terminal still permits - read the user's keystrokes and " +
 	"take the foreground group's SIGINT"
+
+// teardownResidual discloses the other half of the process-group sweep: the half that
+// never runs. A SIGKILLed bento executes no teardown, so the sweep is reached only where
+// bento is still alive to run it; Pdeathsig on the launcher covers the shape where the
+// target is execveat'd over the launcher and so inherits the signal, and not the shape
+// where the launcher stays a supervisor (the exec block off, runTarget's superviseTarget
+// arm). Unconditional for the same reason terminalResidual is: the probe describes a tier,
+// not a particular run, and cannot know which dispatch the run it is describing will take.
+const teardownResidual = ", and which does not run at all if bento itself is killed outright - the launcher " +
+	"is torn down with it, but only where the target was execveat'd over the launcher does that reach the " +
+	"target, so a run the launcher supervises instead leaves the target and anything it backgrounded alive " +
+	"with nothing left to sweep them"
 
 // capBoundResidual discloses the capability bounding set, which the bwrap tier empties
 // with --cap-drop ALL and this tier can only attempt. It is named as inert rather than as
