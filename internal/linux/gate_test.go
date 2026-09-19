@@ -118,15 +118,15 @@ func TestGateConsultedButGuardBlocksHostReserved(t *testing.T) {
 func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 	c := &egressCollector{}
 	c.observe(proxy.AdmittedByGate, "b.example", "443")
-	c.observe(proxy.AdmittedByGate, "b.example", "443")     // duplicate: same key
-	c.observe(proxy.AdmittedByGate, "a.example", "443")     // sorts before b
-	c.observe(proxy.AdmittedByGate, "a.example", "22")      // same host, tiebreak on port
-	c.observe(proxy.Denied, "denied.example", "443")        // counted, never admitted
-	c.observe(proxy.GuardBlocked, "blocked.example", "443") // the guard's refusal
-	c.observe(proxy.GuardBlocked, "blocked.example", "443") // duplicate: same key
-	c.observe(proxy.AdmittedByGate, "b.example", "443")     // admitted, so not blocked
-	c.observe(proxy.Allowed, "declared.example", "443")     // counted, not a gate admission
-	c.observe(proxy.Refused, "", "")                        // at capacity: counted, no host to admit
+	c.observe(proxy.AdmittedByGate, "b.example", "443")             // duplicate: same key
+	c.observe(proxy.AdmittedByGate, "a.example", "443")             // sorts before b
+	c.observe(proxy.AdmittedByGate, "a.example", "22")              // same host, tiebreak on port
+	c.observe(proxy.Denied, "denied.example", "443")                // counted, never admitted
+	c.observe(proxy.GuardBlockedReserved, "blocked.example", "443") // the guard's refusal
+	c.observe(proxy.GuardBlockedPrivate, "blocked.example", "443")  // same key, other cause: one set
+	c.observe(proxy.AdmittedByGate, "b.example", "443")             // admitted, so not blocked
+	c.observe(proxy.Allowed, "declared.example", "443")             // counted, not a gate admission
+	c.observe(proxy.Refused, "", "")                                // at capacity: counted, no host to admit
 
 	if got := c.counted(); got != 10 {
 		t.Errorf("counted() = %d, want 10 (every decision counts, duplicates included)", got)
@@ -175,7 +175,7 @@ func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 	// One host per connection, out of a single namespace: a prefix per decision would
 	// make the set-membership assertions below true no matter where a verdict landed.
 	decision := func(i int) proxy.Decision {
-		return [...]proxy.Decision{proxy.AdmittedByGate, proxy.Denied, proxy.GuardBlocked}[i%3]
+		return [...]proxy.Decision{proxy.AdmittedByGate, proxy.Denied, proxy.GuardBlockedPrivate}[i%3]
 	}
 	for i := range conns {
 		wg.Go(func() {
@@ -194,7 +194,7 @@ func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 	}{
 		{"gateAdmitted", proxy.AdmittedByGate, c.gateAdmitted()},
 		{"allowlistDenied", proxy.Denied, c.allowlistDenied()},
-		{"guardBlocked", proxy.GuardBlocked, c.guardBlocked()},
+		{"guardBlocked", proxy.GuardBlockedPrivate, c.guardBlocked()},
 	} {
 		if len(set.got) != conns/3 {
 			t.Errorf("%s() has %d hosts, want %d: a connection's verdict reaches exactly one set", set.name, len(set.got), conns/3)

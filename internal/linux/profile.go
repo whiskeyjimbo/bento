@@ -315,7 +315,7 @@ func (r *recordedEgress) observe(d proxy.Decision, host, port string) {
 		return
 	}
 	r.hosts = append(r.hosts, profile.HostPort{Host: host, Port: port})
-	if d == proxy.GuardBlocked {
+	if d.GuardRefused() {
 		r.blocked = append(r.blocked, profile.HostPort{Host: host, Port: port})
 	}
 }
@@ -336,7 +336,7 @@ func (r *recordedEgress) into(obs *profile.Observation) {
 // Either way the host is recorded, so the proposed manifest is the same.
 //
 // record receives the proxy's own decision so the caller can tell the two refusals a
-// profiling run can see apart from an ordinary recording. GuardBlocked says the upstream
+// profiling run can see apart from an ordinary recording. A guard refusal says the upstream
 // guard refused the destination - the name resolved into space the sandbox must not
 // reach - which needs a dial to be attempted at all, so it never appears without
 // allowNetwork. Untunneled says the request was not a CONNECT, which is decided before

@@ -41,24 +41,41 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 	// The classes classify actually distinguishes, including the transition forms that
 	// wrap a host-reserved v4 address in a public-looking v6 one - those are the ones a
 	// crossed verdict could hide behind.
-	nonPublic := []string{
-		"127.0.0.1", "10.0.0.5", "169.254.169.254", "fd00::1", "100.64.0.1",
-		"64:ff9b::a9fe:a9fe",      // well-known NAT64 prefix wrapping the metadata address
-		"::ffff:169.254.169.254",  // IPv4-mapped metadata
-		"2002:a9fe:a9fe::1",       // 6to4 wrapping the same
-		"198.18.0.1", "240.0.0.1", // benchmarking and reserved v4
+	// The decision each one must be reported as is spelled out rather than derived from
+	// the guard's own classification: the two causes carry opposite operator remedies -
+	// host-reserved says a script reached for the host itself, private-no-grant says a
+	// permitted name landed on the LAN - and a table computed the way the code computes it
+	// would agree with a guard that had lost the distinction entirely.
+	nonPublic := []struct {
+		ip   string
+		want Decision
+	}{
+		{"127.0.0.1", GuardBlockedReserved},
+		{"10.0.0.5", GuardBlockedPrivate},
+		{"169.254.169.254", GuardBlockedReserved},
+		{"fd00::1", GuardBlockedPrivate},
+		{"100.64.0.1", GuardBlockedPrivate},              // CGNAT: infrastructure, but reachable by literal
+		{"64:ff9b::a9fe:a9fe", GuardBlockedReserved},     // well-known NAT64 prefix wrapping the metadata address
+		{"::ffff:169.254.169.254", GuardBlockedReserved}, // IPv4-mapped metadata
+		{"2002:a9fe:a9fe::1", GuardBlockedReserved},      // 6to4 wrapping the same
+		{"198.18.0.1", GuardBlockedReserved},             // RFC 2544 benchmarking
+		{"240.0.0.1", GuardBlockedReserved},              // reserved v4
 	}
 	resolved := map[string]string{}
+	wantDecision := map[string]Decision{}
 	hosts := make([]string, 0, conns)
 	for i := range conns {
 		host := fmt.Sprintf("pub%d.example.com", i)
 		ip := "93.184.216.34"
+		want := AdmittedByGate
 		if i%2 == 1 {
 			host = fmt.Sprintf("priv%d.example.com", i)
 			// i is odd here, so index on the pair number or half the list is unreachable.
-			ip = nonPublic[(i/2)%len(nonPublic)]
+			entry := nonPublic[(i/2)%len(nonPublic)]
+			ip, want = entry.ip, entry.want
 		}
 		resolved[host] = ip
+		wantDecision[host] = want
 		hosts = append(hosts, host)
 	}
 
@@ -184,13 +201,12 @@ func TestGuardUnderConcurrencyBlocksOnlyNonPublicTunnels(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	// Each refusal must be reported as ITS OWN cause, not merely as a refusal: the causes
+	// are decided per connection on shared per-dial state, so a cause leaking between two
+	// connections held at the guard together still blocks both and shows up only here.
 	for host, d := range decisions {
-		want := AdmittedByGate
-		if strings.HasPrefix(host, "priv") {
-			want = GuardBlocked // the guard's refusal, after the gate admitted it
-		}
-		if d != want {
-			t.Errorf("observer reported %s as %q, want %q", host, d, want)
+		if want := wantDecision[host]; d != want {
+			t.Errorf("observer reported %s (%s) as %q, want %q", host, resolved[host], d, want)
 		}
 	}
 	if len(decisions) != len(hosts) {

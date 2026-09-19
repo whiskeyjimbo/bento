@@ -519,7 +519,7 @@ func TestRecordedEgressKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 	// the set-membership assertions below true no matter where a verdict landed. Every
 	// refusal carries a host, so the unproposable list is as contended as the rest.
 	decision := func(i int) proxy.Decision {
-		return [...]proxy.Decision{proxy.Denied, proxy.GuardBlocked, proxy.Untunneled, proxy.Refused}[i%4]
+		return [...]proxy.Decision{proxy.Denied, proxy.GuardBlockedPrivate, proxy.Untunneled, proxy.Refused}[i%4]
 	}
 	for i := range conns {
 		wg.Go(func() {
@@ -539,8 +539,8 @@ func TestRecordedEgressKeepsVerdictsApartUnderConcurrency(t *testing.T) {
 		got  []profile.HostPort
 	}{
 		// Hosts carries both proposable verdicts; the other three sets carry one each.
-		{"Hosts", []proxy.Decision{proxy.Denied, proxy.GuardBlocked}, obs.Hosts},
-		{"Blocked", []proxy.Decision{proxy.GuardBlocked}, obs.Blocked},
+		{"Hosts", []proxy.Decision{proxy.Denied, proxy.GuardBlockedPrivate}, obs.Hosts},
+		{"Blocked", []proxy.Decision{proxy.GuardBlockedPrivate}, obs.Blocked},
 		{"Untunneled", []proxy.Decision{proxy.Untunneled}, obs.Untunneled},
 		{"UnproposableHosts", []proxy.Decision{proxy.Refused}, obs.UnproposableHosts},
 	} {

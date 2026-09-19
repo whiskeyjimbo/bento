@@ -71,14 +71,40 @@ const (
 	// traffic - and distinct from a bare parse failure because it names the destination
 	// the request line addressed.
 	Untunneled Decision = "untunneled"
-	// GuardBlocked marks a connection the allowlist (or a gate) permitted by name but
-	// the upstream guard then refused, because the name resolved to an address the
-	// sandbox must not reach. It is distinct from Denied because the two call for
-	// different operator action - widening the allowlist cannot fix a guard block,
-	// while naming the address as an explicit IP rule can - and the client is told
-	// nothing that separates the guard's refusal from an ordinary dial failure, so
-	// the observer is the only place the distinction survives.
-	GuardBlocked Decision = "blocked"
+	// The four constants below are one decision split four ways. Each marks a connection
+	// the allowlist (or a gate) permitted by name and the upstream guard then refused,
+	// because the name resolved to an address the sandbox must not reach. All four are
+	// distinct from Denied because widening the allowlist cannot fix a guard block, and
+	// the client is told nothing that separates any of them from an ordinary dial
+	// failure, so the observer is the only place they survive. They are split from each
+	// other for the reason GateDenied and GateFaulted are: the operator remedy differs,
+	// and folded together the one refusal that is an attack signal cannot be alerted on
+	// without firing on the routine ones. Decision.GuardRefused reports whether a
+	// decision is one of them.
+
+	// GuardBlockedReserved marks a refusal of loopback, link-local (including the
+	// 169.254.169.254 cloud metadata address) or the unspecified address. Those name the
+	// host itself and its infrastructure, which no rule may reach - not even an explicit
+	// IP literal - so a sandboxed script that reached one was reaching for the host. It
+	// is the only one of the four that is an attack signal rather than a configuration
+	// fact, and the remedy is to investigate the script.
+	GuardBlockedReserved Decision = "blocked-reserved"
+	// GuardBlockedUnparsed marks a refusal of a dial target the guard could not classify:
+	// an address that does not split into host and port, or a host that is not a plain
+	// IP. The dialer hands ControlContext an already-resolved address, so neither shape
+	// is something a script can ask for - this is bento's own bug, and the remedy is to
+	// investigate bento rather than the manifest.
+	GuardBlockedUnparsed Decision = "blocked-unparsed"
+	// GuardBlockedPrivate marks a permitted name that resolved into RFC1918/ULA/CGNAT
+	// with no literal grant on this connection covering it - the SSRF case the guard
+	// exists for. The remedy is a manifest decision: naming the address as an explicit IP
+	// rule is what makes reaching it deliberate.
+	GuardBlockedPrivate Decision = "blocked-private"
+	// GuardBlockedNAT64 marks a refusal the run's own DNS caused rather than its manifest:
+	// an IPv6 destination no transition prefix decodes, refused for no reason but that
+	// NAT64 discovery was inconclusive. The remedy is to fix DNS; see NAT64Blackouts,
+	// which counts the same connections.
+	GuardBlockedNAT64 Decision = "blocked-nat64"
 	// RefusedAtCapacity marks a connection turned away because every handler slot was
 	// taken. It is distinct from Refused because the two say different things about the
 	// run: a Refused connection was answered by the proxy's own rules, while one refused
@@ -93,7 +119,7 @@ const (
 	// is distinct from Allowed because nothing ever egressed: profiling proposes a
 	// manifest rule for every host it records, and folding this into Allowed offered the
 	// operator a grant for a destination the script never reached. Distinct from
-	// GuardBlocked too, which is bento refusing an address rather than the network
+	// the guard's refusals too, which are bento refusing an address rather than the network
 	// failing to carry one, and where the remedy is a literal grant rather than a live
 	// host. A gate admission that then failed to dial stays AdmittedByGate; see handle.
 	Unreachable Decision = "unreachable"
@@ -106,6 +132,14 @@ const (
 	// connection is the one outcome the allowlist's word cannot be taken on.
 	Faulted Decision = "fault"
 )
+
+// GuardRefused reports whether d is one of the upstream guard's refusals. Consumers that
+// only need to know the guard stopped a connection ask this rather than listing the four
+// constants, so a cause added later reaches them without an edit.
+func (d Decision) GuardRefused() bool {
+	return d == GuardBlockedReserved || d == GuardBlockedUnparsed ||
+		d == GuardBlockedPrivate || d == GuardBlockedNAT64
+}
 
 // Proxy enforces an egress allowlist for CONNECT tunnels.
 type Proxy struct {
@@ -216,7 +250,7 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 //
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries them only sometimes,
-// and either may be empty on its own - see Refused. A GuardBlocked decision carries the CONNECT
+// and either may be empty on its own - see Refused. A guard refusal carries the CONNECT
 // target, not the address it resolved to: the guard's own text names the address, and
 // that never leaves the host side.
 func WithObserver(observe func(d Decision, host, port string)) Option {
@@ -306,7 +340,7 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 // blockedUpstreamError is returned by guardUpstream when a resolved address must
 // not be dialed: a non-public IP the rules do not explicitly authorize, or an
 // address the guard cannot parse (refused rather than dialed blind). handle uses
-// it to report the refusal as GuardBlocked rather than as the connection's own
+// it to report the refusal as the guard's own decision rather than as the connection's own
 // decision.
 // What the CLIENT is told is deliberately identical to an ordinary dial failure:
 // telling the two apart classifies the name against the host's internal DNS.
@@ -332,8 +366,13 @@ type dialRefusalsKey struct{}
 // refuse at once. Read only after dial returns, so a late store from an attempt still
 // winding down can be missed, never torn.
 type dialRefusals struct {
-	// any is whether the guard refused any address of this dial.
-	any atomic.Bool
+	// reserved, unparsed and private are whether the guard refused any address of this
+	// dial for that cause. Separate flags rather than one winner, because the addresses
+	// of one name can be refused for different causes at once and which one the
+	// connection reports is blockedDecision's call, not the order the goroutines landed.
+	reserved atomic.Bool
+	unparsed atomic.Bool
+	private  atomic.Bool
 	// nat64Blackout is whether one of those refusals was a NAT64 blackout - an address
 	// refused for no reason but that discovery was inconclusive. Kept apart from any
 	// because a name that also has an A record still connects, and a run that reached
@@ -353,10 +392,49 @@ func refusalsOf(ctx context.Context) *dialRefusals {
 	return seen
 }
 
-// blocked notes the refusal on the dial context and returns it.
-func blocked(ctx context.Context, addr string) *blockedUpstreamError {
+// blockedDecision reports which refusal this dial makes of the connection, or "" if the
+// guard refused none of its addresses. The order is by ALERTING VALUE, not by how strictly
+// the guard refuses: host-reserved says a script reached for the host itself, and it must
+// not be hidden behind a routine refusal of another address of the same name. (classifyNAT64
+// ranks by strictness for a different question; the two orderings are unrelated.)
+//
+// The blackout is derived from the private arm rather than ranked as a fifth cause: it is
+// the reason a private verdict was reached, not a cause beside it, and NAT64Blackouts
+// counts it whatever the other addresses of the same name did.
+func (r *dialRefusals) blockedDecision() Decision {
+	switch {
+	case r.reserved.Load():
+		return GuardBlockedReserved
+	case r.unparsed.Load():
+		return GuardBlockedUnparsed
+	case r.private.Load():
+		if r.nat64Blackout.Load() {
+			return GuardBlockedNAT64
+		}
+		return GuardBlockedPrivate
+	}
+	return ""
+}
+
+// blocked notes the refusal and its cause on the dial context and returns the error. The
+// cause is a parameter rather than something each arm stores for itself so that no arm
+// can refuse without recording one: handle reports the connection from this record alone.
+// GuardBlockedNAT64 is not passed here - it is derived; see blockedDecision.
+func blocked(ctx context.Context, addr string, cause Decision) *blockedUpstreamError {
 	if seen := refusalsOf(ctx); seen != nil {
-		seen.any.Store(true)
+		switch cause {
+		case GuardBlockedReserved:
+			seen.reserved.Store(true)
+		case GuardBlockedUnparsed:
+			seen.unparsed.Store(true)
+		case GuardBlockedPrivate:
+			seen.private.Store(true)
+		default:
+			// The three arms above are every cause the guard refuses for; GuardBlockedNAT64
+			// is derived from the private flag rather than passed, and nothing else is a
+			// refusal at all. Unreached, and left to fall through rather than named, so a
+			// cause added without a flag beside it does not read as handled here.
+		}
 	}
 	return &blockedUpstreamError{addr: addr}
 }
@@ -376,7 +454,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if err != nil {
 		// The dialer hands ControlContext a resolved host:port; an address that does
 		// not even split is anomalous, so refuse it rather than fail open.
-		return blocked(ctx, address)
+		return blocked(ctx, address, GuardBlockedUnparsed)
 	}
 	// Strip an IPv6 zone id before parsing. net.ParseIP rejects a zoned literal -
 	// "fe80::1%eth0", and the mapped-IPv4 "::ffff:169.254.169.254%eth0" or its
@@ -390,7 +468,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if ip == nil {
 		// A resolved dial target that is not a plain IP cannot be classified, so
 		// refuse it rather than dial an address the guard could not vet.
-		return blocked(ctx, address)
+		return blocked(ctx, address, GuardBlockedUnparsed)
 	}
 	class, nat64Blackout := p.classifyNAT64(ip)
 	switch class {
@@ -399,7 +477,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
 		// reaches the HOST's own services - never a legitimate sandbox egress target,
 		// so no rule may reach them, not even an explicit IP literal.
-		return blocked(ctx, ip.String())
+		return blocked(ctx, ip.String(), GuardBlockedReserved)
 	case ipPrivate:
 		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only for
 		// the literal grant this connection carries; a permitted hostname resolving
@@ -415,7 +493,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 					seen.nat64Blackout.Store(true)
 				}
 			}
-			return blocked(ctx, ip.String())
+			return blocked(ctx, ip.String(), GuardBlockedPrivate)
 		}
 	case ipPublic:
 		// The ordinary egress target; the gate above already decided whether this
@@ -922,7 +1000,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 
 	// A gate admission is reported distinctly from a manifest allow so the run
 	// stays honest about egress it permitted beyond the declared policy. The
-	// blocked-upstream refusal below reports GuardBlocked instead: the guard overrides
+	// blocked-upstream refusal below reports the guard's own cause instead: the guard overrides
 	// the gate, so a gate-admitted host resolving to non-public space was never
 	// admitted past it.
 	decision := Allowed
@@ -942,18 +1020,19 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	}
 	upstream, err := p.dial(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
-		// The flag as well as the error: a name with several addresses surfaces only the
-		// first one's failure, so a guard refusal further down the list is in the flag
-		// alone. Read after dial returns, so a late store from an attempt still winding
-		// down can only be missed, never torn.
-		var blocked *blockedUpstreamError
-		if errors.As(err, &blocked) || refusals.any.Load() {
+		// The record rather than the error: a name with several addresses surfaces only
+		// the first one's failure, so a guard refusal further down the list is in the
+		// record alone - and the error cannot say which cause it was anyway. blocked
+		// writes the record on the same context the error came back through, so the two
+		// are never out of step. Read after dial returns, so a late store from an attempt
+		// still winding down can only be missed, never torn.
+		if guardRefusal := refusals.blockedDecision(); guardRefusal != "" {
 			// Counted per connection, not per refused address: a CONNECT whose name has
 			// several undecodable AAAAs lost one destination, not one per address.
 			if refusals.nat64Blackout.Load() {
 				p.nat64Blackouts.Add(1)
 			}
-			// Reported GuardBlocked, but answered exactly as an ordinary dial failure is. A
+			// Reported by cause, but answered exactly as an ordinary dial failure is. A
 			// distinct refusal here told the client that the name resolved into
 			// non-public space, which under a permissive allowlist (`bento profile
 			// --allow-network` runs *:*) lets a confined process classify arbitrary
@@ -962,7 +1041,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 			// stays out of the shared body too - a *net.OpError carries the Addr in its
 			// own text. The guard still refuses before any SYN while a real dial costs an
 			// RTT, so this removes the textual oracle, not the timing one.
-			report(GuardBlocked, host, port)
+			report(guardRefusal, host, port)
 			writeStatus(client, "502 Bad Gateway", fmt.Sprintf("bento could not reach %s:%s", host, port))
 			return
 		}

@@ -1170,11 +1170,6 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 			c.admitted = make(map[string]enforce.HostPort)
 		}
 		c.admitted[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
-	case proxy.GuardBlocked:
-		if c.blocked == nil {
-			c.blocked = make(map[string]enforce.HostPort)
-		}
-		c.blocked[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	case proxy.Denied:
 		if c.denied == nil {
 			c.denied = make(map[string]enforce.HostPort)
@@ -1196,6 +1191,15 @@ func (c *egressCollector) observe(d proxy.Decision, host, port string) {
 		}
 		c.gateDenied[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 		c.gateFaults++
+	case proxy.GuardBlockedReserved, proxy.GuardBlockedUnparsed, proxy.GuardBlockedPrivate, proxy.GuardBlockedNAT64:
+		// Every cause the guard refuses for shares one set: an operator reading the result
+		// needs the destination whatever the cause was, and the four differ in the remedy
+		// rather than in whether the host belongs here. Telling them apart is the
+		// embedder's observer's job, which sees the decision itself.
+		if c.blocked == nil {
+			c.blocked = make(map[string]enforce.HostPort)
+		}
+		c.blocked[net.JoinHostPort(host, port)] = enforce.HostPort{Host: host, Port: port}
 	case proxy.Untunneled:
 		if c.untunneled == nil {
 			c.untunneled = make(map[string]enforce.HostPort)

@@ -1117,8 +1117,8 @@ func TestBlocksPermittedHostResolvingToNonPublic(t *testing.T) {
 	// The status alone cannot carry this: nothing listens on port 9 either, so a
 	// removed guard would answer with the same 502 and the test would pass over a
 	// hole. The guard's verdict is only visible on the host side.
-	if decision != GuardBlocked {
-		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlocked)
+	if decision != GuardBlockedReserved {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlockedReserved)
 	}
 	body, _ := io.ReadAll(br)
 	// The refusal must not answer the query it refused: naming the resolved address
@@ -1167,8 +1167,8 @@ func TestGuardRefusalIsIndistinguishableFromDialFailure(t *testing.T) {
 	if blocked != failed {
 		t.Errorf("a guard block answers %q but a dial failure answers %q; the split classifies the name for the sandbox", blocked, failed)
 	}
-	if d, _ := decisions.Load("private.example.com"); d != GuardBlocked {
-		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, GuardBlocked)
+	if d, _ := decisions.Load("private.example.com"); d != GuardBlockedPrivate {
+		t.Errorf("observer reported %v for the guard-blocked host, want %q - the host must keep the distinction the sandbox lost", d, GuardBlockedPrivate)
 	}
 	if d, _ := decisions.Load("public.example.com"); d != Unreachable {
 		t.Errorf("observer reported %v for the ordinary dial failure, want %q", d, Unreachable)
@@ -1200,8 +1200,8 @@ func TestGuardBlockSurvivesAnotherAddressesError(t *testing.T) {
 	defer c.Close()
 	connect(t, c, "twofaced.example.com:443")
 	<-done
-	if decision != GuardBlocked {
-		t.Errorf("observer reported %q, want %q - the guard refused an address and only the report says so", decision, GuardBlocked)
+	if decision != GuardBlockedPrivate {
+		t.Errorf("observer reported %q, want %q - the guard refused an address and only the report says so", decision, GuardBlockedPrivate)
 	}
 }
 
@@ -1254,8 +1254,8 @@ func TestExplicitLoopbackRuleStillBlocked(t *testing.T) {
 	if !strings.Contains(status, "502") {
 		t.Fatalf("status = %q, want 502 (an explicit loopback rule must not reach the host)", status)
 	}
-	if decision != GuardBlocked {
-		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlocked)
+	if decision != GuardBlockedReserved {
+		t.Errorf("observer reported %q, want %q - the guard did not refuse this dial", decision, GuardBlockedReserved)
 	}
 }
 
@@ -1499,10 +1499,10 @@ func TestGatekeeperCannotReachNonPublic(t *testing.T) {
 		t.Fatalf("status = %q, want 502 (gate admission cannot reach loopback)", status)
 	}
 	// The client cannot tell this from a dial failure, so the block shows on the host
-	// side: GuardBlocked, not AdmittedByGate, which is what keeps the run's
+	// side: GuardBlockedReserved, not AdmittedByGate, which is what keeps the run's
 	// gate-admitted list from claiming a destination the guard never let through.
-	if decision != GuardBlocked {
-		t.Errorf("observer reported %q, want %q", decision, GuardBlocked)
+	if decision != GuardBlockedReserved {
+		t.Errorf("observer reported %q, want %q", decision, GuardBlockedReserved)
 	}
 }
 
@@ -2184,5 +2184,28 @@ func TestAFailedDialIsReportedApartFromAnEstablishedTunnel(t *testing.T) {
 				t.Errorf("decisions = %v, want exactly [%v]", got, tc.want)
 			}
 		})
+	}
+}
+
+// The two arms that refuse a dial target the guard could not classify are reported apart
+// from the rest: nothing a script can ask for reaches them - the dialer hands
+// ControlContext a resolved address - so one of these in a run's record means bento
+// handed its own guard something it did not expect, and the remedy is to investigate
+// bento rather than the manifest.
+func TestUnclassifiableDialTargetIsReportedAsItsOwnCause(t *testing.T) {
+	p := New(nil)
+	for _, addr := range []string{
+		"10.0.0.5",           // no port at all: does not split
+		"host.example:443",   // splits, but the host is not a resolved IP
+		"[::ffff:zz%eth0]:1", // a zone strip that leaves something ParseIP still rejects
+	} {
+		var refusals dialRefusals
+		ctx := withDialRefusals(t.Context(), &refusals)
+		if err := p.guardUpstream(ctx, "tcp", addr, nil); err == nil {
+			t.Fatalf("guardUpstream(%q) passed an address it could not classify", addr)
+		}
+		if got := refusals.blockedDecision(); got != GuardBlockedUnparsed {
+			t.Errorf("guardUpstream(%q) refused as %q, want %q", addr, got, GuardBlockedUnparsed)
+		}
 	}
 }
