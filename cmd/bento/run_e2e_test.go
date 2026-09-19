@@ -129,3 +129,48 @@ func TestRunRefusesBadEnvFlags(t *testing.T) {
 		})
 	}
 }
+
+// runCmdCapturingStderr is runCmd with the process's own stderr redirected, which is where
+// writeRunResult renders: run.go hands it os.Stderr rather than cobra's writer, so cobra's
+// buffers see nothing of the verdict.
+func runCmdCapturingStderr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drained while the command runs: a verdict can outgrow a pipe buffer, and reading
+	// afterwards would deadlock the run.
+	out := readAll(r)
+	runErr := func() error {
+		saved := os.Stderr
+		defer func() {
+			os.Stderr = saved
+			w.Close()
+		}()
+		os.Stderr = w
+		return runCmd(t, args...)
+	}()
+	return <-out, runErr
+}
+
+// run.go:163 is the only call site of writeRunResult, and the ~20 run rows in
+// output_parity_test.go render their human half by calling it directly - so without this
+// a run that returned the exit code and rendered nothing would stay green everywhere.
+// The exit code alone does not cover it: it comes back from the same call, but a return
+// built by hand from res.ExitCode satisfies every other assertion in this file.
+func TestACompletedRunRendersItsVerdict(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{
+		Entrypoint:  "./run.sh",
+		Interpreter: "sh",
+	})
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want the target's own 0:\n%s", got, stderr)
+	}
+	if want := "a denial is the script's own error to report"; !strings.Contains(stderr, want) {
+		t.Errorf("a completed run must render its verdict (%q):\n%s", want, stderr)
+	}
+}

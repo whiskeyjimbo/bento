@@ -254,7 +254,8 @@ func isZeroJSON(v any) bool {
 // renderRun calls the dispatcher rather than the run command: every run row's fixture is
 // a synthesised enforce.Result - a signalled exit alongside four egress collectors and an
 // exec record - that no runnable target produces. run.go's single call site is covered by
-// run_e2e_test.go, whose exit-code assertions are on what writeRunResult hands back.
+// run_e2e_test.go's TestACompletedRunRendersItsVerdict, which asserts the rendering and
+// not only the exit code the same call hands back.
 func renderRun(t *testing.T, p *policy.Policy, env map[string]string, res enforce.Result, runErr error) (string, map[string]any) {
 	t.Helper()
 	var human bytes.Buffer
@@ -359,12 +360,12 @@ func parityValidateStamped(t *testing.T) (string, map[string]any) {
 // doctor rows that would are rendered before this one.
 func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
 	// The passwd home is the anchor $HOME cannot move, so nesting them means putting
-	// $HOME under it. A host whose uid has no usable passwd entry cannot be arranged into
-	// that shape at all - said out loud rather than skipped, since a row that quietly
-	// stops asserting is what this table exists to prevent.
+	// $HOME under it. A uid with no usable passwd entry cannot be arranged into that shape
+	// at all, which is the host dependency skipMissingDep exists for: skipped here, fatal
+	// where BENTO_REQUIRE_TEST_DEPS says the host is supposed to have one.
 	pw := denylist.PasswdHome()
 	if pw == "" || pw == "/" {
-		t.Fatalf("uid %d has no usable passwd home, so the nested-anchor row cannot be driven through doctor on this host", os.Getuid())
+		skipMissingDep(t, "uid %d has no usable passwd home, so the nested-anchor row cannot be driven through doctor", os.Getuid())
 	}
 	t.Setenv("HOME", filepath.Join(pw, ".aws"))
 	t.Setenv("HISTFILE", "/usr/bin/python3")
