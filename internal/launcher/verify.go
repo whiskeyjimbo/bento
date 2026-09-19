@@ -195,8 +195,9 @@ func foreignDevNodes(names, granted []string) []string {
 // create, or one the run's own grants never made reachable, leaves nothing there, and
 // nothing there is the strongest form of hidden.
 func verifyShields(hidden, readOnly []string) error {
+	all := append(append([]string{}, hidden...), readOnly...)
 	for _, path := range hidden {
-		empty, err := shieldHidden(path)
+		empty, err := shieldHidden(path, nestedShieldNames(path, all))
 		if err != nil {
 			return err
 		}
@@ -222,10 +223,23 @@ func verifyShields(hidden, readOnly []string) error {
 // looks like from in here; a populated directory or a non-empty file is the real thing
 // showing through.
 //
+// own names the entries bento itself put in the directory: the deny-list can shield a path
+// NESTED inside a hidden one, and bwrap has to create that mount point inside the parent's
+// tmpfs, so the parent is legitimately non-empty. A credential store holding a symlink into
+// itself produces exactly that - the link target gets a rule of its own - and it is an
+// ordinary shape, not a shimmed argv.
+//
+// The cost is a residual, and it is the reason own is the mount-point names rather than a
+// blanket skip: a store whose every top-level entry happens to be one of those names would
+// also pass with the parent's tmpfs dropped. What is still covered there is each nested
+// shield, which is checked on its own; what is exposed is whatever else sits beside them
+// under the parent. A store with any other entry - which is the ordinary case, and every
+// case in the deny-list's own corpus - still fails.
+//
 // Both are read through the ordinary filesystem calls rather than statfs, because statfs
 // cannot tell bwrap's tmpfs from the host's /tmp (verifyFreshTmp's own problem) and says
 // nothing at all about a bind of the real file.
-func shieldHidden(path string) (bool, error) {
+func shieldHidden(path string, own []string) (bool, error) {
 	st, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return true, nil
@@ -240,7 +254,32 @@ func shieldHidden(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("launcher: reading %s to verify the deny-list shield over it: %w", path, err)
 	}
-	return len(entries) == 0, nil
+	for _, e := range entries {
+		if !slices.Contains(own, e.Name()) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// nestedShieldNames are the entries of dir that are mount points bento's own argv created:
+// for every shield nested under dir, the one component of it that dir holds. A shield two
+// levels down (~/.store/versions/leaf) contributes "versions", because that is the name
+// bwrap had to create in dir's tmpfs to reach the leaf.
+func nestedShieldNames(dir string, shields []string) []string {
+	prefix := dir + "/"
+	var names []string
+	for _, s := range shields {
+		rest, ok := strings.CutPrefix(s, prefix)
+		if !ok || rest == "" {
+			continue
+		}
+		top, _, _ := strings.Cut(rest, "/")
+		if !slices.Contains(names, top) {
+			names = append(names, top)
+		}
+	}
+	return names
 }
 
 // shieldWritable reports whether a read-only shield's path sits on a mount that still

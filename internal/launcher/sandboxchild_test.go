@@ -16,6 +16,13 @@ import (
 // under /tmp.
 const boundSelf = "/tmp/bento-launcher.test"
 
+// The nested pair the "nestedshield" arm builds. Under /var because it exists on every host
+// bwrap can bind and is outside every other arm's business.
+const (
+	nestedShieldParent = "/var/tmp"
+	nestedShieldChild  = "/var/tmp/inner"
+)
+
 // inSandbox re-points a test child at a real bwrap sandbox. Run verifies from the inside
 // that the sandbox it is in is the one the host asked bwrap for, so a child that has to
 // reach past those checks needs a real one. It cannot be built with a bare clone: on a
@@ -59,6 +66,13 @@ func inSandbox(t *testing.T, cmd *exec.Cmd, weaken string) {
 	// test cannot bind the host's own /dev/mem without privilege.
 	if weaken == "devinject" {
 		args = append(args, "--ro-bind", "/dev/null", "/dev/mem")
+	}
+	// Not a weakening either: a deny-list shield nested inside another one, which is what a
+	// credential store holding a symlink into itself produces. bwrap creates the child's
+	// mount point inside the parent's tmpfs, so the parent is legitimately non-empty and
+	// verifyShields must still accept it.
+	if weaken == "nestedshield" {
+		args = append(args, "--tmpfs", nestedShieldParent, "--tmpfs", nestedShieldChild)
 	}
 	// The host's own /tmp in place of the fresh one, which is what a shim filtering
 	// --tmpfs out of argv leaves behind - and it keeps /tmp writable, so the binary bind
