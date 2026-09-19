@@ -434,8 +434,12 @@ func tokenAssignment(line string) bool {
 // "gitdir: " pointer - that is how a worktree and a submodule are spelled. A .git
 // DIRECTORY is read for the same reason: "mkdir .git" is the same capability as
 // "touch .git", so its HEAD has to name a ref or a commit. .hg and .svn have no file
-// form and no one sentinel this package can name without inventing their layouts, so
-// for those a directory still counts on its name.
+// form and no one sentinel this package can name without inventing their layouts -
+// .hg/requires and .svn/wc.db are version-dependent, and naming the wrong one refuses a
+// real checkout, whose cost is a user's credentials scanned when they expected pruning.
+// So those two are held to non-emptiness instead: it defeats the bare "mkdir .hg" with
+// the same capability argument and without knowing either layout, and it deliberately
+// does not validate that what is inside is a real store.
 func isCheckout(dir string) bool {
 	for _, marker := range []string{".git", ".hg", ".svn"} {
 		path := filepath.Join(dir, marker)
@@ -450,13 +454,30 @@ func isCheckout(dir string) bool {
 				}
 				continue
 			}
-			return true
+			if hasAnyEntry(path) {
+				return true
+			}
+			continue
 		}
 		if marker == ".git" && info.Mode().IsRegular() && hasGitdirLine(path) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasAnyEntry reports whether dir holds at least one entry. One entry is read, not the
+// whole tree: this runs per directory over a whole home, and a populated .svn is large.
+// An unreadable marker directory answers false, which costs a scan of a home that may
+// have been a checkout - the same direction the .git arm fails in, and the loud one.
+func hasAnyEntry(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
 }
 
 // hasHEADLine reports whether path is a git HEAD: the symbolic "ref: " form a checkout

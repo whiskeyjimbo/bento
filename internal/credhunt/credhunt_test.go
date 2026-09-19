@@ -522,6 +522,39 @@ func TestIsCheckoutReadsTheMarkerRatherThanTrustingItsName(t *testing.T) {
 	}
 }
 
+// The same capability argument for the other two markers. .hg and .svn have no sentinel
+// file this package can name without inventing their layouts, so they are held to the
+// weaker uniform rung: an empty directory is not a store, a non-empty one is taken at its
+// word. Both directions matter - a bare mkdir must not hide a home, and a real checkout
+// must still prune, because scanning one reports credentials the user expected pruned.
+func TestIsCheckoutRequiresTheHgAndSvnMarkersToHoldSomething(t *testing.T) {
+	home := t.TempDir()
+	for _, marker := range []string{".hg", ".svn"} {
+		t.Run(marker, func(t *testing.T) {
+			bare := plant(t, home, "bare"+marker+"/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+			if err := os.MkdirAll(filepath.Join(home, "bare"+marker, marker), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			real := plant(t, home, "real"+marker+"/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
+			store := filepath.Join(home, "real"+marker, marker)
+			if err := os.MkdirAll(store, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(store, "requires"), []byte("revlogv1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got := paths(hunt(t, home))
+			if !slices.Contains(got, bare) {
+				t.Errorf("an empty directory named %s hid %s from the scan; mkdir is no more capability than touch. got %v", marker, bare, got)
+			}
+			if slices.Contains(got, real) {
+				t.Errorf("%s sits under a populated %s store and must still be pruned; got %v", real, marker, got)
+			}
+		})
+	}
+}
+
 // gitdir writes the .git directory of a checkout as git itself lays one out at init: a
 // HEAD naming the branch it will create. Everything else under .git is the object store,
 // which this package never reads.
