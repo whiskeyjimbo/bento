@@ -235,7 +235,7 @@ func isProfile(content, sentinel string) bool {
 	return false
 }
 
-// report parses each upstream profile with its own parser, diffs the result it against bento's deny-list, writes the
+// report parses each upstream profile with its own parser, diffs the result against bento's deny-list, writes the
 // in-scope gaps (and an out-of-scope summary) to w, and returns the process exit code:
 // exitGap when any in-scope gap remains or a scope keyword has gone stale,
 // exitUnreadDirective when the diff was otherwise clean but a parser could not read part
