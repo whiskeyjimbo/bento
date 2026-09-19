@@ -17,7 +17,7 @@ import (
 // forces the canary branch, and a `true` that never returns is the canary that hangs.
 func TestMeasureScopeBoundsItsCanary(t *testing.T) {
 	shimPATH(t, "systemd-run", "#!/bin/sh\nexit 1\n")
-	shimPATH(t, "true", "#!/bin/sh\nsleep 30\n")
+	plantProbeCanary(t, "true", "#!/bin/sh\nsleep 30\n")
 
 	before := ProbeDeadlines()
 

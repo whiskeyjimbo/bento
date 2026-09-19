@@ -133,9 +133,10 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 	// Existence only, deliberately: this probe decides a VERDICT, and provenance is
 	// checked where it decides a launch instead (preflightLimits), so a planted
 	// systemd-run that talked this probe into a yes still cannot get a scoped run
-	// launched. What it does get is executed: this probe runs its PATH-resolved binaries
-	// on the host, unsandboxed, before any preflight, on every run and every doctor. That
-	// residual is open, not closed here.
+	// launched. What it does get is executed, on every run and every doctor, before any
+	// preflight: that residual is still open for systemd-run itself, because trust-checking
+	// it here would refuse the shim harness this package's probe tests are built on. It is
+	// closed for the canaries, which go through trustedProbeBinary.
 	runner, err := exec.LookPath("systemd-run")
 	if err != nil {
 		return scopeVerdict{reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged"}, true
@@ -157,11 +158,14 @@ func measureScope(ctx context.Context) (scopeVerdict, bool) {
 		// caller with no deadline of its own - Probe, on the hot path of every run - would
 		// otherwise be held for as long as the canary takes, with nothing for
 		// noteProbeDeadline to count.
-		canary := trueBinary()
+		canary, cerr := trueBinary()
+		if cerr != nil {
+			return scopeVerdict{reason: cerr.Error()}, false
+		}
 		cctx, ccancel := context.WithTimeout(ctx, scopeProbeTimeout)
 		ccmd := exec.CommandContext(cctx, canary)
 		ccmd.WaitDelay = probeWaitDelay
-		cerr := ccmd.Run()
+		cerr = ccmd.Run()
 		noteProbeDeadline(ctx, cctx)
 		ccancel()
 		// Re-read, because the caller can give up between the check above and this run: a
@@ -255,7 +259,11 @@ func runScopeProbe(ctx context.Context, runner string, l policy.Limits, env []st
 	// that one would hold the same unit name, and the probe running first would either
 	// take the name the run then fails to claim or - once --collect has reaped it - hand
 	// the supervisor a window in which the name exists but belongs to /bin/true.
-	exe, args := wrapWithLimits(runner, trueBinary(), nil, l, "")
+	canary, err := trueBinary()
+	if err != nil {
+		return err
+	}
+	exe, args := wrapWithLimits(runner, canary, nil, l, "")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Env = env
 	cmd.WaitDelay = probeWaitDelay
@@ -282,11 +290,9 @@ func abandonedProbeReason(ctx context.Context) string {
 	return "the resource-limit probe did not finish (" + ctx.Err().Error() + "), so whether this host can enforce limits is unknown"
 }
 
-func trueBinary() string {
-	if p, err := exec.LookPath("true"); err == nil {
-		return p
-	}
-	return "/bin/true"
+// trueBinary is the canary measureScope and runScopeProbe execute.
+func trueBinary() (string, error) {
+	return probeBinary("true", "/bin/true", "resource-limit probe canary")
 }
 
 // cpuDelegationState maps the delegated-controllers reading to the LayerLimitsCPU
@@ -408,27 +414,29 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 	// not enforce as Enforced. The marker is proof the snippet ran and reached its read,
 	// which is a different question from whether the scope exited 0.
 	const readControllers = `p=$(grep '^0::' /proc/self/cgroup | cut -d: -f3); [ -n "$p" ] || exit 1; echo ` + controllersMarker + `; cat /sys/fs/cgroup$p/cgroup.controllers`
-	// Both binaries this rests on are PATH-resolved and neither is trust-checked, unlike
-	// the scope runner a real launch goes through (resolveScopeRunner). Two different
-	// residuals follow, and only one of them is closed.
+	// Both binaries this rests on are PATH-resolved, and only one of them is trust-checked.
 	//
-	// The verdict residual is closed: a planted systemd-run cannot get a scoped run
-	// launched, because preflightLimits refuses it first, and a claimed Enforced on a run
-	// that then proceeds unscoped under --allow-degraded is worsened downstream by
-	// noteScopeLimits, which reads the cgroup the run was actually given. A planted sh is
-	// not covered by that preflight - nothing trust-checks shBinary or trueBinary - but it
-	// can only forge this reading, and noteScopeLimits answers the forgery from the kernel.
+	// The shell is: shBinary goes through trustedProbeBinary, so a planted sh is refused
+	// before it runs rather than executed as this user. The reading then reports known=false,
+	// which is the fail-closed answer.
 	//
-	// The execution residual is open: this reading runs its resolved binaries on the host,
-	// unsandboxed, before any preflight, so a planted sh in a bin directory on PATH is
-	// executed as this user on the next bento invocation, doctor included. It is reached
-	// only where canCreateScope already answered yes, but that is no consolation - the
-	// namespace probe executes shBinary on every Probe regardless (probe.go, under bwrap),
-	// so closing this one would not close sh execution.
+	// systemd-run is not, and the residual there is a verdict rather than execution: a
+	// planted one cannot get a scoped run launched, because preflightLimits refuses it
+	// first, and a claimed Enforced on a run that then proceeds unscoped under
+	// --allow-degraded is worsened downstream by noteScopeLimits, which reads the cgroup
+	// the run was actually given. What it does still get is executed here, before any
+	// preflight - see measureScope, which names why the check is not on this name yet.
+	sh, err := shBinary()
+	if err != nil {
+		// Fail closed, like every other unreadable-delegation path here: an unknown set
+		// makes cpuDelegationState and hostSafetyDelegationState report Unavailable rather
+		// than Enforced. The refusal itself is reported where a launch is decided.
+		return nil, false
+	}
 	args := []string{
 		"--user", "--scope", "--quiet", "--collect",
 		"-p", "MemoryMax=64M", "-p", "TasksMax=64", "-p", "CPUQuota=100%",
-		"--", shBinary(), "-c", readControllers,
+		"--", sh, "-c", readControllers,
 	}
 	cmd := exec.CommandContext(ctx, "systemd-run", args...)
 	cmd.WaitDelay = probeWaitDelay
@@ -454,11 +462,51 @@ func measureDelegatedControllers(ctx context.Context) (map[string]bool, bool) {
 // cannot contain it.
 const controllersMarker = "bento-delegated-controllers:"
 
-func shBinary() string {
-	if p, err := exec.LookPath("sh"); err == nil {
-		return p
+// shBinary is the shell the delegated-controllers reading and the namespace probe run
+// their canary snippets in.
+func shBinary() (string, error) {
+	return probeBinary("sh", "/bin/sh", "probe shell")
+}
+
+// probeBinary resolves a probe canary on PATH and refuses one this uid may replace. It is
+// a package var only so the shim harness can plant a canary it controls; production never
+// reassigns it, and the trust check has no other way past.
+var probeBinary = trustedProbeBinary
+
+// trustedProbeBinary holds the probes' own canaries to the launcher provenance check.
+//
+// The probes execute what they resolve, and they run before any preflight: measureScope's
+// bare canary and this file's delegated-controllers shell run on the host unsandboxed, and
+// the namespace probe's shell runs under bwrap with --bind / /, which is not the host but
+// is still this user's filesystem. So a `true` or `sh` planted in a bin directory on this
+// user's PATH - a project node_modules/.bin, a .venv a direnv profile adds, anything a
+// sandboxed target holds a write grant for - is executed as this user on the next run or
+// doctor. That is code execution rather than a forged verdict, so no downstream reading
+// reaches it: noteScopeLimits answers a forged CONTROLLER set from the kernel, but the
+// canary has already run by then.
+//
+// conventional is consulted BEFORE PATH, which is the inverse of what these probes used to
+// do and the reason the check does not refuse ordinary hosts. PATH exists here for the
+// reason canUnshare gives - a host with no /bin/sh is a real host, not an attack - but a
+// user-level shell ahead of /bin/sh is the ordinary shape on any machine carrying a Nix
+// profile or a mise shim, and refusing those would refuse every run and every doctor over a
+// canary that only reports. Preferring the conventional path takes PATH out of the question
+// wherever one exists, and where none does - NixOS, a minimal image - what PATH finds is a
+// root-owned store path and passes. Whichever is taken is held to the same check, so the
+// plant this closes is refused in both.
+func trustedProbeBinary(name, conventional, role string) (string, error) {
+	p := conventional
+	if _, err := os.Stat(p); err != nil {
+		found, lookErr := exec.LookPath(name)
+		if lookErr != nil {
+			return "", fmt.Errorf("the %s is neither at %s nor on PATH (%w), so the probe has nothing to run", role, conventional, lookErr)
+		}
+		p = found
 	}
-	return "/bin/sh"
+	if err := trustLauncherPath(p, role); err != nil {
+		return "", err
+	}
+	return p, nil
 }
 
 // scopeBusVars are the variables systemd-run reads to find the systemd user manager.

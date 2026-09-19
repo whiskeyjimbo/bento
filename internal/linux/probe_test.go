@@ -600,22 +600,19 @@ func TestFilesystemLayerCarriesNamespaceReason(t *testing.T) {
 	}
 }
 
-// The namespace probe's canary must be resolved on $PATH, not hardcoded to
+// The namespace probe's canary must be the one shBinary resolved, not a hardcoded
 // /bin/sh. bwrap creates the namespaces first and execs last, so on a host with no
 // /bin/sh only the exec fails - and the probe would report userns blocked, refuse
 // every network manifest, and silently downgrade the run to the Landlock-only tier.
 // A host missing /bin/sh cannot be constructed here, so this drives the property
-// from the other side: with $PATH naming an `sh` that exits non-zero, the probe must
-// fail, which it can only do if the canary it ran was the resolved one.
+// from the other side: with the resolver naming an `sh` that exits non-zero, the
+// probe must fail, which it can only do if the canary it ran was the resolved one.
+// Where that resolution looks - /bin/sh first, PATH where there is none - is
+// TestTrustedProbeBinaryRefusesAUserWritableCanary's subject, not this one's.
 func TestCanUnshareRunsTheResolvedCanary(t *testing.T) {
 	requireSandbox(t)
 
-	dir := t.TempDir()
-	canary := filepath.Join(dir, "sh")
-	if err := os.WriteFile(canary, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	plantProbeCanary(t, "sh", "#!/bin/sh\nexit 3\n")
 
 	if err := canUnshare(context.Background(), "bwrap"); err == nil {
 		t.Error("canUnshare passed while its canary exited 3; it ran a hardcoded /bin/true, not the resolved one")

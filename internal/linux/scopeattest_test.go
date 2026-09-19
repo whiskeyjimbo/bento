@@ -112,8 +112,8 @@ func TestAttestScopeLimitsFindsTheTransientScope(t *testing.T) {
 		skipMissingDep(t, "this host cannot create a transient scope: %s", reason)
 	}
 
-	exe, args := wrapWithLimits(requireScopeRunner(t), trueBinary(), nil, policy.Limits{Memory: "64M"}, "")
-	cmd := exec.Command(exe, append(args[:len(args)-1], shBinary(), "-c", "sleep 5")...)
+	exe, args := wrapWithLimits(requireScopeRunner(t), mustTrueBinary(t), nil, policy.Limits{Memory: "64M"}, "")
+	cmd := exec.Command(exe, append(args[:len(args)-1], mustShBinary(t), "-c", "sleep 5")...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

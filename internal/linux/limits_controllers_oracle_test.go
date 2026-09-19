@@ -13,11 +13,16 @@ import (
 // will not apply. The snippet now announces itself before the read, so output that did not
 // come from a cgroup.controllers read is not a controller list.
 //
-// What this does NOT claim: it is not a defense against a deliberate impostor on $PATH,
-// which can print the marker as easily as anything else. That premise needs write access
-// to a host $PATH directory and is out of the threat model, the same boundary bv2-lufru
-// draws. What it closes is the accidental host: a stand-in, a wrapper, or a scope whose
-// shell died before the read.
+// What this does NOT claim: the marker is no defense against a deliberate impostor, which
+// can print it as easily as anything else. What it closes is the accidental host - a
+// stand-in, a wrapper, or a scope whose shell died before the read.
+//
+// The impostor is no longer out of the threat model, though, which is where this comment
+// used to stop: a writable $PATH directory is exactly what a sandboxed target with a write
+// grant produces, so the shell is held to trustLauncherPath by trustedProbeBinary and a
+// planted one is refused before it runs (TestProbesRefuseAPlantedCanary). The systemd-run
+// this reading resolves is still not, and cannot forge more than this reading, which
+// noteScopeLimits then answers from the kernel.
 func TestDelegatedControllersNeedsTheReadToHaveHappened(t *testing.T) {
 	t.Run("stdout that is not a controller read", func(t *testing.T) {
 		shimPATH(t, "systemd-run", "#!/bin/sh\necho 'memory pids cpu io hugetlb misc'\nexit 0\n")

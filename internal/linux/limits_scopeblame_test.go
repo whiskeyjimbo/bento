@@ -22,8 +22,8 @@ func TestMeasureScopeSeparatesTheCanaryFromTheUserManager(t *testing.T) {
 	const propagating = "#!/bin/sh\nfor a in \"$@\"; do last=$a; done\nexec \"$last\"\n"
 
 	t.Run("a canary that will not run", func(t *testing.T) {
-		dir := shimPATH(t, "systemd-run", propagating)
-		writeShim(t, dir, "true", "#!/bin/sh\nexit 3\n")
+		shimPATH(t, "systemd-run", propagating)
+		plantProbeCanary(t, "true", "#!/bin/sh\nexit 3\n")
 
 		v, answered := measureScope(context.Background())
 		if answered {

@@ -149,7 +149,7 @@ func TestPdeathsigParentHelper(t *testing.T) {
 	// exec, so the reported pid IS the sleeper: a forking shell would leave the sleep
 	// behind as a descendant and the test would be measuring the wrong process. Under the
 	// scope the same holds one link further out - systemd-run execs the shell in place.
-	exe, args := shBinary(), []string{"-c", "exec sleep 300"}
+	exe, args := mustShBinary(t), []string{"-c", "exec sleep 300"}
 	switch os.Getenv("BENTO_TEST_PDEATHSIG") {
 	case "plain":
 	case "scoped":

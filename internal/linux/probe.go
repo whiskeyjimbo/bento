@@ -637,13 +637,16 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// then fail at launch with a bwrap exit code indistinguishable from the target's. Probing
 	// the shared set surfaces that at admission instead. --unshare-net is probed too (the run
 	// adds it for the network layer); --bind / / makes the canary reachable for the check.
-	// The canary is resolved on $PATH, not hardcoded to /bin/sh: bwrap sets the
+	// The canary falls back to $PATH when there is no /bin/sh: bwrap sets the
 	// namespaces up FIRST and only then execs, so on a host with no /bin/sh (NixOS,
 	// a minimal image) the namespaces would succeed and only the exec fail - and this
 	// probe cannot tell the two apart. It would report userns blocked, refuse every
 	// network manifest, and downgrade the run to the Landlock-only tier while sending
 	// the user off to flip AppArmor sysctls on a host where userns works. limits.go's
-	// shBinary resolves it the same way for the same reason.
+	// shBinary resolves it the same way for the same reason - /bin/sh where
+	// there is one and PATH where there is not - and holds what it resolves to the same
+	// provenance check this probe holds bwrap to: bwrap is bound to / here, so a planted
+	// sh runs against this user's own filesystem.
 	// The pseudo-filesystem mounts are exercised for the same reason and from the same
 	// shared list (pseudoFSFlags): mounting a fresh procfs into the namespace is a
 	// permission separate from creating it, and a container that masks paths under
@@ -660,7 +663,15 @@ func canUnshare(ctx context.Context, bwrap string) error {
 	// terminal, and TIOCSTI from there is host command execution as the user after the run
 	// exits. Exercised from the shared sessionFlags, for the reason namespaceFlags is.
 	args = append(args, sessionFlags...)
-	args = append(args, shBinary(), "-c", namespaceCanary)
+	sh, err := shBinary()
+	if err != nil {
+		// Not a *usernsError, so classifyUnshare lands this on the unknown verdict, which
+		// refuses. Blocked is the permissive one that offers the Landlock-only tier, and a
+		// canary whose provenance could not be established is not a host that refused a
+		// namespace.
+		return err
+	}
+	args = append(args, sh, "-c", namespaceCanary)
 	cmd := exec.CommandContext(ctx, bwrap, args...)
 	// Killing bwrap on the deadline is not enough on its own: CombinedOutput waits for
 	// the output pipe to close, and any descendant still holding it keeps the probe

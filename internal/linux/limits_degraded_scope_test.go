@@ -73,7 +73,7 @@ func TestScopedCommandRunsWithSanitizedPolicyEnv(t *testing.T) {
 		t.Skip("host sets no session bus variables; the sanitized-env case cannot be exercised")
 	}
 
-	exe, args := wrapWithLimits(requireScopeRunner(t), shBinary(), []string{
+	exe, args := wrapWithLimits(requireScopeRunner(t), mustShBinary(t), []string{
 		"-c", "env > " + marker,
 	}, policy.Limits{Memory: "64M"}, "")
 	cmd := exec.Command(exe, args...)
