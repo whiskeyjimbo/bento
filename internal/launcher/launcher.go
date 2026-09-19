@@ -231,8 +231,12 @@ func Run(cfg Config) (int, error) {
 	}
 
 	env := os.Environ()
+	// The bridge is the only child this stage starts, and the profiling path needs to
+	// know its pid to tell it from one nobody here started; see verifyNoStrayChild.
+	bridge := 0
 	if cfg.Socket != "" {
-		if err := startBridge(cfg.Socket, cfg.BridgeLivenessFD); err != nil {
+		var err error
+		if bridge, err = startBridge(cfg.Socket, cfg.BridgeLivenessFD); err != nil {
 			return 0, err
 		}
 		// Drop any inherited proxy variables first: glibc getenv returns the first
@@ -248,7 +252,7 @@ func Run(cfg Config) (int, error) {
 	}
 
 	if cfg.ObserveFD > 0 {
-		return runObserve(cfg, env)
+		return runObserve(cfg, env, bridge)
 	}
 
 	applied, err := newAppliedReport(cfg.AppliedFD)
@@ -407,7 +411,7 @@ func (e errTargetRan) Unwrap() error { return e.error }
 // AF_UNIX bind/connect, and the existence probes (stat/access/readlink/chdir) that
 // succeeded. It is not every syscall that takes a path - a probe that already failed is
 // deliberately not recorded, and io_uring is blocked below rather than decoded.
-func runObserve(cfg Config, env []string) (int, error) {
+func runObserve(cfg Config, env []string, bridge int) (int, error) {
 	// Validate the report descriptor before the run rather than after it: os.NewFile
 	// never returns nil for a nonnegative fd, so an --observe-fd naming nothing would
 	// otherwise survive a full traced run and only surface as an EBADF from Truncate,
@@ -438,6 +442,13 @@ func runObserve(cfg Config, env []string) (int, error) {
 	// architecture-specific message would misdescribe.
 	if err := seccomp.BlockIoUring(); err != nil {
 		return 0, fmt.Errorf("launcher: securing complete observation: %w", err)
+	}
+
+	// Last, immediately before the tracer takes over child reaping. See
+	// verifyNoStrayChild: Trace's wait4(-1) consumes any child's exit status, and this
+	// stage's claim to be the dedicated one that has none was asserted nowhere.
+	if err := verifyNoStrayChild(bridge); err != nil {
+		return 0, err
 	}
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
@@ -927,7 +938,7 @@ func installExecFilter(strict bool) (string, error) {
 // livenessFD, when > 0, is passed on to the bridge as its liveness write end; the
 // launcher keeps no copy, so the bridge is its sole writer just as with the readiness
 // pipe.
-func startBridge(socket string, livenessFD int) error {
+func startBridge(socket string, livenessFD int) (int, error) {
 	// A readiness pipe: the bridge writes one byte after it is non-dumpable and
 	// listening, and this call blocks until then, so the launcher only execveat's the
 	// target once the bridge can no longer be ptrace-hijacked (its dumpable startup
@@ -938,7 +949,7 @@ func startBridge(socket string, livenessFD int) error {
 	// an attackable or absent bridge.
 	r, w, err := os.Pipe()
 	if err != nil {
-		return fmt.Errorf("launcher: bridge readiness pipe: %w", err)
+		return 0, fmt.Errorf("launcher: bridge readiness pipe: %w", err)
 	}
 	defer r.Close()
 	// The bridge is told which of its descriptors carries liveness rather than assuming
@@ -959,10 +970,10 @@ func startBridge(socket string, livenessFD int) error {
 	cmd.Args = append(cmd.Args, strconv.Itoa(bridgeLiveness))
 	if err := cmd.Start(); err != nil {
 		w.Close()
-		return fmt.Errorf("launcher: starting egress bridge: %w", err)
+		return 0, fmt.Errorf("launcher: starting egress bridge: %w", err)
 	}
 	w.Close()
-	return awaitBridgeReady(r)
+	return cmd.Process.Pid, awaitBridgeReady(r)
 }
 
 // awaitBridgeReady blocks until the bridge writes its readiness byte, or returns an

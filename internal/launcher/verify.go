@@ -267,3 +267,72 @@ func capBounding(status []byte) (uint64, error) {
 	}
 	return 0, fmt.Errorf("%s named no capability bounding set, so the sandbox's cannot be vouched for", procSelfStatus)
 }
+
+// procSelfChildren is the per-thread list of a process's live children. It is read per
+// task because the kernel files it under the thread that forked, and the launcher's Go
+// runtime forks from whichever thread the scheduler was on.
+const procSelfTasks = "/proc/self/task"
+
+// verifyNoStrayChild is the profiling stage's check that nothing but the bridge is a live
+// child of this process when the tracer starts. observe.Trace dequeues stops with
+// wait4(-1) - ptrace has no wait-on-this-set - so it CONSUMES the exit status of any child
+// of the calling process, and its doc states the precondition that bento's profiling path
+// is a dedicated stage with no such children. Nothing asserted that until here.
+//
+// The bridge is the one legitimate exception, and it is why this takes a pid rather than
+// refusing outright: a profiling run with egress starts it before the observe dispatch
+// (see Run), and the launcher deliberately never wait()s for it - its death is reported
+// through the liveness pipe, not through a status - so Trace consuming its status costs
+// nothing. Pass 0 where no bridge was started.
+//
+// Loudly on a read failure, for verifyFreshTmp's reason: the precondition bento cannot
+// inspect is not one it may vouch for.
+func verifyNoStrayChild(bridge int) error {
+	children, err := ownChildren()
+	if err != nil {
+		return fmt.Errorf("launcher: %w", err)
+	}
+	if stray := strayChildren(children, bridge); len(stray) > 0 {
+		// Named and capped for verifyPidNamespace's reason.
+		return fmt.Errorf("launcher: the profiling stage has %d live child process(es) it did not start, including pid %s, and the tracer reaps with wait4(-1) - so their exit statuses would be consumed by the observation instead of by whatever is waiting for them",
+			len(stray), strings.Join(stray[:min(len(stray), 8)], ", "))
+	}
+	return nil
+}
+
+// ownChildren is every live child pid of this process, as the kernel reports them across
+// the process's threads.
+func ownChildren() ([]string, error) {
+	tasks, err := os.ReadDir(procSelfTasks)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s to verify the stage's children: %w", procSelfTasks, err)
+	}
+	var children []string
+	for _, t := range tasks {
+		// A thread that exited between the listing and the read takes its children with
+		// it (they reparent, and are then no longer this process's), so a vanished entry
+		// is not a read bento was denied.
+		data, err := os.ReadFile(filepath.Join(procSelfTasks, t.Name(), "children"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading the children of thread %s: %w", t.Name(), err)
+		}
+		children = append(children, strings.Fields(string(data))...)
+	}
+	return children, nil
+}
+
+// strayChildren names every child pid other than the one the stage started itself.
+// known is 0 when it started none.
+func strayChildren(children []string, known int) []string {
+	var stray []string
+	for _, pid := range children {
+		if pid == strconv.Itoa(known) {
+			continue
+		}
+		stray = append(stray, pid)
+	}
+	return stray
+}

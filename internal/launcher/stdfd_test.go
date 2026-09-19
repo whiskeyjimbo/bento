@@ -28,7 +28,7 @@ func TestStandardStreamsAreRefusedAsReportDescriptors(t *testing.T) {
 	}
 
 	for fd := 1; fd < firstInheritableFD; fd++ {
-		if _, err := runObserve(Config{Target: []string{"/bin/true"}, ObserveFD: fd}, os.Environ()); err == nil || !strings.Contains(err.Error(), "standard streams") {
+		if _, err := runObserve(Config{Target: []string{"/bin/true"}, ObserveFD: fd}, os.Environ(), 0); err == nil || !strings.Contains(err.Error(), "standard streams") {
 			t.Errorf("observation descriptor %d was accepted: %v", fd, err)
 		}
 	}

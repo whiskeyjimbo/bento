@@ -78,6 +78,31 @@ func TestRunObserve(t *testing.T) {
 	// A trace that fails must not leave a report the host would parse: the completion
 	// marker is written only when traceErr is nil, so the host reads the run as
 	// incomplete rather than proposing an empty manifest.
+	// observe.Trace dequeues with wait4(-1) and so consumes the exit status of ANY child
+	// of the calling process. Its documented precondition is that bento profiles from a
+	// dedicated stage with no other children, and the stage asserted that nowhere: a
+	// caller driving this stage with a child of its own got a silently stolen status.
+	t.Run("a stray child of the stage is refused before the tracer starts", func(t *testing.T) {
+		report := filepath.Join(t.TempDir(), "report")
+		if err := os.WriteFile(report, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, err := runObserveChild_(t, "stray-child", report)
+		if err == nil {
+			t.Fatalf("runObserve traced with a live child of the stage:\n%s", out)
+		}
+		if !strings.Contains(out, "live child process") {
+			t.Errorf("wrong refusal for a stray child: %q", out)
+		}
+		got, err := os.ReadFile(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("the refusal came after the trace, not before it:\n%s", firstBytes(got))
+		}
+	})
+
 	t.Run("a failed trace is reported without a completion marker", func(t *testing.T) {
 		report := filepath.Join(t.TempDir(), "report")
 		if err := os.WriteFile(report, nil, 0o644); err != nil {
@@ -124,6 +149,15 @@ func runObserveChild(mode string) {
 		cfg.ObserveFD = 99
 	case "trace-fails":
 		cfg.Target = []string{"/nonexistent-bento-observe-target"}
+	case "stray-child":
+		// Long-lived rather than instant, so it is a live child at the tracer's start
+		// rather than a zombie racing the check. Killed by the child's own exit.
+		stray := exec.Command("/bin/sleep", "5")
+		if err := stray.Start(); err != nil {
+			fmt.Fprintln(os.Stdout, "starting the stray child:", err)
+			os.Exit(1)
+		}
+		defer func() { _ = stray.Process.Kill() }()
 	case "advanced-offset":
 		// More than the Scanner's 64 KiB token limit, so a report written past the
 		// offset is not merely ugly but unparseable by the host.
@@ -132,7 +166,7 @@ func runObserveChild(mode string) {
 			os.Exit(1)
 		}
 	}
-	if _, err := runObserve(cfg, os.Environ()); err != nil {
+	if _, err := runObserve(cfg, os.Environ(), 0); err != nil {
 		fmt.Fprintln(os.Stdout, err)
 		os.Exit(1)
 	}

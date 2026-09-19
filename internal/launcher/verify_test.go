@@ -224,3 +224,29 @@ func mustReadStatus(t *testing.T) []byte {
 	}
 	return data
 }
+
+// The bridge exception, against the kernel's own answer rather than a fake: the same live
+// child must be refused when the stage started none and accepted when it is the bridge.
+// Getting that backwards either breaks every profiling run with egress or leaves the
+// check refusing nothing.
+func TestStrayChildVerdictTurnsOnTheBridgePid(t *testing.T) {
+	child := exec.Command("/bin/sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+	pid := child.Process.Pid
+
+	err := verifyNoStrayChild(0)
+	if err == nil {
+		t.Errorf("a live child of the stage was accepted where no bridge was started")
+	} else if !strings.Contains(err.Error(), fmt.Sprint(pid)) {
+		t.Errorf("the refusal does not name the live child pid %d: %v", pid, err)
+	}
+	if err := verifyNoStrayChild(pid); err != nil {
+		t.Errorf("the bridge this stage started itself must not be a stray child: %v", err)
+	}
+}
