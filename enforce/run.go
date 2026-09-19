@@ -255,16 +255,24 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	// above then applies, because "reports what was actually enforced" is what the
 	// Enforcer doc asks of a backend and it does not carve report-only layers out. A
 	// backend that learned mid-run the host fact is gone must not be shown saying the
-	// opposite. It runs as a second pass rather than folded into the loop above because
-	// StateOf reads an absent layer as Unavailable, so nothing could ever look worse
-	// than a layer the probe had not yet written.
+	// opposite. It runs as a second pass rather than folded into the loop above so the
+	// probe's row is in place to compare against.
+	//
+	// The comparison goes through probedState, not StateOf: StateOf reads an absent layer
+	// as Unavailable, which is the right fail-safe for a required layer but here would
+	// discard a backend's own Unavailable for a report-only layer the probe never emitted
+	// at all - not greater than Unavailable, so the only verdict anyone held would be
+	// dropped from the run's report.
 	for _, l := range probed.Layers {
 		if l.Layer.ReportOnly() {
 			required.SetStatus(l)
 		}
 	}
 	for _, l := range res.Report.Layers {
-		if l.Layer.ReportOnly() && l.State > required.StateOf(l.Layer) {
+		if !l.Layer.ReportOnly() {
+			continue
+		}
+		if st, probedIt := required.probedState(l.Layer); !probedIt || l.State > st {
 			required.SetStatus(l)
 		}
 	}

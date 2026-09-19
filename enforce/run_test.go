@@ -1472,3 +1472,28 @@ func TestABackendsWorseReportOnlyVerdictSurvivesTheCarry(t *testing.T) {
 		t.Errorf("carried row = %+v, want the backend's Unavailable: the pre-run probe erased what the run itself found", *carried)
 	}
 }
+
+// The probe is the default source for a report-only layer, not a precondition for one. A
+// backend that judged a layer the probe never mentioned holds the only verdict anyone
+// has, and comparing it against StateOf's fail-safe Unavailable would throw it away.
+func TestAReportOnlyLayerOnlyTheBackendReportsReachesTheRunsReport(t *testing.T) {
+	probe := fullyEnforced()
+	if _, probedIt := probe.probedState(LayerAutoExecReport); probedIt {
+		t.Fatalf("this case is about a layer the probe never emitted; the probe reports %v", LayerAutoExecReport)
+	}
+	backend := Report{}
+	backend.Add(LayerAutoExecReport, Unavailable, "git is not on this host's PATH")
+
+	f := &fakeEnforcer{probe: probe, result: Result{Report: backend}}
+	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	if err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+	got, carried := res.Report.probedState(LayerAutoExecReport)
+	if !carried {
+		t.Fatal("the run's report has no auto-exec-report row: the backend's verdict on a layer the probe never emitted was dropped")
+	}
+	if got != Unavailable {
+		t.Errorf("carried state = %v, want the backend's Unavailable", got)
+	}
+}
