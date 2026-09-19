@@ -150,9 +150,10 @@ func restrictCapabilityBound() error {
 	if held, err = capBoundingNow(); err != nil {
 		return fmt.Errorf("launcher: %w", err)
 	}
-	if held == 0 {
-		return nil
-	}
+	// A set the drop emptied is routed through the predicate rather than short-circuited
+	// here: the whole point of the seam is that one function owns the live/inert verdict,
+	// and a second early return would be a second place deciding it - and the one that
+	// makes the call site droppable without any test noticing.
 	eff, err := heldCaps()
 	if err != nil {
 		return fmt.Errorf("launcher: %w", err)

@@ -457,7 +457,7 @@ const terminalResidual = ". Nor does it detach the target from a controlling ter
 // it reaches the target only where the target was execveat'd over the launcher (the exec
 // block on; PDEATHSIG survives an ordinary execve) and never reaches what the target
 // itself started - the plain exec block still permits fork, and only none-strict denies
-// it. Where the launcher stays a supervisor (runTarget's superviseTarget arm) the target
+// it, and only on an architecture with a strict filter. Where the launcher stays a supervisor (runTarget's superviseTarget arm) the target
 // is an ordinary child with no Pdeathsig of its own and survives too. Unconditional for
 // the same reason terminalResidual is: the probe describes a tier, not a particular run,
 // and cannot know which dispatch the run it is describing will take.
