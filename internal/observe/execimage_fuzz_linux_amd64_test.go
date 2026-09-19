@@ -110,7 +110,7 @@ func FuzzExecImageDecode(f *testing.F) {
 		[]byte("#!bin/sh\n"),
 		append([]byte("#!/"), bytes.Repeat([]byte("a"), 512)...),
 		[]byte("\x7fELF"),
-		[]byte{},
+		{},
 	} {
 		f.Add(seed)
 	}
