@@ -25,7 +25,7 @@ import (
 // noteScopeLimits then answers from the kernel.
 func TestDelegatedControllersNeedsTheReadToHaveHappened(t *testing.T) {
 	t.Run("stdout that is not a controller read", func(t *testing.T) {
-		shimPATH(t, "systemd-run", "#!/bin/sh\necho 'memory pids cpu io hugetlb misc'\nexit 0\n")
+		plantProbeCanary(t, "systemd-run", "#!/bin/sh\necho 'memory pids cpu io hugetlb misc'\nexit 0\n")
 
 		ctrls, known := measureDelegatedControllers(context.Background())
 		if known {
@@ -36,7 +36,7 @@ func TestDelegatedControllersNeedsTheReadToHaveHappened(t *testing.T) {
 	// The positive control: the same shim shape, this time producing what the real snippet
 	// produces. Without it the assertion above is satisfied by a reading that never answers.
 	t.Run("a real controller read", func(t *testing.T) {
-		shimPATH(t, "systemd-run", "#!/bin/sh\necho '"+controllersMarker+"'\necho 'memory pids'\nexit 0\n")
+		plantProbeCanary(t, "systemd-run", "#!/bin/sh\necho '"+controllersMarker+"'\necho 'memory pids'\nexit 0\n")
 
 		ctrls, known := measureDelegatedControllers(context.Background())
 		if !known {

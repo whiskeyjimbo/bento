@@ -23,7 +23,7 @@ import (
 // a holder of stdout and exits 0, which is what a real killed `systemd-run --user --scope`
 // leaves behind.
 func TestScopeProbesAreBoundedWhenSomethingHoldsTheirOutput(t *testing.T) {
-	dir := shimPATH(t, "systemd-run", "#!/bin/sh\nsleep 20 &\nexit 0\n")
+	dir := plantProbeCanary(t, "systemd-run", "#!/bin/sh\nsleep 20 &\nexit 0\n")
 	runner := filepath.Join(dir, "systemd-run")
 
 	// Comfortably past the 5s bound plus the 1s WaitDelay, and comfortably short of the
