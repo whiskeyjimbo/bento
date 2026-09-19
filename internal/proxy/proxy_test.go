@@ -1387,16 +1387,18 @@ func TestGuardBlocksZonedHostReserved(t *testing.T) {
 
 	// Prove the zone strip actually ran, not merely the fail-closed-on-unparseable
 	// branch: a mapped loopback with a dotted zone (which matches the .example.com
-	// rule) must be refused as its classified 127.0.0.1. That dotted address only
-	// appears in the error if the guard stripped the zone and classified the
-	// underlying IP; the raw fail-closed path would report the whole address string.
-	err := guard("[::ffff:127.0.0.1%foo.example.com]:6379")
+	// rule) must be refused for the cause its classified 127.0.0.1 earns. Reserved is
+	// only reachable if the guard stripped the zone and classified the underlying IP;
+	// the raw fail-closed path refuses the whole address string as unparsed.
+	var refusals dialRefusals
+	ctx := withDialRefusals(t.Context(), &refusals)
+	err := p.guardUpstream(ctx, "tcp", "[::ffff:127.0.0.1%foo.example.com]:6379", nil)
 	var blk *blockedUpstreamError
 	if !errors.As(err, &blk) {
 		t.Fatalf("guard mapped-loopback-with-dotted-zone: got %v, want *blockedUpstreamError", err)
 	}
-	if blk.addr != "127.0.0.1" {
-		t.Errorf("blocked addr = %q, want 127.0.0.1 (the zone strip + classify must run, not raw fail-closed)", blk.addr)
+	if got := refusals.blockedDecision(); got != GuardBlockedReserved {
+		t.Errorf("blocked as %q, want %q (the zone strip + classify must run, not raw fail-closed)", got, GuardBlockedReserved)
 	}
 
 	// A plain public literal must still be permitted (no over-blocking).

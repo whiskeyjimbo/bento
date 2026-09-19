@@ -257,8 +257,10 @@ func WithDialer(dial func(ctx context.Context, network, addr string) (net.Conn, 
 // host and port are ATTACKER-CONTROLLED, as they are for WithGatekeeper: sanitize
 // before displaying either to a human. A Refused decision carries them only sometimes,
 // and either may be empty on its own - see Refused. A guard refusal carries the CONNECT
-// target, not the address it resolved to: the guard's own text names the address, and
-// that never leaves the host side.
+// target, not the address it resolved to, which no longer survives the dial anywhere:
+// what the operator needs from it - host infrastructure, an internal name, or a NAT64
+// blackout - is in the decision instead, which is why these four causes are separate
+// constants.
 func WithObserver(observe func(d Decision, host, port string)) Option {
 	return func(p *Proxy) { p.observe = observe }
 }
@@ -349,13 +351,12 @@ func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 // to fail the dial - handle does not read it, and reports the refusal from the
 // dialRefusals record instead, which is the only place that says WHICH cause refused
 // and survives a name whose other address failed first.
-// What the CLIENT is told is deliberately identical to an ordinary dial failure:
-// telling the two apart classifies the name against the host's internal DNS.
-type blockedUpstreamError struct{ addr string }
+// It names no address: nothing host-side reads one, and what the CLIENT is told is
+// deliberately identical to an ordinary dial failure, because telling the two apart
+// classifies the name against the host's internal DNS.
+type blockedUpstreamError struct{}
 
-func (e *blockedUpstreamError) Error() string {
-	return fmt.Sprintf("refusing egress to non-public address %s", e.addr)
-}
+func (e *blockedUpstreamError) Error() string { return "refusing egress to non-public address" }
 
 // dialRefusalsKey names the per-connection record of what the guard refused across this
 // dial's resolved addresses.
@@ -435,7 +436,7 @@ func (r *dialRefusals) blockedDecision() Decision {
 // cause is a parameter rather than something each arm stores for itself so that no arm
 // can refuse without recording one: handle reports the connection from this record alone.
 // GuardBlockedNAT64 is not passed here - it is derived; see blockedDecision.
-func blocked(ctx context.Context, addr string, cause Decision) *blockedUpstreamError {
+func blocked(ctx context.Context, cause Decision) *blockedUpstreamError {
 	if seen := refusalsOf(ctx); seen != nil {
 		switch cause {
 		case GuardBlockedReserved:
@@ -451,7 +452,7 @@ func blocked(ctx context.Context, addr string, cause Decision) *blockedUpstreamE
 			// cause added without a flag beside it does not read as handled here.
 		}
 	}
-	return &blockedUpstreamError{addr: addr}
+	return &blockedUpstreamError{}
 }
 
 // guardUpstream rejects connecting to a resolved address that names a
@@ -469,7 +470,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if err != nil {
 		// The dialer hands ControlContext a resolved host:port; an address that does
 		// not even split is anomalous, so refuse it rather than fail open.
-		return blocked(ctx, address, GuardBlockedUnparsed)
+		return blocked(ctx, GuardBlockedUnparsed)
 	}
 	// Strip an IPv6 zone id before parsing. net.ParseIP rejects a zoned literal -
 	// "fe80::1%eth0", and the mapped-IPv4 "::ffff:169.254.169.254%eth0" or its
@@ -483,7 +484,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 	if ip == nil {
 		// A resolved dial target that is not a plain IP cannot be classified, so
 		// refuse it rather than dial an address the guard could not vet.
-		return blocked(ctx, address, GuardBlockedUnparsed)
+		return blocked(ctx, GuardBlockedUnparsed)
 	}
 	class, nat64Blackout := p.classifyNAT64(ip)
 	switch class {
@@ -492,7 +493,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 		// itself or its infrastructure. The proxy runs on the host, so dialing these
 		// reaches the HOST's own services - never a legitimate sandbox egress target,
 		// so no rule may reach them, not even an explicit IP literal.
-		return blocked(ctx, ip.String(), GuardBlockedReserved)
+		return blocked(ctx, GuardBlockedReserved)
 	case ipPrivate:
 		// RFC1918/ULA/CGNAT may be a deliberate internal-egress target, but only for
 		// the literal grant this connection carries; a permitted hostname resolving
@@ -508,7 +509,7 @@ func (p *Proxy) guardUpstream(ctx context.Context, _, address string, _ syscall.
 					seen.nat64Blackout.Store(true)
 				}
 			}
-			return blocked(ctx, ip.String(), GuardBlockedPrivate)
+			return blocked(ctx, GuardBlockedPrivate)
 		}
 	case ipPublic:
 		// The ordinary egress target; the gate above already decided whether this
