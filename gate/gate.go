@@ -479,6 +479,16 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 // doc permits - missing a refusal, never inventing one - and it leaves the case the
 // refusal exists for, a write grant on a system tree, answered.
 //
+// Answered for the DEFAULT tier, which is why the degraded tier not running
+// checkShieldsCarvable at all is no reason to demote this to a finding the way the
+// AboveWriteShield arm of writeShieldProblem is demoted: that verdict is the rare opt-in
+// tier's alone, this one is the tier every run lands on unless --allow-degraded is passed -
+// and --strict, the caller that acts on it, refuses that flag as its opposite. The clamp
+// withholds a proposal on this refusal through Refusals rather than knowing about it
+// (cmd/bento's TestClampProposalWithholdsAGrantWhoseShieldsCannotBeCarved), and approve
+// declines to stamp on it, so a grant dropped from the set here is one both hand to a run
+// that dies at its first step.
+//
 // Only the mount points are asked, not the intermediate directories bwrap would create to
 // hold one: both walks end at the same deepest EXISTING ancestor, which is the directory
 // that has to accept the mkdir, so asking the parents again would only repeat this answer.

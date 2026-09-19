@@ -104,10 +104,14 @@ R = run.
   no field for any of them. A CI gate reading the envelope can't see "write covers the manifest
   itself". VERIFIED BY READING. FIXED: `writes_covering_manifest`, `writes_covering_entrypoint`,
   `tmp_grants`, `broad_read_grants` and `broad_write_grants`.
-- **F5 (allowed direction here, but it breaks gate.go's own contract) - carve on the degraded
-  tier.** `runDegraded` doesn't call `checkShieldsCarvable` (degraded.go:40-75), yet the gate
-  refuses the carve on any tier. So under `--allow-degraded`, strict refuses a manifest the run
-  admits. VERIFIED BY READING.
+- **F5 - carve on the degraded tier. NOT A DEFECT; the original verdict was wrong.** `runDegraded`
+  doesn't call `checkShieldsCarvable` (degraded.go:40-75) and the gate refuses the carve on any
+  tier, but no invocation reaches the divergence: `run.go:71-73` refuses `--strict` together with
+  `--allow-degraded` as opposites, and validate carries no degraded posture of its own, so strict
+  is judging the full tier - which does refuse the carve. The gate tracking the default tier is
+  also what `clamp_refusal_test.go:151` and approve's stamp (`approve.go:205`) rest on: demoting
+  the carve to a note would let the clamp propose a grant the default run dies on. Re-checked
+  2026-09-19.
 - **A4 - Unresolved passes strict.** Deliberate and host-attributable. The dismissal was checked
   inverted: with `HOME=relative/home` and `read: ~/data`, strict returned err=nil and run-side
   `Resolve` errored. VERIFIED BY SPIKE. Accepted, unless the `~` counts as manifest-attributable.
