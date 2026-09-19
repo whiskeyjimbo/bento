@@ -420,8 +420,8 @@ func hasFoldedPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
-// LoopedGrantProblems mirrors the backend's checkGrantNotLooped, and both now read
-// pathresolve's Loop arm rather than stat-ing the resolver's output for ELOOP. The mirror
+// LoopedGrantProblems mirrors the backend's checkGrantNotLooped: both stat the grant as
+// spelled and act on ELOOP alone, and neither reads pathresolve's Loop arm. The mirror
 // is the point: a grant the gate passes over and the run then refuses is a manifest that
 // validates and cannot start. Asserted against a real symlink tree, since a loop is a
 // kernel fact no fake supplies.

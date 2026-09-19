@@ -106,9 +106,11 @@ R = run.
   `tmp_grants`, `broad_read_grants` and `broad_write_grants`.
 - **F5 - carve on the degraded tier. NOT A DEFECT; the original verdict was wrong.** `runDegraded`
   doesn't call `checkShieldsCarvable` (degraded.go:40-75) and the gate refuses the carve on any
-  tier, but no invocation reaches the divergence: `run.go:71-73` refuses `--strict` together with
-  `--allow-degraded` as opposites, and validate carries no degraded posture of its own, so strict
-  is judging the full tier - which does refuse the carve. The gate tracking the default tier is
+  tier. `validate --strict` then `run --allow-degraded` does reach the divergence, but it is a
+  cross-posture cell in the allowed direction (A24): validate carries no degraded posture of its
+  own - no flag, no env var, no manifest field - so strict judges the default tier, which does
+  refuse the carve, and the degrading is a run-side choice made after. The gate tracking the
+  default tier is
   also what `clamp_refusal_test.go:151` and approve's stamp (`approve.go:205`) rest on: demoting
   the carve to a note would let the clamp propose a grant the default run dies on. Re-checked
   2026-09-19.

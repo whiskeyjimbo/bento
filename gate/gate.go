@@ -482,8 +482,10 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 // Answered for the DEFAULT tier, which is why the degraded tier not running
 // checkShieldsCarvable at all is no reason to demote this to a finding the way the
 // AboveWriteShield arm of writeShieldProblem is demoted: that verdict is the rare opt-in
-// tier's alone, this one is the tier every run lands on unless --allow-degraded is passed -
-// and --strict, the caller that acts on it, refuses that flag as its opposite. The clamp
+// tier's alone, this one is the tier every run lands on unless the caller opts out. What
+// opts out is a posture of the RUN (--allow-degraded, enforce.RunOptions.AllowDegraded) and
+// no part of the manifest, so nothing the gate is given says it will be taken - and the
+// callers that act on this refusal carry no such posture of their own. The clamp
 // withholds a proposal on this refusal through Refusals rather than knowing about it
 // (cmd/bento's TestClampProposalWithholdsAGrantWhoseShieldsCannotBeCarved), and approve
 // declines to stamp on it, so a grant dropped from the set here is one both hand to a run
