@@ -146,7 +146,7 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 // writeELFWithInterp builds the smallest ELF64 debug/elf will parse that carries one
 // PT_INTERP segment holding interp verbatim - including its NUL padding, which is what
 // distinguishes a well-formed loader name from a segment the decoder must refuse.
-func writeELFWithInterp(t *testing.T, path, interp string) string {
+func writeELFWithInterp(t testing.TB, path, interp string) string {
 	t.Helper()
 	const ehdrSize, phdrSize = 64, 56
 	var b bytes.Buffer

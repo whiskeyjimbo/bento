@@ -14,8 +14,8 @@
 // older kernel the ENOSYS lands in the lost-observation arm instead, so a run
 // profiles with every exec image dropped and Dropped counting each one. The
 // profile is then short and says so, which is the honest answer; it is not a
-// silent degradation, and it is the only thing in this package that a pre-5.6
-// kernel changes.
+// silent degradation. Below 5.3 the question does not arise: a trace refuses to
+// start at all without PTRACE_GET_SYSCALL_INFO.
 package observe
 
 import (

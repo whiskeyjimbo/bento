@@ -16,31 +16,32 @@ import (
 )
 
 // refShebangImage restates fs/binfmt_script.c's decode of a #! header: the one name the
-// KERNEL opens, and whether execImage can honestly report it. It is written here rather
-// than called out of the implementation on purpose - a differential whose two sides are
-// computed by the same code holds by construction and can never fail.
+// KERNEL opens, and whether execImage can honestly report it.
 //
-// head is the first bytes of the file. The kernel reads its own 256-byte buffer and
-// ZEROES the tail, so a file shorter than the buffer always has a terminator; only a file
-// that fills the buffer with no '\n' and no NUL is the ENOEXEC case, and the terminator is
-// whichever of the two comes first. The name is then the first space-or-tab-delimited
-// field, which is a narrower split than "whitespace": a '\r' or a form feed is part of the
-// interpreter's name to the kernel, and stopping at one names a file it never opened.
+// It is written out here rather than called out of the implementation, but the two are
+// necessarily the same small algorithm, so the differential's value does not come from
+// their being independent - it comes from TestBinfmtReferenceMatchesTheKernel, which holds
+// THIS side against real execs. That table is the oracle; the fuzz target is what carries
+// it across every input the fuzzer reaches. A blind spot shared by both sides survives
+// until the table grows a case for it, which is how the full-buffer rule below was found.
 //
-// complete is false for what execImage cannot honestly name: a line that never ends, and a
-// relative interpreter, which the kernel resolves against the tracee's working directory.
+// The rule: the kernel reads its own 256-byte buffer and ZEROES the tail, then ends the
+// name at the first of newline, NUL, space or tab - a narrower separator set than
+// "whitespace", so a '\r' or a form feed is part of the interpreter's NAME. It refuses the
+// header (ENOEXEC, nothing opened) only when the whole buffer holds none of the four: a
+// full buffer whose line runs on but carries a space still execs the name before it.
+//
+// complete is false for what execImage cannot honestly name: that unterminated buffer, and
+// a relative interpreter, which the kernel resolves against the tracee's working directory.
+// The second is the contract's answer, not the kernel's - the kernel opens it fine.
 func refShebangImage(head []byte) (image string, complete bool) {
-	body := head[2:]
-	end := bytes.IndexAny(body, "\n\x00")
-	if end < 0 {
-		if len(head) >= execHeadSize {
-			return "", false
-		}
-		end = len(body)
+	body := string(head[2:])
+	if !strings.ContainsAny(body, "\n\x00 \t") && len(head) >= execHeadSize {
+		return "", false
 	}
-	name := strings.TrimLeft(string(body[:end]), " \t")
-	if cut := strings.IndexAny(name, " \t"); cut >= 0 {
-		name = name[:cut]
+	name := strings.TrimLeft(body, " \t")
+	if end := strings.IndexAny(name, "\n\x00 \t"); end >= 0 {
+		name = name[:end]
 	}
 	if name == "" {
 		// binfmt_script refuses this with ENOEXEC, having opened nothing.
@@ -109,10 +110,21 @@ func FuzzExecImageDecode(f *testing.F) {
 		[]byte("#!/\n"),
 		[]byte("#!bin/sh\n"),
 		append([]byte("#!/"), bytes.Repeat([]byte("a"), 512)...),
+		append([]byte("#!/bin/sh "), bytes.Repeat([]byte("a"), 512)...),
 		[]byte("\x7fELF"),
 		{},
 	} {
 		f.Add(seed)
+	}
+	// The PT_INTERP branch is unreachable from random bytes - a parseable ELF carrying a
+	// segment is not something a mutator builds - so the seed is built with the helper the
+	// hand-written ELF test already uses, giving the fuzzer a base to mutate from.
+	for _, interp := range []string{"/lib64/ld.so\x00", "/lib64/ld.so\x00\x00\x00"} {
+		elf, err := os.ReadFile(writeELFWithInterp(f, filepath.Join(f.TempDir(), "elf"), interp))
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(elf)
 	}
 
 	pid := os.Getpid()
@@ -130,22 +142,13 @@ func FuzzExecImageDecode(f *testing.F) {
 			t.Errorf("execImage %s", err)
 		}
 
-		paths, complete := execImageChain(pid, path)
-		if !complete {
-			return
-		}
-		// The walk appends on every pass that does not return, and the pass that fills the
-		// bound falls through to the incomplete arm, so a complete chain is shorter than it.
-		if len(paths) >= execChainDepth {
+		// The chain's own elements are each an execImage answer the invariant above already
+		// covers, so the one thing left to hold it to is its bound: the walk appends on
+		// every pass that does not return and the pass that fills the bound falls through
+		// to the incomplete arm, so complete and at the bound is a walk that stopped early
+		// and said nothing was missed.
+		if paths, complete := execImageChain(pid, path); complete && len(paths) >= execChainDepth {
 			t.Errorf("chain reported complete at the depth bound with %v", paths)
-		}
-		if len(paths) > 0 && paths[0] != got {
-			t.Errorf("chain starts at %q, but the image of the file itself is %q", paths[0], got)
-		}
-		for _, p := range paths {
-			if !filepath.IsAbs(p) {
-				t.Errorf("chain reported complete naming the relative path %q in %v", p, paths)
-			}
 		}
 	})
 }
@@ -178,6 +181,12 @@ func TestBinfmtReferenceMatchesTheKernel(t *testing.T) {
 		{"relative", "#!bin/echo\n"},
 		{"empty name", "#!\n"},
 		{"line past the buffer", "#!/" + strings.Repeat("a", 512) + "\n"},
+		// A full buffer is not by itself unreadable: the name still ends at the first
+		// space or tab, and the kernel opens it. Only a buffer holding none of the four
+		// terminators is the ENOEXEC case the line above is.
+		{"buffer filled past a space", "#!" + echo + " " + strings.Repeat("a", 512)},
+		{"buffer filled past a tab", "#!" + echo + "\t" + strings.Repeat("a", 512)},
+		{"buffer filled past a nul", "#!" + echo + "\x00" + strings.Repeat("a", 512)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			script := filepath.Join(dir, "s")

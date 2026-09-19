@@ -196,7 +196,10 @@ Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** 
    pinned to the kernel by `TestBinfmtReferenceMatchesTheKernel`, which execs ten hand-built
    scripts with chosen interpreters - the fuzz target never execs its input, because the
    fuzzer reaches `#!/bin/sh` within seconds and running one would hand it a shell.
-   `TestImageDecodeOracleRejectsAWrongAnswer` is the positive control.
+   `TestImageDecodeOracleRejectsAWrongAnswer` is the positive control. The two sides of the
+   differential are necessarily the same small algorithm, so its value comes from the exec
+   table holding the reference to the kernel, not from independence - and the third defect
+   below was a blind spot shared by both sides until that table grew a case for it.
 
    **The gap was a defect, not just missing coverage.** The seed corpus alone found two
    divergences from binfmt_script, both confirmed by exec: `#!/bin/true\x00junk` was decoded
@@ -205,7 +208,13 @@ Ranked by oracle availability, not by scariness. STAMP: **VERIFIED BY READING** 
    kernel opened fine); and `#!/bin/sh\rx` was decoded as `/bin/sh` and reported COMPLETE,
    because `strings.Fields` splits on unicode whitespace while the kernel splits on space and
    tab alone - the kernel opened `/bin/sh\rx`, found nothing, and the manifest would have
-   named an interpreter the run never touched. Fixed in the same change.
+   named an interpreter the run never touched. A third, found by the review that followed:
+   with no newline in the 256-byte buffer the kernel still ends the name at the first space
+   or tab and execs it, and only a buffer holding none of newline, NUL, space or tab is the
+   ENOEXEC case - `#!/bin/echo ` followed by 300 filler bytes runs `/bin/echo`, where the
+   decoder reported a lost observation. Conservative rather than wrong (a spurious drop, not
+   a false complete), but it is a drop against a file the kernel opened. All three fixed in
+   the same change.
    STAMP: **VERIFIED BY SPIKE** (both reproduced by exec, red on the seeds, green after).
 2. **`gate`** - `Check` and eleven `*Problems` predicates, no target. The oracle is already
    written by hand: `TestShieldedGrantProblemsMirrorTheRunsRefusals` asserts gate-vs-`internal/linux`
