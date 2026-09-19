@@ -8,13 +8,15 @@ import (
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
-// maxWalkDepth bounds how deep the symlinked-credential expansion descends into real
+// MaxWalkDepth bounds how deep the symlinked-credential expansion descends into real
 // subdirectories. It bounds the walk, not any chain of links: a link's target is shielded
-// at its own path and never re-walked, so no link ever costs depth. It is the depth the
-// backend's git-directory scan uses, kept identical because the two walk the same host
-// trees at the same shape and a shallower bound here would silently unshield a store the
-// enforcer expands.
-const maxWalkDepth = 64
+// at its own path and never re-walked, so no link ever costs depth.
+//
+// Exported because it is also the depth the backend's git-directory scan uses: the two
+// walk the same host trees at the same shape, and a shallower bound here would silently
+// unshield a store the enforcer expands. internal/linux's maxGitdirDepth reads this
+// constant rather than repeating the number, so the two cannot drift.
+const MaxWalkDepth = 64
 
 // Set is the always-on shields for one run: assembled from the deny-list, expanded
 // through the symlinks a credential store points out along, resolved to where each would
@@ -55,7 +57,7 @@ type Set struct {
 	// sentence names the caller's own spelling.
 	extraDeny []Applied
 	// truncatedStores are the credential stores whose link expansion stopped at
-	// maxWalkDepth, by the path the deny-list spelled them. A store in here is expanded
+	// MaxWalkDepth, by the path the deny-list spelled them. A store in here is expanded
 	// only as far as the bound reached, so a farm target linked deeper than that carries
 	// no shield of its own.
 	truncatedStores []string
@@ -172,7 +174,7 @@ func (s Set) CallerDenies() []denylist.Rule {
 func (s Set) CredentialLinks() []denylist.Rule { return s.links }
 
 // TruncatedStores names the credential stores the expansion could not walk to the bottom
-// of, because they nest real directories deeper than maxWalkDepth. The store itself is
+// of, because they nest real directories deeper than MaxWalkDepth. The store itself is
 // shielded either way; what is missing is the shields on whatever it links out to below
 // the bound, and a read grant on one of those targets is Honored. Reported rather than
 // walked further: the bound is shared with the backend's git-directory scan on purpose.
@@ -285,10 +287,11 @@ func (s Set) credentialLinks(base []denylist.Rule) (links []denylist.Rule, trunc
 //
 // The second return says the bound stopped the walk short, which is the one way it returns
 // having covered less than the store. It is reported rather than fixed by a deeper bound:
-// the bound is the backend's git scan's, and raising it here alone reintroduces the
-// divergence maxWalkDepth's comment guards against.
+// the bound is the backend's git scan's too - internal/linux's maxGitdirDepth reads
+// MaxWalkDepth - so raising it here raises the git scan's walk with it, which is a change
+// to both walks and not a local one.
 func (s Set) linksUnder(r denylist.Rule, dir string, depth int) ([]denylist.Rule, bool) {
-	if depth > maxWalkDepth {
+	if depth > MaxWalkDepth {
 		return nil, true
 	}
 	if !s.fs.IsDir(dir) {

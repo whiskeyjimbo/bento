@@ -24,7 +24,7 @@ func nest(t *testing.T, root string, depth int) string {
 	return dir
 }
 
-// A store nesting deeper than maxWalkDepth is expanded only as far as the bound reaches,
+// A store nesting deeper than MaxWalkDepth is expanded only as far as the bound reaches,
 // so a link below it keeps its farm target unshielded and a read grant on that target is
 // Honored. The bound is the backend's git-directory scan's and stays where it is; what
 // must not happen silently is the shortfall, so the set names the store it happened in.
