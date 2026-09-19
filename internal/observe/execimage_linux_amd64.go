@@ -193,7 +193,7 @@ func execImage(pid int, path string) (string, bool) {
 		// manifest with Dropped at 0. Without the magic there is no image to name and no
 		// exec that could have succeeded either, which is the shebang branch's answer for
 		// a header naming nothing.
-		return "", strings.HasPrefix(head, elf.ELFMAG)
+		return "", !strings.HasPrefix(head, elf.ELFMAG)
 	}
 	for _, p := range e.Progs {
 		if p.Type != elf.PT_INTERP {

@@ -432,6 +432,33 @@ func TestPT_INTERPTerminationMatchesTheKernel(t *testing.T) {
 	}
 }
 
+// An ELF debug/elf cannot parse is not an ELF that will not RUN. The kernel's loader reads
+// the program headers and never the section headers debug/elf validates, so a binary whose
+// e_shstrndx is corrupt execs perfectly well and opens its PT_INTERP loader - and reporting
+// that as "nothing names an image" drops the loader from the manifest with Dropped at 0,
+// which is the one failure this file exists to stop. It is a lost observation instead.
+func TestExecImageReportsAnUnparseableELFAsALoss(t *testing.T) {
+	binary_, err := os.ReadFile("/bin/true")
+	if err != nil {
+		skipMissingDep(t, "/bin/true not readable")
+	}
+	if _, ok := execImage(os.Getpid(), "/bin/true"); !ok {
+		t.Skip("/bin/true names no image the observer can read here")
+	}
+	// e_shstrndx, which the kernel never looks at and debug/elf refuses out of range.
+	binary.LittleEndian.PutUint16(binary_[62:], 0xfff0)
+	path := filepath.Join(t.TempDir(), "corrupt-shstrndx")
+	if err := os.WriteFile(path, binary_, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(path).Run(); err != nil {
+		t.Skipf("the kernel did not run it either: %v", err)
+	}
+	if _, ok := execImage(os.Getpid(), path); ok {
+		t.Error("an ELF the observer cannot parse but the kernel runs was reported complete, so its loader leaves the manifest with nothing saying it is missing")
+	}
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
