@@ -229,11 +229,12 @@ func TestExecImageDoesNotBlockOnAFifo(t *testing.T) {
 // is then one file to it and another to the observer - an interpreter in the manifest
 // that the run never opened. Resolving through /proc/<pid>/root is what follows it.
 //
-// A pid with no root to look under is the reachable proof of that, and it is also the
-// case that must not be mistaken for a file that is simply absent: the exec's own ENOENT
-// is not a loss, but "the observer cannot see the tracee's namespace at all" is. Getting
-// that backwards puts a loader out of the manifest with Dropped at 0, which is the one
-// failure this file exists to stop.
+// Unprivileged user namespaces are unavailable on the hosts this runs on, so no test here
+// constructs the divergence itself. What is reachable is the arm that must not be mistaken
+// for a file that is simply absent: the exec's own ENOENT is not a loss, but "there is no
+// tracee root to look under" is, and getting that backwards puts a loader out of the
+// manifest with Dropped at 0 - the one failure this file exists to stop. The re-rooting
+// itself is pinned by the sibling test below.
 func TestExecImageChainResolvesInTheTraceesNamespace(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -250,5 +251,28 @@ func TestExecImageChainResolvesInTheTraceesNamespace(t *testing.T) {
 	}
 	if paths, complete := execImageChain(pid, sh); complete {
 		t.Errorf("the chain reported complete with %v for a pid with no namespace to resolve in", paths)
+	}
+}
+
+// The tracee's root is a ROOT, not a string prefix: the kernel re-roots an absolute name
+// at it and clamps a leading ".." there, so a target that execs /../../x runs the x under
+// its own root. Resolving the name by pasting it onto /proc/<pid>/root instead lands
+// somewhere inside /proc, naming a file nobody opened - the same wrong-file failure as
+// reading the observer's namespace, reached through a name the target chooses.
+func TestExecImageReRootsAnEscapingPath(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		skipMissingDep(t, "sh not available")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!"+sh+"\ntrue\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// This process's root is "/", so the kernel resolves the escaping form and the plain
+	// one to the same file - which is exactly what the resolution must reproduce.
+	got, ok := execImage(os.Getpid(), "/../.."+script)
+	if !ok || got != sh {
+		t.Errorf("execImage(%q) = %q, %v; want %q, true - the leading \"..\" was not clamped at the tracee root", "/../.."+script, got, ok, sh)
 	}
 }

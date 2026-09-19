@@ -84,20 +84,26 @@ func execImageChain(pid int, path string) (paths []string, complete bool) {
 // is also open_exec's own rule, so anything else is an exec that fails with nothing
 // opened and no image to name.
 func execImage(pid int, path string) (string, bool) {
-	pathFD, err := unix.Open(traceePath(pid, path), unix.O_PATH|unix.O_CLOEXEC, 0)
+	rootFD, err := unix.Open(fmt.Sprintf("/proc/%d/root", pid), unix.O_PATH|unix.O_CLOEXEC|unix.O_DIRECTORY, 0)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
-			return "", false
-		}
-		// Under the tracee's root an ENOENT is ambiguous in a way it was not under the
-		// observer's: it answers both "absent in the tracee's view", which the exec will
-		// answer too, and "there is no tracee root left to look under", which is a lost
-		// observation. Taking the second for the first is what would put a loader out of
-		// the manifest with Dropped at 0.
-		if _, err := os.Stat(traceePath(pid, "/")); err != nil {
-			return "", false
-		}
-		return "", true
+		// No root to resolve under is never "the file is absent" - the exec would find it
+		// perfectly well - so it is a lost observation whatever the errno, including the
+		// ENOENT of a tracee that has already gone. Reading it as absence is what would
+		// put a loader out of the manifest with Dropped at 0.
+		return "", false
+	}
+	defer unix.Close(rootFD)
+	// RESOLVE_IN_ROOT is what makes the descriptor an actual root rather than a prefix:
+	// the kernel re-roots an absolute path at it, clamps ".." there the way it does at a
+	// real root, and - the case a lexical join cannot reach at all - resolves an ABSOLUTE
+	// SYMLINK inside it too, where a name walked through /proc/<pid>/root jumps back to
+	// the OBSERVER's root the moment it meets one. Each of those is the same wrong file
+	// this resolution exists to stop naming. An ENOSYS from a kernel without openat2
+	// lands in the lost-observation arm below, which is the honest answer: the observer
+	// cannot see what the kernel will.
+	pathFD, err := unix.Openat2(rootFD, path, &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC, Resolve: unix.RESOLVE_IN_ROOT})
+	if err != nil {
+		return "", errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 	}
 	defer unix.Close(pathFD)
 	var st unix.Stat_t
@@ -179,12 +185,4 @@ func execImage(pid int, path string) (string, bool) {
 		return interp, true
 	}
 	return "", true
-}
-
-// traceePath names path as the OBSERVER must open it to see the file the TRACEE would:
-// through /proc/<pid>/root, which the kernel resolves in the tracee's mount namespace and
-// under its root, so a chroot or a fresh mount namespace is followed rather than ignored.
-// Join cleans the path, so no ".." in a target-chosen name walks back out of that root.
-func traceePath(pid int, path string) string {
-	return filepath.Join(fmt.Sprintf("/proc/%d/root", pid), path)
 }
