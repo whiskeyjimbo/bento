@@ -1490,8 +1490,8 @@ func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
 	if len(res.GuardBlockedMetadata) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] these were the cloud instance metadata address, which nothing reaches by accident")
-	fmt.Fprintln(w, "[bento] - the target went looking for the instance's credentials:")
+	fmt.Fprintln(w, "[bento] the cloud instance metadata address is among them, and nothing reaches it by")
+	fmt.Fprintln(w, "[bento] accident - the target went looking for the instance's credentials:")
 	for _, hp := range res.GuardBlockedMetadata {
 		fmt.Fprintf(w, "[bento]   %q port %q\n", hp.Host, hp.Port)
 	}

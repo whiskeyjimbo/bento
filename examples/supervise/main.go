@@ -390,7 +390,7 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 	// second-guessed, and this is the one cause where it was not a misconfiguration but
 	// the target reaching for the instance's credentials. Quoted for the same reason.
 	if len(res.GuardBlockedMetadata) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("one of those is the cloud instance metadata address: the target went looking for the instance's credentials"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("the cloud instance metadata address is among those: the target went looking for the instance's credentials"))
 		for _, hp := range res.GuardBlockedMetadata {
 			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(hp.Host)+" port "+hp.Port))
 		}
