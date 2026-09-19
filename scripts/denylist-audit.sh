@@ -47,11 +47,27 @@ if ! GOWORK=off go build -o "$bin" ./cmd/denylist-audit; then
 	exit 1
 fi
 
-"$bin"
+# Captured rather than streamed so the unread-directive banner can be looked for after the
+# fact. Not a pipeline: that would report the reader's status, not the audit's.
+out=$(mktemp) || exit 2
+trap 'rm -f "$bin" "$out"' EXIT
+"$bin" >"$out" 2>&1
 status=$?
+cat "$out"
 
 case "$status" in
 0)
+	# A directive the parser could not read was never compared against bento's list, so a
+	# run carrying one proves less than it claims. The audit has no exit status for it -
+	# the count is disclosed in its output and nowhere else - so the banner is the signal.
+	# Every form the corpora use today is read, which is what makes the zero reachable;
+	# this turns upstream introducing a new one into a red build rather than a line in a
+	# passing run's output that nobody reads.
+	if grep -q "were not understood by the parser" "$out"; then
+		echo "denylist-audit: part of an upstream corpus was not read (see above), so the parity above is narrower than it looks." >&2
+		echo "denylist-audit: teach internal/denylist/audit the directive form, or file a bead." >&2
+		exit 1
+	fi
 	exit 0
 	;;
 1)

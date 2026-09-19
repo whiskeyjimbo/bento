@@ -964,9 +964,11 @@ func TestParseFirejailReadsABuildConditionWithNoSpace(t *testing.T) {
 	}
 }
 
-// The AppArmor parser counts the same way, including the create-guards isCreateGuard
-// suppresses by design - its own doc concedes that drop is a narrowing of the diff, and a
-// count is what makes an upstream rewriting "foo/{,**}" as a bare "foo/ w" visible.
+// The AppArmor parser counts the same way. A create-guard isCreateGuard suppresses counts
+// only when nothing else in the corpus shields anything under the directory it guards:
+// that is the upstream rewriting "foo/{,**}" as a bare "foo/ w", the case where the silent
+// drop hides a store. A guard over a directory whose children are shielded elsewhere hides
+// nothing and would otherwise put a permanent floor under every ratchet built on the count.
 func TestParseAppArmorCountsWhatItCouldNotRead(t *testing.T) {
 	const content = `# private files
 deny @{HOME}/.ssh/{,**} mrwkl,
@@ -980,9 +982,9 @@ deny @{HOME}/.netrc,
 	if len(kept) != 1 || kept[0].Path != "/HOME/.ssh" {
 		t.Fatalf("parsed %+v, want only the .ssh candidate", kept)
 	}
-	// The create-guard, the rule that trims away to the home root, the unclassified
-	// variable, and the deny rule carrying no mode token - four rules that left the diff
-	// with nothing in it. /etc/shadow is out of scope by design and not among them, and a
+	// The create-guard over a .config nothing else in this corpus shields under, the rule
+	// that trims away to the home root, the unclassified variable, and the deny rule
+	// carrying no mode token - four rules that left the diff with nothing in it. /etc/shadow is out of scope by design and not among them, and a
 	// line that is no deny rule at all was never this parser's to read.
 	if dropped != 4 {
 		t.Errorf("dropped = %d, want 4", dropped)
@@ -994,6 +996,14 @@ deny @{HOME}/.netrc,
 	kept, dropped = ParseAppArmor("deny @{HOME}/bin/{,**} w,\n", "/HOME", "/run/user/1000")
 	if len(kept) != 1 || dropped != 0 {
 		t.Errorf("kept %d dropped %d, want 1 and 0: a rule half-dropped by design still reaches the diff", len(kept), dropped)
+	}
+
+	// The shape the live abstractions are all of: the guard exists so .config cannot be
+	// replaced to reach the child shielded on its own line. Nothing leaves the diff with
+	// it, so counting it would leave the gate permanently unable to reach zero.
+	kept, dropped = ParseAppArmor("deny @{HOME}/.config/ w,\ndeny @{HOME}/.config/kwalletrc mrwkl,\n", "/HOME", "/run/user/1000")
+	if len(kept) != 1 || dropped != 0 {
+		t.Errorf("kept %d dropped %d, want 1 and 0: a create-guard over a directory shielded below it hides nothing", len(kept), dropped)
 	}
 }
 

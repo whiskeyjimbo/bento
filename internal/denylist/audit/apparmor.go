@@ -36,12 +36,15 @@ import (
 // two can be gated the same way. A line that is not a deny rule at all (a comment, an
 // allow rule) is not the parser's to read and is not counted; neither is a rule that
 // yielded at least one candidate, which is what keeps the deliberate narrowings out of
-// the number. A rule whose every branch is a create-guard IS counted: isCreateGuard's own
-// doc names the upstream rewriting "foo/{,**}" as a bare "foo/ w" as the case where its
-// suppression stops being harmless, and that rewrite is exactly a rule with no branch
-// left.
+// the number. A rule whose every branch is a create-guard is counted only when nothing
+// else in the corpus shields anything under the directory it guards: that is exactly
+// the upstream rewriting "foo/{,**}" as a bare "foo/ w" that isCreateGuard's own doc
+// names as the case where its suppression stops being harmless.
 func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 	var out []Candidate
+	// Create-guard-only rules are settled after the corpus is read, because whether
+	// dropping one hides anything depends on candidates a later line contributes.
+	var guardOnly [][]string
 	dropped := 0
 	seen := map[string]int{}
 	for line := range strings.SplitSeq(content, "\n") {
@@ -86,8 +89,15 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 		// kept is the narrowing this parser makes on purpose. Only a rule that ends with
 		// nothing in the diff is a rule that left it.
 		yielded := false
+		var guarded []string
 		for _, expanded := range expandAlternation(rooted) {
 			if isCreateGuard(expanded, modes) {
+				// A guard on the scope root itself names no directory whose children
+				// could excuse it, and every candidate sits under it, so it is left to
+				// the count rather than waved through by construction.
+				if g := filepath.Clean(expanded); g != home && g != runUser {
+					guarded = append(guarded, g)
+				}
 				continue
 			}
 			p, dir, ok := trimSubtreeSuffix(expanded, home, runUser)
@@ -124,10 +134,42 @@ func ParseAppArmor(content, home, runUser string) ([]Candidate, int) {
 			})
 		}
 		if !yielded {
+			if len(guarded) > 0 {
+				guardOnly = append(guardOnly, guarded)
+				continue
+			}
+			dropped++
+		}
+	}
+	for _, dirs := range guardOnly {
+		if !allShieldedBelow(dirs, out) {
 			dropped++
 		}
 	}
 	return out, dropped
+}
+
+// allShieldedBelow reports whether each directory a create-guard-only rule named has a
+// candidate of its own beneath it elsewhere in the corpus - the condition under which
+// dropping the rule costs the diff nothing. .config, .local, .kde{,4} and .pki all pass:
+// the abstraction shields children under each, and the guard exists only so the parent
+// cannot be replaced to side-step them. A bare "foo/ w" with nothing under foo is the
+// rewrite isCreateGuard's doc names as the case where the silent drop stops being
+// harmless, and it fails here, so the rule leaves the diff counted rather than unseen.
+func allShieldedBelow(dirs []string, out []Candidate) bool {
+	for _, dir := range dirs {
+		found := false
+		for _, c := range out {
+			if strings.HasPrefix(c.Path, dir+"/") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // isBareDeny reports whether a line is a deny rule carrying nothing for the parser to
@@ -262,13 +304,13 @@ func splitTopLevel(body string) []string {
 // a subtree branch is unaffected: "bin/{,**}" keeps its "bin/**" branch, so ~/bin is
 // still audited.
 //
-// The drop is silent, which is a narrowing of the diff and so worth stating. Every rule
-// it currently suppresses (.gnome2/, .config/, .kde{,4}/, .pki/) is a bare directory
-// with no subtree branch, and each of those directories holds shielded children rather
-// than being a store itself. Were upstream to rewrite an existing "foo/{,**}" as a bare
-// "foo/ w", that entry would leave the comparison unannounced - the same silent-narrowing
-// shape the fetch sentinels in cmd/denylist-audit exist to prevent. Re-check here if the
-// abstraction's rule style changes.
+// The drop is silent only where it costs nothing. Every rule it currently suppresses
+// (.gnome2/, .config/, .kde{,4}/, .pki/) is a bare directory with no subtree branch, and
+// each of those directories holds shielded children rather than being a store itself -
+// which is the condition ParseAppArmor checks before excusing the rule from its
+// unread count. Were upstream to rewrite an existing "foo/{,**}" as a bare "foo/ w",
+// nothing would be left under foo and the rule would be counted, the same
+// silent-narrowing shape the fetch sentinels in cmd/denylist-audit exist to prevent.
 func isCreateGuard(path, modes string) bool {
 	return strings.HasSuffix(path, "/") && !strings.ContainsAny(modes, "rmk")
 }
