@@ -94,6 +94,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeDegradedSummary"}, exempt: "D6: the refused/reported/host-only split is decided by layers[] tier and layer"},
 	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
 	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
+	{writers: []string{"writeTruncatedStores"}, fixture: "doctor-deep-store", marker: "nest deeper than the shields walk", key: "truncated_stores"},
 
 	// profile. Rendered by calling the writers: reaching profile.go's calls to them means
 	// profiling a script under a real sandbox, which this table does not require. The call
@@ -127,14 +128,15 @@ func TestEveryHumanFactReachesJSON(t *testing.T) {
 	pureLookup(t, false)
 
 	fixtures := map[string]func(t *testing.T) (string, map[string]any){
-		"verdict":          parityRunVerdict,
-		"unreached":        parityRunUnreached,
-		"refusal":          parityRunRefusal,
-		"validate":         parityValidate,
-		"validate-stamped": parityValidateStamped,
-		"doctor":           parityDoctor,
-		"doctor-relocated": parityDoctorRelocated,
-		"profile":          parityProfile,
+		"verdict":           parityRunVerdict,
+		"unreached":         parityRunUnreached,
+		"refusal":           parityRunRefusal,
+		"validate":          parityValidate,
+		"validate-stamped":  parityValidateStamped,
+		"doctor":            parityDoctor,
+		"doctor-relocated":  parityDoctorRelocated,
+		"doctor-deep-store": parityDoctorDeepStore,
+		"profile":           parityProfile,
 	}
 	type rendered struct {
 		human   string
@@ -369,6 +371,25 @@ func parityDoctorRelocated(t *testing.T) (string, map[string]any) {
 	}
 	t.Setenv("HOME", filepath.Join(pw, ".aws"))
 	t.Setenv("HISTFILE", "/usr/bin/python3")
+	return renderDoctor(t)
+}
+
+// parityDoctorDeepStore is the host whose credential store nests real directories deeper
+// than the shields expansion walks, which is the one way the set covers less than the
+// store it shielded. Built rather than found: no ordinary host has one, and the shortfall
+// is what doctor has to say out loud.
+func parityDoctorDeepStore(t *testing.T) (string, map[string]any) {
+	home := t.TempDir()
+	// Depth alone truncates the walk - a link below the bound is what the shortfall COSTS,
+	// not what reports it - so the store needs no link to drive this row.
+	dir := filepath.Join(home, ".password-store")
+	for range 70 {
+		dir = filepath.Join(dir, "d")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
 	return renderDoctor(t)
 }
 

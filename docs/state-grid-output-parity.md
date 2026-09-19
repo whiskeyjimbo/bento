@@ -62,7 +62,7 @@ warnStampAtRisk writes stderr in both modes (validate.go:65, before the mode spl
 same class as run's pre-run notes, not counted as a cell. --json carries it as stamp_at_risk,
 the key run uses.
 
-## Grid D - doctor: human fact x --json (13 cells)
+## Grid D - doctor: human fact x --json (14 cells)
 
 | # | Human fact (writer) | JSON field | Verdict | Stamp |
 |---|---|---|---|---|
@@ -79,6 +79,7 @@ the key run uses.
 | D11 | nested anchors (writeNestedAnchors) | nested_anchors | HANDLED; keyed row in the guard | SPIKE |
 | D12 | dropped relocations, store NOT shielded (writeDroppedRelocations) | unshieldable_relocations | HANDLED, fixed in c973708 (was UNHANDLED; validate carried unshieldable_relocations and doctor did not) | SPIKE |
 | D13 | relocated shields, variable -> path (writeRelocatedShields) | relocated_shields | HANDLED; keyed row in the guard | SPIKE |
+| D14 | credential stores the shields walk covered only to its bound (writeTruncatedStores) | truncated_stores | HANDLED; keyed row in the guard | SPIKE |
 
 ## Grid R - run result: human fact x --json event (26 cells)
 

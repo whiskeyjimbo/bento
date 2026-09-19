@@ -156,6 +156,9 @@ type doctorOutputJSON struct {
 	NestedAnchors           []anchorNesting   `json:"nested_anchors,omitempty"`
 	// RelocatedShields maps each variable that moved a built-in shield to its new paths.
 	RelocatedShields map[string][]string `json:"relocated_shields,omitempty"`
+	// TruncatedStores names the credential stores the symlink expansion walked only as
+	// far as the walk bound, so whatever they link out to below it is unshielded.
+	TruncatedStores []string `json:"truncated_stores,omitempty"`
 }
 
 // toDoctorJSON builds the doctor JSON output. Ready derives from the same
@@ -185,5 +188,6 @@ func toDoctorJSON(r enforce.Report, anchors []string, anchorErr error) doctorOut
 	out.UnshieldableRelocations = denylist.UnshieldableRelocations(anchors)
 	out.NestedAnchors = nestedAnchors(anchors)
 	out.RelocatedShields = relocatedShields()
+	out.TruncatedStores = truncatedStores()
 	return out
 }

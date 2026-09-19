@@ -1925,6 +1925,7 @@ func writeShieldAnchors(w io.Writer) {
 	writeNestedAnchors(w, anchors)
 	writeDroppedRelocations(w, anchors)
 	writeRelocatedShields(w)
+	writeTruncatedStores(w)
 	fmt.Fprintln(w)
 }
 
@@ -2039,6 +2040,40 @@ func relocatedShields() map[string][]string {
 		}
 	}
 	return paths
+}
+
+// writeTruncatedStores names the credential stores whose symlink expansion stopped at the
+// walk bound, so a store that is shielded but only expanded partway says so instead of
+// under-covering its farm targets silently. A link below the bound leaves its target
+// unshielded, and a read grant on that target is Honored.
+//
+// The bound stays where it is: it is the backend's git-directory scan's depth on purpose,
+// so raising it here alone would put the two walks back out of step. Flattening the store
+// is the remedy an operator has.
+func writeTruncatedStores(w io.Writer) {
+	stores := truncatedStores()
+	if len(stores) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  %d credential store(s) nest deeper than the shields walk:\n", len(stores))
+	for _, s := range stores {
+		// Quoted for the reason the anchors are: the path is the host's, so a newline in
+		// one would forge a line of this report.
+		fmt.Fprintf(w, "    %s\n", strconv.Quote(s))
+	}
+	fmt.Fprintf(w, "  Each is shielded whole, but a symlink below that depth keeps its target exposed.\n")
+	fmt.Fprintf(w, "  Flatten the store, or grant nothing that reaches where it links out to.\n")
+}
+
+// truncatedStores is the stores the expansion walked only as far as the bound. A shield
+// set that cannot be built has nothing to say about them: doctor reports that failure
+// through the anchors already.
+func truncatedStores() []string {
+	set, err := commandShieldSet()
+	if err != nil {
+		return nil
+	}
+	return set.TruncatedStores()
 }
 
 // commonDir returns the deepest directory holding every path, for naming a group of
