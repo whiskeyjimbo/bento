@@ -728,6 +728,12 @@ func Home(home string) []Rule {
 		".config/kmail2rc",
 		".config/emaildefaults",
 		".config/emailidentities",
+		// KIdentityManagement opens "emailidentities" as a KConfig, which resolves to the
+		// config location, so this is the real spelling and it is a file. firejail also
+		// carries a .local/share/emailidentities with no claim about its shape and no KDE
+		// producer behind it; it is kept here as the same file class rather than as the
+		// credential DIRECTORY it was, which asserted a per-identity tree nothing writes.
+		".local/share/emailidentities",
 		".config/kmailsearchindexingrc",
 		".config/specialmailcollectionsrc",
 		".pine-interrupted-mail", // an interrupted draft: message body on disk
@@ -2426,8 +2432,7 @@ var credentialAnchorDirs = []string{
 	".config/gdfuse",
 	".cache/gdfuse",
 	".local/share/gdfuse",
-	".local/share/emailidentities", // per-identity signature data, one dir per identity
-	".filezilla",                   // sitemanager.xml stores passwords base64-encoded
+	".filezilla", // sitemanager.xml stores passwords base64-encoded
 	".config/filezilla",
 
 	// Chat clients that keep account passwords in plaintext on disk. pidgin also holds

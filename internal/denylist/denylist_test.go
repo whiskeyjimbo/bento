@@ -2101,6 +2101,26 @@ func TestDenyAllRulesAreClassified(t *testing.T) {
 // Covers extends a Dir rule over everything under it. linphone's account config and its
 // call-history database are single files at the top of the home, so a Dir rule on either
 // claims a tree that cannot exist.
+// Covers and Index break ties with stricter(), which compares Deny then Dir and stops,
+// so two rules on one path that tie there resolve to whichever the scan reached first -
+// and the Holds a callout prints follows list order rather than the tables. Tests keyed
+// by Rule.Path silently take the last writer for a duplicated path too. The tables are
+// long and grow, so the property is pinned rather than any one entry.
+func TestHomeEmitsNoDuplicatePath(t *testing.T) {
+	rules := Home("/home/u")
+	if len(rules) < 100 {
+		t.Fatalf("Home emitted %d rules; the tables cannot have shrunk this far", len(rules))
+	}
+	first := make(map[string]Rule, len(rules))
+	for _, r := range rules {
+		if prev, ok := first[r.Path]; ok {
+			t.Errorf("%s emitted twice: %+v and %+v", r.Path, prev, r)
+			continue
+		}
+		first[r.Path] = r
+	}
+}
+
 func TestSingleFileStoresAreNotDirRules(t *testing.T) {
 	rules := allRules("/home/u")
 	byPath := make(map[string]Rule, len(rules))
@@ -2110,6 +2130,9 @@ func TestSingleFileStoresAreNotDirRules(t *testing.T) {
 	for _, p := range []string{
 		"/home/u/.linphonerc",
 		"/home/u/.linphone-history.db",
+		// KIdentityManagement opens emailidentities as a KConfig; firejail's
+		// .local/share spelling names the same thing and is not a per-identity tree.
+		"/home/u/.local/share/emailidentities",
 	} {
 		r, ok := byPath[p]
 		if !ok {
@@ -2143,6 +2166,9 @@ func TestHomeShieldClassification(t *testing.T) {
 		"/home/u/.zuluCrypt-socket": HoldsServices,
 		"/home/u/.rhosts":           HoldsPersistence,
 		"/home/u/.config/kwalletrc": HoldsPrivateData,
+		// Identity and account structure, not key material - the same answer its
+		// .config sibling gets.
+		"/home/u/.local/share/emailidentities": HoldsPrivateData,
 	} {
 		if got := byPath[path]; got.Holds != want {
 			t.Errorf("%s: Holds = %v (%q), want %v", path, got.Holds, got.Holds.Noun(), want)
