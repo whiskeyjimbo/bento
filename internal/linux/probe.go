@@ -453,15 +453,19 @@ const terminalResidual = ". Nor does it detach the target from a controlling ter
 
 // teardownResidual discloses the other half of the process-group sweep: the half that
 // never runs. A SIGKILLed bento executes no teardown, so the sweep is reached only where
-// bento is still alive to run it; Pdeathsig on the launcher covers the shape where the
-// target is execveat'd over the launcher and so inherits the signal, and not the shape
-// where the launcher stays a supervisor (the exec block off, runTarget's superviseTarget
-// arm). Unconditional for the same reason terminalResidual is: the probe describes a tier,
-// not a particular run, and cannot know which dispatch the run it is describing will take.
+// bento is still alive to run it. Pdeathsig is per-process and is set on the launcher, so
+// it reaches the target only where the target was execveat'd over the launcher (the exec
+// block on; PDEATHSIG survives an ordinary execve) and never reaches what the target
+// itself started - the plain exec block still permits fork, and only none-strict denies
+// it. Where the launcher stays a supervisor (runTarget's superviseTarget arm) the target
+// is an ordinary child with no Pdeathsig of its own and survives too. Unconditional for
+// the same reason terminalResidual is: the probe describes a tier, not a particular run,
+// and cannot know which dispatch the run it is describing will take.
 const teardownResidual = ", and which does not run at all if bento itself is killed outright - the launcher " +
-	"is torn down with it, but only where the target was execveat'd over the launcher does that reach the " +
-	"target, so a run the launcher supervises instead leaves the target and anything it backgrounded alive " +
-	"with nothing left to sweep them"
+	"is torn down with it, but that death reaches the target only where the target was execveat'd over the " +
+	"launcher, and reaches nothing the target started in either shape, so a background process it left - and, " +
+	"on a run the launcher supervises rather than execs over, the target itself - stays alive with nothing " +
+	"left to sweep it"
 
 // capBoundResidual discloses the capability bounding set, which the bwrap tier empties
 // with --cap-drop ALL and this tier can only attempt. It is named as inert rather than as
