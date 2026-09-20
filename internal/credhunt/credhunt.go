@@ -383,8 +383,10 @@ const dotDirSniffDepth = 3
 //
 // This reaches the UNVERSIONED farm only. A farm under git - the common one - is pruned
 // whole by the isCheckout test above before any file in it is visited, and that prune is
-// named in Hunt's second result, so it is disclosed rather than silent. The two halves
-// leave no farm both unsniffed and unreported.
+// named in Hunt's second result, so it is disclosed rather than silent. Within
+// dotDirSniffDepth the two halves leave no farm both unsniffed and unreported; an
+// unversioned farm deeper than that is the same bargain the rest of the home is scanned
+// under, and is tracked as bv2-c3z78 rather than claimed here.
 var farmDirs = []string{"dotfiles"}
 
 func sniffUnconditionally(path, home string) bool {

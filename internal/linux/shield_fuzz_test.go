@@ -54,9 +54,10 @@ import (
 //     decision lands would pin whichever answer the code happens to give today.
 //   - The workspace argument is what would carry the derived rules in, and the differential
 //     that exercises them from both deriving sites already exists: shieldcorpus' "write to a
-//     folded spelling of an enclosing checkout's hooks dir" case. Passing a workspace here
-//     would build a second differential over the same rules, which is the defect bv2-r14l0
-//     already records elsewhere.
+//     folded spelling of an enclosing checkout's hooks dir" case, which runs against this
+//     package's own backend. Passing a workspace here would build a second differential
+//     over the same rules and the same emitters, so it would add no cell and drift from
+//     the first one. The test below is what keeps that citation from going stale.
 
 // A DenyAll credential a read grant might reach, and the ancestor dirs implied by
 // its existence (a file under ~/.ssh means ~/.ssh exists too, which is what a real
