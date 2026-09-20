@@ -49,9 +49,9 @@ func TestCheckReportsAWorkdirThisHostHasNot(t *testing.T) {
 
 // The other direction, and the one that matters more under this package's contract: a
 // gate that invents a refusal is worse than one that misses it. `workdir: ./out` beside
-// `write: [./out]` is the shape `bento profile` writes, the directory does not exist
-// until the run creates it, and that run starts fine - so nothing here may call it
-// unrunnable.
+// `write: [./out]` is what a re-profile of a manifest already setting that workdir writes
+// back, the directory does not exist until the run creates it, and that run starts fine -
+// so nothing here may call it unrunnable.
 func TestCheckPassesAnAbsentWorkdirAWriteGrantCreates(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, "out")

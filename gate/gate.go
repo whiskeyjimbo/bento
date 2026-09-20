@@ -155,17 +155,26 @@ func Check(resolved *policy.Policy) Runnability {
 // without this the manifest validates clean and dies at a step that has already paid for
 // the mount namespace - the exact class Runnability exists to report first.
 //
-// Absence alone is not the answer, and this is the whole subtlety: a write grant at or
-// beneath the workdir is created before the sandbox exists and bound inside it, so
-// `workdir: ./out` beside `write: [./out]` starts fine on a host where ./out has never
-// existed - the shape `bento profile` itself writes. Refusing that would refuse a run that
-// works, the one direction this package rules out.
+// Absence alone is not the answer: a write grant at or beneath the workdir is created
+// before the sandbox exists and bound inside it, so `workdir: ./out` beside
+// `write: [./out]` starts fine on a host where ./out has never existed - the shape a
+// re-profile of a manifest that already sets that workdir writes back. Refusing that
+// would refuse a run that works, the one direction this package rules out.
+//
+// One absent workdir the run still starts in is missed the other way, and knowingly: a
+// shield materializes a tmpfs at an absent shielded directory when a READ grant reaches
+// it, so `workdir: ~/.aws` beside `read: [~]` starts. Only the write grants are consulted
+// here, because deciding it properly means asking the shield set which absent paths it
+// will materialize - the enumeration the paragraph below refuses for the same reason.
+// That leaves a refusal this package should not make; it is narrow enough to carry rather
+// than to buy an enumeration with.
 //
 // It says nothing about a workdir that EXISTS on the host but has nothing granted
-// beneath it, which the enforced run also refuses. Answering that needs the sandbox's
+// beneath it, which the enforced run also refuses, nor about one that exists as a FILE,
+// which stats clean here and fails bwrap's chdir. Answering either needs the sandbox's
 // whole bind set - the runtime scratch, the system trees, the shield mounts - and a gate
-// that enumerates them refuses a run the moment one moves. `bento profile` names that
-// case instead, where the proposal is being written.
+// that enumerates them refuses a run the moment one moves. `bento profile` names the
+// first case instead, where the proposal is being written.
 func workdirProblems(resolved *policy.Policy) []string {
 	if resolved.Workdir == "" {
 		return nil

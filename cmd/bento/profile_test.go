@@ -1399,6 +1399,11 @@ func TestPrintWorkdirGrantsNamesAWorkdirNothingReaches(t *testing.T) {
 		"granted beneath it":   {Entrypoint: script, Workdir: elsewhere, Write: []string{filepath.Join(elsewhere, "out")}},
 		"granted above it":     {Entrypoint: script, Workdir: elsewhere, Read: []string{filepath.Dir(elsewhere)}},
 		"holds the entrypoint": {Entrypoint: script, Workdir: dir},
+		// The sandbox carries these with no grant at all, so a warning about them would
+		// be a warning about a run that works: the base image trees are bound from the
+		// host, and /tmp itself is the run's own scratch.
+		"a base image tree": {Entrypoint: script, Workdir: "/usr/share"},
+		"the sandbox tmp":   {Entrypoint: script, Workdir: sandboxTmp},
 	} {
 		var quiet bytes.Buffer
 		printWorkdirGrants(&quiet, p, script)

@@ -1081,14 +1081,21 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 //
 // A grant either side of the workdir clears it: one AT or BENEATH it creates the mount
 // point, and one COVERING it binds the tree the workdir sits in. So does the entrypoint,
-// which is bound regardless, when the workdir holds it. Said only when none of those
-// holds - profile proposes, it does not refuse, and a warning about a run that works is
-// the one this is worth less than silence.
+// which is bound regardless, when the workdir holds it - and so do the directories the
+// sandbox carries with no grant at all: the base image trees and its own /tmp, which the
+// clamp above already treats as places a grant is neither needed nor proposable. /tmp
+// itself and not what is under it: the sandbox's /tmp is a fresh empty tmpfs, so a
+// workdir naming a directory inside it is exactly as absent there as any other ungranted
+// path. Said only when none of those holds - profile proposes, it does not refuse, and a warning
+// about a run that works is worth less than silence.
 func printUngrantedWorkdir(w io.Writer, p *policy.Policy) []accessNoteJSON {
 	if p.Workdir == "" {
 		return nil
 	}
 	dir, _ := pathresolve.Existing(p.Workdir)
+	if enforce.InBaseImage(dir) || dir == sandboxTmp {
+		return nil
+	}
 	entrypoint, _ := pathresolve.Existing(p.Entrypoint)
 	if policy.CoversResolved(dir, entrypoint) {
 		return nil
