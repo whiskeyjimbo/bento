@@ -142,6 +142,8 @@ func run(manifestPath string, allowUnapproved bool) int {
 	// "beside whatever cwd embed was started from", so anchor before anything reads
 	// the policy. Resolve is separate from Parse because the fingerprint above must
 	// see the manifest as written - resolving first rewrites the very paths it covers.
+	// TestOneStampCoversTheSameTreeAtTwoRoots holds that order: swapping these two lines
+	// compiles, and refuses every approved manifest carrying a relative path.
 	if err := manifest.Resolve(p, manifestPath); err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
 		return 2
