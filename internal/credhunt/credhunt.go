@@ -350,16 +350,28 @@ func outboundLink(path, resolvedHome string, d fs.DirEntry) (Skip, bool) {
 }
 
 // sniffUnconditionally reports whether path is somewhere the content sniff runs whatever
-// the file is named: directly at the home root, or anywhere under a dotdirectory.
+// the file is named: directly at the home root, or shallowly under a dotdirectory.
 //
 // Both are the class the cheap signals systematically miss. The home root holds the bare
 // ~/.env. The dotdirectories hold the developer token stores - a 0644
 // ~/.config/<tool>/settings.json with an oauth token in it trips no name token, no suffix
 // and no mode, so nothing but its contents can reach it, and that is exactly the class
-// denylist.go:36 records the parity audit missing 19 of 21 of. What the bound keeps out is
-// the rest of the home: a source tree, a documents directory, a downloads directory are
-// all read-free, and the package caches under a dotdirectory are pruned by MachineStores
-// before this is asked.
+// denylist.go:36 records the parity audit missing 19 of 21 of. What that keeps out is the
+// rest of the home: a source tree, a documents directory, a downloads directory are all
+// read-free.
+//
+// The depth bound is what keeps this from being the flood it replaces. Unbounded, it opens
+// every file under every dotdirectory, and the ones that are not caches - an installed
+// toolchain, an editor server, a container store - are the deepest trees on a developer
+// home and hold no credentials at all: measured on one, unbounded cost 9193 truncated
+// reads and 9m47s against 4464 in .local/share and 2558 in .rustup alone, and this
+// package's own MachineStores note says a report that long is the same as not working. A
+// store puts its credential near the top of its own directory, which is where every
+// developer token store the parity audit missed sits (.config/<tool>/<file> is two, and
+// .local/share/<tool>/<file> three). Deeper than that the cheap signals still apply, which
+// is the same bargain the rest of the home is scanned under.
+const dotDirSniffDepth = 3
+
 func sniffUnconditionally(path, home string) bool {
 	rel, err := filepath.Rel(home, filepath.Dir(path))
 	if err != nil {
@@ -368,12 +380,11 @@ func sniffUnconditionally(path, home string) bool {
 	if rel == "." {
 		return true
 	}
-	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
-		if strings.HasPrefix(seg, ".") {
-			return true
-		}
+	segs := strings.Split(rel, string(filepath.Separator))
+	if len(segs) > dotDirSniffDepth {
+		return false
 	}
-	return false
+	return slices.ContainsFunc(segs, func(seg string) bool { return strings.HasPrefix(seg, ".") })
 }
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing, plus
