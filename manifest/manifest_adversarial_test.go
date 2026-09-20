@@ -167,7 +167,7 @@ func FuzzManifestRoundTrip(f *testing.F) {
 	// and into the fields the old tuple never varied. Without them a corpus that still
 	// only carries "..." and "? 0" in the first two scalars says nothing about whether
 	// quoteUnlessItReadsBack reaches an args element or the provenance block, which is
-	// what bv2-zkyyz's instruction to drop the workaround was resting on.
+	// any decision to drop quoteUnlessItReadsBack's workaround would be resting on.
 	f.Add("/bin/app", "python3", "LANG", "/data", "/out", "api.com", "443", "100M", "50%", 10, "...", "? 0", "...", "? 0", "...", "? 0", "...")
 
 	f.Fuzz(func(t *testing.T, entry, interp, env, read, write, host, port, mem, cpu string, pids int, arg1, arg2, iarg, genBy, genAt, approves, blockedHost string) {

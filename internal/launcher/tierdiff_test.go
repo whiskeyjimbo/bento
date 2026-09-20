@@ -81,7 +81,7 @@ type tierProbe struct {
 var tierProbes = []tierProbe{
 	{
 		name:     "sysv-ipc",
-		why:      "bv2-xwz5v / grid row 11: --unshare-ipc hides the host's segments; BlockProcessReach is the degraded counterpart",
+		why:      "grid row 11: --unshare-ipc hides the host's segments; BlockProcessReach is the degraded counterpart",
 		unfenced: hostSegmentMarker,
 		degraded: "denied",
 		bwrap:    "denied",
@@ -99,7 +99,7 @@ var tierProbes = []tierProbe{
 		// empties the bounding set by default. So the row measures the SET, which is what
 		// the differential is about, and not the flag that would empty it on a privileged
 		// host - which nothing here can reach.
-		why:      "bv2-7nv8y / grid row 10: the bwrap tier leaves it empty; the degraded tier attempts the drop, cannot make it, and refuses a privileged run instead",
+		why:      "grid row 10: the bwrap tier leaves it empty; the degraded tier attempts the drop, cannot make it, and refuses a privileged run instead",
 		unfenced: "nonempty",
 		degraded: "nonempty",
 		bwrap:    "empty",
@@ -168,8 +168,8 @@ var tierProbes = []tierProbe{
 	},
 	{
 		name: "cgroup-namespace",
-		// This row is also what makes --unshare-cgroup's presence in the arm load-bearing
-		// (bv2-6m2dq): drop the flag and bwrap reads "shared" here.
+		// This row is also what makes --unshare-cgroup's presence in the arm load-bearing:
+		// drop the flag from baseFlags and bwrap reads "shared" here.
 		why:      "grid row 11: --unshare-cgroup is bwrap-only and has no degraded substitute at all",
 		unfenced: "shared",
 		degraded: "shared",
@@ -177,7 +177,7 @@ var tierProbes = []tierProbe{
 	},
 	{
 		name:     "controlling-terminal",
-		why:      "bv2-lpuue / grid row 6: --new-session leaves none; the degraded substitute denies two ioctls and leaves the terminal attached",
+		why:      "grid row 6: --new-session leaves none; the degraded substitute denies two ioctls and leaves the terminal attached",
 		hostFact: "a controlling terminal",
 		unfenced: "attached",
 		degraded: "attached",
@@ -185,7 +185,7 @@ var tierProbes = []tierProbe{
 	},
 	{
 		name:     "tty-inject-ioctl",
-		why:      "bv2-lpuue: what the degraded substitute DOES cover, pinned so a widening or a regression is visible; the bwrap cell is stated rather than measured (runTierProbes) because --new-session leaves no terminal to try the ioctl on",
+		why:      "grid row 6, the other half: what the degraded substitute DOES cover, pinned so a widening or a regression is visible; the bwrap cell is stated rather than measured (runTierProbes) because --new-session leaves no terminal to try the ioctl on",
 		hostFact: "a controlling terminal",
 		unfenced: "permitted",
 		degraded: "denied",
@@ -441,7 +441,8 @@ func TestTierDifferential(t *testing.T) {
 			// Unreachable rather than skipped: reexecUnderTerminal has already given the
 			// run a controlling terminal or refused to proceed, so an arm reporting n/a
 			// here means the terminal the rows were promised went missing between the two
-			// - which is the one outcome a skip would hide, and the whole of bv2-ciz11.
+			// - which is the one outcome a skip would hide, and the whole reason this arm fails
+			// rather than skipping.
 			if got[armUnfenced][p.name] == "n/a" {
 				t.Fatalf("%s needs %s and this run was given one, yet the unfenced arm reported n/a: "+
 					"the arm lost the terminal rather than measuring it", p.name, p.hostFact)

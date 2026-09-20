@@ -1343,8 +1343,8 @@ func TestPIDsOnlyLimitNotRefusedForUndelegatedMemory(t *testing.T) {
 }
 
 // A report-only layer is in no policy's required set, so forLayers drops it and the run's
-// report said nothing about the host fact at all - the complaint bv2-5qura answered for
-// doctor and not for run. It is carried for disclosure, and only for disclosure: it must
+// report said nothing about the host fact at all - LayerAutoExecReport exists so doctor
+// names a missing git, and this test is the run-side half of that. It is carried for disclosure, and only for disclosure: it must
 // not admit, refuse, or fault a run under any posture, since no posture ever admitted the
 // run on a layer no manifest can name.
 func TestAReportOnlyLayerReachesTheRunsReportWithoutJudgingIt(t *testing.T) {
