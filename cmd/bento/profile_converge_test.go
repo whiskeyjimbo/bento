@@ -644,4 +644,10 @@ func TestReprofileKeepsTheManifestWorkdir(t *testing.T) {
 	if got := mergePolicies(existing, discoveryPolicy(script, "sh", existing.Workdir, nil, nil)); got.Workdir != work {
 		t.Errorf("the rewritten manifest must keep the workdir the author wrote; got %q", got.Workdir)
 	}
+	// The side it comes from, not merely that it survives: taking it from the run would
+	// let a proposal that never carried one delete the key the author wrote, and with the
+	// same value on both sides of the union nothing would say which one won.
+	if got := mergePolicies(existing, discoveryPolicy(script, "sh", "", nil, nil)); got.Workdir != work {
+		t.Errorf("the workdir must come from the manifest being widened, not from the run; got %q", got.Workdir)
+	}
 }
