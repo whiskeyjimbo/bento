@@ -56,10 +56,10 @@ type Set struct {
 	// able to talk its way out of. The rule is kept beside the resolved path because that
 	// sentence names the caller's own spelling.
 	extraDeny []Applied
-	// truncatedStores are the credential stores whose link expansion stopped at
-	// MaxWalkDepth, by the path the deny-list spelled them. A store in here is expanded
-	// only as far as the bound reached, so a farm target linked deeper than that carries
-	// no shield of its own.
+	// truncatedStores are the credential stores the link expansion could not walk whole -
+	// stopped by MaxWalkDepth or by a directory read that did not complete - by the path
+	// the deny-list spelled them. A store in here is expanded only as far as the walk
+	// reached, so a farm target it links out to beyond that carries no shield of its own.
 	truncatedStores []string
 }
 
@@ -173,11 +173,13 @@ func (s Set) CallerDenies() []denylist.Rule {
 // CredentialLinks is the symlinked-credential expansion; see CallerDenies.
 func (s Set) CredentialLinks() []denylist.Rule { return s.links }
 
-// TruncatedStores names the credential stores the expansion could not walk to the bottom
-// of, because they nest real directories deeper than MaxWalkDepth. The store itself is
-// shielded either way; what is missing is the shields on whatever it links out to below
-// the bound, and a read grant on one of those targets is Honored. Reported rather than
-// walked further: the bound is shared with the backend's git-directory scan on purpose.
+// TruncatedStores names the credential stores the expansion could not walk whole: they
+// nest real directories deeper than MaxWalkDepth, or a directory read inside them did not
+// complete. The store itself is shielded either way; what is missing is the shields on
+// whatever it links out to past the point the walk reached, and a read grant on one of
+// those targets is Honored. Reported rather than walked further: the bound is shared with
+// the backend's git-directory scan on purpose, and an unreadable directory cannot be
+// walked at all.
 func (s Set) TruncatedStores() []string { return s.truncatedStores }
 
 // Mount resolves a rule list the same way the assembled set was resolved, dropping the
@@ -285,8 +287,9 @@ func (s Set) credentialLinks(base []denylist.Rule) (links []denylist.Rule, trunc
 // is walking the fanout directories, which hold no links and are bounded and setup-time -
 // the same trade the backend's git-directory scan already makes.
 //
-// The second return says the bound stopped the walk short, which is the one way it returns
-// having covered less than the store. It is reported rather than fixed by a deeper bound:
+// The second return says the walk covered less than the store, by either of the two ways
+// it can: the depth bound stopped it short, or the directory read did not complete. The
+// bound is reported rather than fixed by a deeper one:
 // the bound is the backend's git scan's too - internal/linux's maxGitdirDepth reads
 // MaxWalkDepth - so raising it here raises the git scan's walk with it, which is a change
 // to both walks and not a local one.
@@ -305,7 +308,11 @@ func (s Set) linksUnder(r denylist.Rule, dir string, depth int) ([]denylist.Rule
 		// reading the directory. Shielding the directory itself adds nothing: the DenyAll
 		// being expanded already hides it. A partial read is not this case, and the
 		// entries it did hand back are expanded below.
-		return nil, false
+		//
+		// So nothing can be BOUND for it, which is not the same as nothing to be SAID:
+		// the walk knows it covered less than the store, and that is what the second
+		// return discloses.
+		return nil, true
 	}
 	var out []denylist.Rule
 	for _, name := range links {
@@ -324,7 +331,11 @@ func (s Set) linksUnder(r denylist.Rule, dir string, depth int) ([]denylist.Rule
 		// so claiming it expands would be a field the assembler contradicts.
 		out = append(out, denylist.Rule{Path: rp, Deny: denylist.DenyAll, Dir: s.fs.IsDir(rp), Holds: r.Holds, Source: r.Source})
 	}
-	var truncated bool
+	// A read that failed part way hands back real entries and covers less than the store
+	// all the same: the remainder holds whatever links it did not reach, and those targets
+	// carry no shield of their own. Disclosed by the same return the depth bound uses,
+	// because a caller can do nothing different with the two.
+	truncated := !ok
 	for _, name := range names {
 		under, stopped := s.linksUnder(r, filepath.Join(dir, name), depth+1)
 		out = append(out, under...)

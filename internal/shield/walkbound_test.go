@@ -111,3 +111,44 @@ func TestACallerDenyCarriesNoRelocationSource(t *testing.T) {
 		}
 	}
 }
+
+// The other way the walk covers less than the store, and the one the depth bound's
+// reporting channel was not reaching: FS.ListDir says the read did not complete. Both
+// shapes of an incomplete read are here, because they take different paths through
+// linksUnder - a read that got nothing returns early, while one that got entries expands
+// them and falls through - and only the first was ever argued about.
+//
+// What is missing is the same thing the bound leaves missing: the store's remaining links
+// point at farm targets that carry no shield of their own, and a read grant on one of
+// those is Honored. The store itself is shielded either way, which is exactly why nothing
+// else says the coverage fell short.
+func TestAStoreTheWalkCouldNotReadWholeIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links []string
+	}{
+		{"a read that failed part way, having handed back entries", []string{"known_hosts"}},
+		{"a read that handed back nothing", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			store := filepath.Join(home, ".ssh")
+			if err := os.MkdirAll(store, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fs := shield.Host()
+			host := fs.ListDir
+			fs.ListDir = func(dir string) (names, links []string, ok bool) {
+				if dir == store {
+					return nil, tc.links, false
+				}
+				return host(dir)
+			}
+
+			set := shield.Assemble(fs, []string{home}, denylist.RuntimeDir(), nil)
+			if !slices.Contains(set.TruncatedStores(), store) {
+				t.Errorf("store %s could not be read whole and did not say so; got %v", store, set.TruncatedStores())
+			}
+		})
+	}
+}
