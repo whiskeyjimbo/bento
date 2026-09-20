@@ -29,7 +29,7 @@ func TestDoctorDoesNotBlameTheDepthBoundForAnUnreadableStore(t *testing.T) {
 	if err := os.Chmod(unreadable, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(unreadable, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o700) })
 	t.Setenv("HOME", home)
 
 	human, _ := renderDoctor(t)
