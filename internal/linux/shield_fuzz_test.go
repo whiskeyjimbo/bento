@@ -10,6 +10,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -40,6 +41,22 @@ import (
 // host symlinks for paths that happen to exist, so this stays hermetic; symlink
 // resolution is fuzzed separately). Write-grant persistence shields (gitDirShields,
 // Workspace) need a different oracle and are covered elsewhere.
+//
+// That narrowness is a scope statement, not an oversight, and it means the target asserts
+// only the direction that is already safe: a refusal narrower than the backend's. The
+// forbidden direction - a refusal WIDER than the backend's - lives in the two cells this
+// sandbox cannot reach, and both are covered by name rather than left as a silence:
+//
+//   - The above-direction fold on a checkout-derived shield is an open defect, not an
+//     uncovered case. Varying testSandbox.resolve toward a folding filesystem here would
+//     go red on it rather than on a regression, and the honest verdict it would need is
+//     the refuse-or-disclose decision bv2-k2g1h is held for. Reaching it before that
+//     decision lands would pin whichever answer the code happens to give today.
+//   - The workspace argument is what would carry the derived rules in, and the differential
+//     that exercises them from both deriving sites already exists: shieldcorpus' "write to a
+//     folded spelling of an enclosing checkout's hooks dir" case. Passing a workspace here
+//     would build a second differential over the same rules, which is the defect bv2-r14l0
+//     already records elsewhere.
 
 // A DenyAll credential a read grant might reach, and the ancestor dirs implied by
 // its existence (a file under ~/.ssh means ~/.ssh exists too, which is what a real
@@ -273,6 +290,19 @@ func TestShieldInvariantsExhaustive(t *testing.T) {
 				checkShieldInvariants(t, g, mask)
 			})
 		}
+	}
+}
+
+// The header above narrows this file's scope by pointing at a case in another package, and
+// deleting that case would leave this one compiling while the claim it rests on became
+// false. This is what holds the two together: if the derived-half fold stops being covered
+// there, the file that says it is covered fails here.
+func TestTheDerivedHalfIsCoveredWhereThisFileSaysItIs(t *testing.T) {
+	const name = "write to a folded spelling of an enclosing checkout's hooks dir"
+	if !slices.ContainsFunc(shieldcorpus.Cases, func(c shieldcorpus.Case) bool {
+		return c.Name == name && c.Folding && c.Write && c.WorkspaceDerived
+	}) {
+		t.Fatalf("shieldcorpus has no folding, write, workspace-derived case named %q; this file's header cites it as what covers the derived half it does not reach", name)
 	}
 }
 
