@@ -25,6 +25,9 @@ func TestBlockEgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("egress helper exited with error: %v\n%s", err, out)
 	}
+	if strings.Contains(string(out), "MPTCP_UNSUPPORTED") {
+		t.Log("this kernel opens no IPPROTO_MPTCP socket unfiltered, so the MPTCP arms did not run")
+	}
 	if !strings.Contains(string(out), "EGRESS_OK") {
 		t.Errorf("egress helper did not confirm enforcement:\n%s", out)
 	}
@@ -36,6 +39,17 @@ func TestBlockEgress(t *testing.T) {
 func TestBlockEgressHelper(t *testing.T) {
 	if os.Getenv("BENTO_TEST_BLOCK_EGRESS") != "1" {
 		t.Skip("child helper for TestBlockEgress")
+	}
+	// Probed before the filter goes on, because afterwards an EPERM is indistinguishable
+	// from a kernel that has no MPTCP at all - and a host without it would otherwise read
+	// as the filter doing its job. The skip is printed so a vacuous run is visible in the
+	// parent's output rather than passing quietly.
+	mptcp := true
+	if fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, unix.IPPROTO_MPTCP); err != nil {
+		fmt.Println("MPTCP_UNSUPPORTED", err)
+		mptcp = false
+	} else {
+		unix.Close(fd)
 	}
 	if err := BlockEgress(); err != nil {
 		fmt.Println("BLOCKEGRESS_ERR", err)
@@ -62,6 +76,21 @@ func TestBlockEgressHelper(t *testing.T) {
 	if _, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != unix.EPERM {
 		fmt.Println("AF_INET6_NOT_EPERM", err)
 		os.Exit(5)
+	}
+	// MPTCP is a wire protocol reached through AF_INET/AF_INET6 with a protocol other
+	// than 0, and the degraded tier's disclosed Consequences rest on it being refused at
+	// creation like any other IP socket. The filter allowlists the DOMAIN and never reads
+	// the protocol, so this holds today; the arm exists so a filter change that starts
+	// reading arg2 cannot reopen a wire family one protocol at a time without saying so.
+	if mptcp {
+		if _, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, unix.IPPROTO_MPTCP); err != unix.EPERM {
+			fmt.Println("AF_INET_MPTCP_NOT_EPERM", err)
+			os.Exit(5)
+		}
+		if _, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, unix.IPPROTO_MPTCP); err != unix.EPERM {
+			fmt.Println("AF_INET6_MPTCP_NOT_EPERM", err)
+			os.Exit(5)
+		}
 	}
 	// io_uring_setup must be refused: io_uring can dispatch socket/connect past a
 	// socket()-only filter, so leaving it open would be an egress bypass. The filter
