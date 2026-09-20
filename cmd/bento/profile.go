@@ -18,6 +18,7 @@ import (
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -1079,11 +1080,19 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 // once it has already paid for the namespace. Said here, where the proposal is being
 // written and the reviewer can still narrow the workdir or add the grant.
 //
-// A grant either side of the workdir clears it: one AT or BENEATH it creates the mount
-// point, and one COVERING it binds the tree the workdir sits in. So does the entrypoint,
-// which is bound regardless, when the workdir holds it - and so do the directories the
-// sandbox carries with no grant at all: the base image trees and its own /tmp, which the
-// clamp above already treats as places a grant is neither needed nor proposable.
+// For a workdir that EXISTS as a directory, a grant either side of it clears this: one AT
+// or BENEATH it binds the directory, and one COVERING it binds the tree it sits in. So
+// does the entrypoint, which is bound regardless, when the workdir holds it - and so do
+// the directories the sandbox carries with no grant at all: the base image trees and its
+// own /tmp, which the clamp above already treats as places a grant is neither needed nor
+// proposable.
+//
+// For every other host state the answer is gate.WorkdirCheck's, because a workdir the
+// gate refuses and profile passes is a proposal written against a run that will not
+// start. An ABSENT workdir in particular is cleared only by a WRITE grant at or beneath
+// it: that is the whole of what materializes a path before the sandbox exists, and a
+// covering grant - or a read grant naming the workdir itself - binds the host tree as it
+// is, leaving the absent child absent inside the sandbox.
 //
 // /tmp itself and not what is under it: the sandbox's /tmp is a fresh empty tmpfs, so a
 // workdir naming a directory inside it is exactly as absent there as any other ungranted
@@ -1100,6 +1109,37 @@ func printUngrantedWorkdir(w io.Writer, p *policy.Policy) []accessNoteJSON {
 	dir, _ := pathresolve.Existing(p.Workdir)
 	if enforce.InBaseImage(dir) || dir == sandboxTmp || filepath.Clean(p.Workdir) == sandboxTmp {
 		return nil
+	}
+	// The three states below are the gate's answer, not a second reading of the host:
+	// profile and gate disagreeing about the same directory is what put this function and
+	// gate.WorkdirCheck on the same predicate. What stays here is the half gate declines -
+	// a workdir that exists as a directory with nothing granted beneath it - and the
+	// quieting above, which is about the sandbox profiling builds rather than the host.
+	switch gate.WorkdirCheck(p) {
+	// A relative workdir cannot reach here from the CLI - existingForMerge resolves the
+	// manifest first - and a startable one is the case the grants test below owns.
+	case gate.WorkdirStartable, gate.WorkdirRelative:
+	case gate.WorkdirUndetermined:
+		fmt.Fprintf(w, "[bento] the manifest starts in %q and bento could not read a directory above it, so it cannot\n", p.Workdir)
+		fmt.Fprintf(w, "[bento] say whether that directory exists or whether the enforced run can start there. This\n")
+		fmt.Fprintf(w, "[bento] round chdir'd into the profiling sandbox's own copy of it, which says nothing.\n")
+		fmt.Fprintf(w, "[bento] Check the permissions on the path above it before approving this workdir.\n")
+		return []accessNoteJSON{{Kind: "read", Path: p.Workdir, Reason: "unstartable-workdir"}}
+	case gate.WorkdirNotDirectory:
+		fmt.Fprintf(w, "[bento] the manifest starts in %q, which exists on this host but is not a directory, so the\n", p.Workdir)
+		fmt.Fprintf(w, "[bento] enforced run cannot chdir into it - and nothing the sandbox binds turns a file into a\n")
+		fmt.Fprintf(w, "[bento] directory there. Point workdir: at a directory.\n")
+		return []accessNoteJSON{{Kind: "read", Path: p.Workdir, Reason: "unstartable-workdir"}}
+	case gate.WorkdirUnreachable:
+		// Absent, and no WRITE grant at or beneath it. A grant that merely covers it does
+		// not clear this and neither does a read grant at it: a read grant binds the host
+		// tree as it is, so the absent child is still absent inside the sandbox, and
+		// bwrap's --ro-bind-try skips a source that is not there.
+		fmt.Fprintf(w, "[bento] the manifest starts in %q, which does not exist on this host, and no write grant is\n", p.Workdir)
+		fmt.Fprintf(w, "[bento] at or beneath it - a write grant is the only thing that creates the directory before\n")
+		fmt.Fprintf(w, "[bento] the sandbox exists. This round could chdir into it because profiling covers the home\n")
+		fmt.Fprintf(w, "[bento] directory with an empty scratch, so `bento run` will refuse to start there.\n")
+		return []accessNoteJSON{{Kind: "read", Path: p.Workdir, Reason: "ungranted-workdir"}}
 	}
 	entrypoint, _ := pathresolve.Existing(p.Entrypoint)
 	if policy.CoversResolved(dir, entrypoint) {

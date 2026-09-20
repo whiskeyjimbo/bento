@@ -775,3 +775,57 @@ func TestApprovalCalloutsNameTheWorkdir(t *testing.T) {
 		t.Errorf("a manifest that sets no workdir must produce no callout:\n%s", plain.String())
 	}
 }
+
+// The row two gate fixes never carried: the workdir predicate lived inside gate.Check,
+// approve asks gate.Refusals, and no workdir state whatsoever reached the stamp gate - so
+// `bento validate --strict` refused a manifest that `bento approve` stamped on the same
+// host, which approve.go's own doc says must not happen. A stamp over a run this host
+// refuses at its first step is what the CI gate then trusts.
+func TestApproveRefusesAWorkdirTheRunCannotStartIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	file := filepath.Join(root, "notadir")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(root, "nowhere")
+
+	for name, p := range map[string]*policy.Policy{
+		"exists but is not a directory":              {Entrypoint: "./x", Workdir: file},
+		"absent and ungranted":                       {Entrypoint: "./x", Workdir: absent},
+		"absent under a grant that merely covers it": {Entrypoint: "./x", Workdir: absent, Read: []string{root}},
+	} {
+		path := writeManifest(t, p, manifest.Provenance{})
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := runCapturingStdout(t, newApproveCmd(), path, "--yes")
+		if err == nil {
+			t.Errorf("%s: approve must refuse a workdir the run refuses; got:\n%s", name, out)
+			continue
+		}
+		if !strings.Contains(err.Error(), "workdir") {
+			t.Errorf("%s: the refusal must name the workdir; got %v", name, err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Errorf("%s: a refused approval must leave the manifest as it was found", name)
+		}
+	}
+
+	// The other direction, which matters as much: a workdir the run can start in must
+	// still stamp. An absent one a write grant creates before the sandbox exists is the
+	// shape a re-profile writes back.
+	for name, p := range map[string]*policy.Policy{
+		"exists as a directory":        {Entrypoint: "./x", Workdir: root},
+		"absent, created by its grant": {Entrypoint: "./x", Workdir: absent, Write: []string{absent}},
+	} {
+		if out, err := runCapturingStdout(t, newApproveCmd(), writeManifest(t, p, manifest.Provenance{}), "--yes"); err != nil {
+			t.Errorf("%s: the run starts there, so approve must stamp it; got %v\n%s", name, err, out)
+		}
+	}
+}

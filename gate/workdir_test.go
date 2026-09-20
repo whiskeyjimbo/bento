@@ -111,3 +111,67 @@ func TestCheckRefusesAWorkdirThatIsAFile(t *testing.T) {
 		t.Errorf("a workdir that is a symlink to a directory is a directory to the chdir; got %q", got)
 	}
 }
+
+// unreadableWorkdir plants a directory that DOES exist behind a parent nothing can read,
+// so os.Stat on it fails with EACCES rather than ENOENT. It is the only locally
+// constructible errno on pathresolve's Unreadable arm; EIO and ESTALE reach it by the
+// same branch.
+func unreadableWorkdir(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through a 000 directory, so the barrier this needs does not exist")
+	}
+	locked := filepath.Join(t.TempDir(), "locked")
+	wd := filepath.Join(locked, "wd")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	return wd
+}
+
+// The failure this closes: every os.Stat error read as absence, so a directory that is
+// there behind an unreadable parent was reported as one this host has not got. A reader
+// who trusts that creates the directory or adds a grant, and neither is the problem.
+func TestCheckSaysAWorkdirCouldNotBeReadRatherThanThatItIsAbsent(t *testing.T) {
+	wd := unreadableWorkdir(t)
+	got := workdirProblem(t, gate.Check(workdirPolicy(t, wd, nil)))
+	if got == "" {
+		t.Fatalf("a workdir whose existence could not be determined must be reported; got %+v", gate.Check(workdirPolicy(t, wd, nil)).Problems)
+	}
+	if strings.Contains(got, "does not exist") {
+		t.Errorf("the directory is there; the reason must not send the reader off to create it: %q", got)
+	}
+	if !strings.Contains(got, "could not be read") {
+		t.Errorf("the report must say what stayed unknown; got %q", got)
+	}
+}
+
+// The other half of the same cell, and the more dangerous one: the first says something
+// false, this says nothing at all. pathresolve hands back the caller's own path for both
+// the workdir and the grant when neither could be walked - its documented fail-closed
+// cutoff - so CoversResolved compared two unwalked strings and the lexical match passed
+// for containment.
+func TestCheckDoesNotAcceptAnUnreadableWorkdirOnALexicalGrantMatch(t *testing.T) {
+	wd := unreadableWorkdir(t)
+	if got := workdirProblem(t, gate.Check(workdirPolicy(t, wd, []string{wd}))); got == "" {
+		t.Error("a write grant spelled like the workdir is not containment when neither side could be resolved; the gate must not go silent")
+	}
+}
+
+// gate.Check documents an absolute-path precondition (a relative workdir would be stat'd
+// against whatever directory the embedder ran from) and used to enforce nothing. The run
+// refuses one outright at internal/linux/linux.go, so answering is the side that agrees
+// with the oracle.
+func TestCheckRefusesARelativeWorkdir(t *testing.T) {
+	got := workdirProblem(t, gate.Check(workdirPolicy(t, "out", nil)))
+	if got == "" {
+		t.Fatal("a relative workdir must be answered, not stat'd against the embedder's cwd")
+	}
+	if !strings.Contains(got, "not absolute") {
+		t.Errorf("the problem must name the precondition that was broken; got %q", got)
+	}
+}

@@ -78,6 +78,9 @@ func newApproveCmd() *cobra.Command {
 			if err := requireHonorableGrants(os.Stdout, resolved); err != nil {
 				return err
 			}
+			if err := requireStartableWorkdir(resolved); err != nil {
+				return err
+			}
 			// The stamp is an unkeyed sha256 that travels inside the manifest, so on its own
 			// it is satisfied identically by one this host wrote and one that arrived already
 			// stamped from anywhere. The journal is what tells those apart - it is written
@@ -207,6 +210,30 @@ func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
 		return nil
 	}
 	return fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(problems, "\n  "))
+}
+
+// requireStartableWorkdir is requireHonorableGrants' sibling for the one host fact that
+// is not a grant: the directory the run chdirs into. It is a separate refusal with its
+// own sentence because the other one says "grant", and a workdir is not one.
+//
+// It exists because `bento validate --strict` and `bento approve` must not disagree about
+// the same manifest on the same host, which is what requireHonorableGrants' own doc above
+// says the stamp is for. gate.WorkdirProblems is the predicate validate reports, asked
+// here so a stamp cannot go on a manifest whose first step this host refuses - the
+// backend chdirs after the sandbox is built, so the refusal lands with the namespace
+// already paid for.
+//
+// The workdir under a home this host does not have comes with it: gate refuses that even
+// though a PROFILING run starts there (its sandbox covers HOME with an empty tmpfs), and
+// it is reported at the arm in gate that declines to buy the exception. An approve on a
+// host that is not the run's is refused for a workdir the run would have accepted, which
+// is the cost of the stamp meaning what validate means.
+func requireStartableWorkdir(resolved *policy.Policy) error {
+	problems := gate.WorkdirProblems(resolved)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("not approved: the run cannot start in the workdir this policy names, so a stamp would attest a run this host refuses at its first step:\n  %s", strings.Join(problems, "\n  "))
 }
 
 // writeApprovalCallouts names the entries in a policy that deserve a second look before

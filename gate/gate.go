@@ -131,7 +131,7 @@ func Check(resolved *policy.Policy) Runnability {
 			r.Problems = append(r.Problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
-	r.Problems = append(r.Problems, workdirProblems(resolved)...)
+	r.Problems = append(r.Problems, WorkdirProblems(resolved)...)
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
 	// A host that cannot anchor its shields refuses every run, and it cannot say which
@@ -150,10 +150,41 @@ func Check(resolved *policy.Policy) Runnability {
 	return r
 }
 
-// workdirProblems reports a manifest workdir this host cannot start the run in. The
-// backend chdirs into it after the sandbox is already built (internal/linux --chdir), so
-// without this the manifest validates clean and dies at a step that has already paid for
-// the mount namespace - the exact class Runnability exists to report first.
+// WorkdirState is what this host makes of a manifest's workdir. It is a state rather
+// than a sentence because three answerers need the same verdict in three wordings - the
+// gate's report, approve's refusal to stamp, and the profiler's proposal - and the two
+// commits that built this predicate each wrote it for one of them and left the others
+// answering a different question about the same host.
+type WorkdirState int
+
+const (
+	// WorkdirStartable is an unset workdir, one that exists as a directory, and an absent
+	// one a write grant at or beneath it materializes before the sandbox exists.
+	WorkdirStartable WorkdirState = iota
+	// WorkdirRelative is a workdir this package's precondition rules out: it would be
+	// stat'd against the embedder's own working directory here, and the backend refuses
+	// it outright (internal/linux, "workdir %q is not absolute").
+	WorkdirRelative
+	// WorkdirUndetermined is a workdir whose existence could not be established - an
+	// unreadable ancestor, a symlink loop. Distinct from absence because the remedies a
+	// reader reaches for on hearing "does not exist" (create it, grant it) are not the
+	// problem, and because a path neither side of a containment test could resolve makes
+	// that test a comparison of two unwalked strings.
+	WorkdirUndetermined
+	// WorkdirNotDirectory is a workdir that exists as something else. bwrap's chdir into
+	// one fails with ENOTDIR (measured), and nothing the sandbox binds turns a host file
+	// into a directory there - a write grant naming it is refused as a file before the
+	// sandbox exists, and a shield over a file is an empty read-only bind, still a file.
+	WorkdirNotDirectory
+	// WorkdirUnreachable is a workdir that is absent with no write grant at or beneath
+	// it. A grant merely COVERING it is not enough: a read grant binds the host tree as
+	// it is, so the absent child stays absent inside the sandbox.
+	WorkdirUnreachable
+)
+
+// WorkdirCheck answers what this host makes of the resolved policy's workdir, for the
+// reasons WorkdirState gives. Stat rather than Lstat, so a symlink to a directory stays
+// the directory it names.
 //
 // Absence alone is not the answer: a write grant at or beneath the workdir is created
 // before the sandbox exists and bound inside it, so `workdir: ./out` beside
@@ -162,19 +193,60 @@ func Check(resolved *policy.Policy) Runnability {
 // would refuse a run that works, the one direction this package rules out.
 //
 // The write grants are the whole of what materializes an absent path, which is why they
-// are the whole of what is consulted. A shield at an absent directory is mounted only
-// where a write grant reaches it too - the backend's shieldNeeded takes `exists ||
+// are the whole of what is consulted. A built-in shield at an absent directory is mounted
+// only where a write grant reaches it too - the backend's shieldNeeded takes `exists ||
 // writable`, and for an absent path that is `writable` alone - so `workdir: ~/.aws`
 // beside `read: [~]` gets no tmpfs and does not start. Measured against the backend's
 // shield emission, not reasoned from the mount shapes, and held by internal/linux's
 // TestAbsentDenyAllIsShieldedOnlyWhereAWriteGrantReachesIt - which lives there because
-// the claim is only constructible at denyArgs, which is unexported.
+// the claim is only constructible at denyArgs, which is unexported. The grant-derived
+// half of the shield set, which the gate does not carry at all (see ShieldedReadProblems'
+// last paragraph), is all directories - .git/hooks, .husky, a resolved core.hooksPath
+// (internal/linux/autoexec.go) - and under either shield shape a directory stays a
+// directory at that path, so the chdir still works and the paragraph above is the whole
+// of what the shields change here. A derived shield that ever became file-shaped would
+// end that.
+func WorkdirCheck(resolved *policy.Policy) WorkdirState {
+	if resolved == nil || resolved.Workdir == "" {
+		return WorkdirStartable
+	}
+	if !filepath.IsAbs(resolved.Workdir) {
+		return WorkdirRelative
+	}
+	if fi, err := os.Stat(resolved.Workdir); err == nil {
+		if fi.IsDir() {
+			return WorkdirStartable
+		}
+		return WorkdirNotDirectory
+	}
+	// Not "the stat failed, so it is absent": EACCES on an ancestor fails the stat over a
+	// directory that is there. pathresolve is the one thing here that tells those apart,
+	// and its Unreadable arm also says the path below was never placed - so the grant
+	// comparison must not run on it, or a lexical match between two unwalked strings
+	// passes for the containment CoversResolved asserts.
+	lands, outcome := pathresolve.Existing(resolved.Workdir)
+	if outcome != pathresolve.OK {
+		return WorkdirUndetermined
+	}
+	for _, g := range resolved.Write {
+		if grant, _ := pathresolve.Existing(g); policy.CoversResolved(lands, grant) {
+			return WorkdirStartable
+		}
+	}
+	return WorkdirUnreachable
+}
+
+// WorkdirProblems reports a manifest workdir this host cannot start the run in, in the
+// words a reader of the gate meets. The backend chdirs into it after the sandbox is
+// already built (internal/linux --chdir), so without this the manifest validates clean
+// and dies at a step that has already paid for the mount namespace - the exact class
+// Runnability exists to report first.
 //
-// One path escapes that and is left alone: a PROFILING run covers HOME with an empty
-// tmpfs, so a manifest whose workdir is a home that is not on the host starts under
-// `bento profile` and is reported here. An absent home is rare, the report is only ever
-// read beside a run that did start, and buying the exception means telling this function
-// which mode it is predicting.
+// Exported for the same reason Refusals is: approve has to refuse what the run refuses,
+// and a workdir predicate reachable only through Check is one the stamp gate never asks.
+// It is not folded INTO Refusals because that set is grants - clampProposal asks it per
+// grant to decide what to withhold, and a workdir fact there would withhold a grant over
+// something that is not about any grant.
 //
 // It says nothing about a workdir that EXISTS as a directory on the host but has nothing
 // granted beneath it, which the enforced run also refuses. Answering that needs the
@@ -182,29 +254,25 @@ func Check(resolved *policy.Policy) Runnability {
 // and a gate that enumerates them refuses a run the moment one moves. `bento profile`
 // names that case instead, where the proposal is being written.
 //
-// A workdir that exists as something other than a directory is answered, and safely in
-// the direction this package rules out: bwrap's chdir into one fails with ENOTDIR
-// (measured), and nothing the sandbox binds turns a host file into a directory there - a
-// write grant naming it is refused as a file before the sandbox exists, and a shield over
-// a file is an empty read-only bind, still a file. Stat rather than Lstat, so a symlink
-// to a directory stays the directory it names.
-func workdirProblems(resolved *policy.Policy) []string {
-	if resolved.Workdir == "" {
+// One path escapes that and is left alone: a PROFILING run covers HOME with an empty
+// tmpfs, so a manifest whose workdir is a home that is not on the host starts under
+// `bento profile` and is reported here. An absent home is rare, the report is only ever
+// read beside a run that did start, and buying the exception means telling this function
+// which mode it is predicting.
+func WorkdirProblems(resolved *policy.Policy) []string {
+	switch WorkdirCheck(resolved) {
+	case WorkdirStartable:
 		return nil
-	}
-	if fi, err := os.Stat(resolved.Workdir); err == nil {
-		if fi.IsDir() {
-			return nil
-		}
+	case WorkdirRelative:
+		return []string{fmt.Sprintf("workdir %q is not absolute, so nothing here can say where the run would start; resolve the policy first (manifest.Resolve) or write the path out in full", resolved.Workdir)}
+	case WorkdirUndetermined:
+		return []string{fmt.Sprintf("workdir %q could not be read on this host, so bento cannot say whether the run can start there - a directory above it is unreadable, and whether the workdir itself exists stayed unknown", resolved.Workdir)}
+	case WorkdirNotDirectory:
 		return []string{fmt.Sprintf("workdir %q exists on this host but is not a directory, so the run cannot start there", resolved.Workdir)}
+	case WorkdirUnreachable:
+		return []string{fmt.Sprintf("workdir %q does not exist on this host and no write grant is at or beneath it, so the run cannot start there", resolved.Workdir)}
 	}
-	lands, _ := pathresolve.Existing(resolved.Workdir)
-	for _, g := range resolved.Write {
-		if grant, _ := pathresolve.Existing(g); policy.CoversResolved(lands, grant) {
-			return nil
-		}
-	}
-	return []string{fmt.Sprintf("workdir %q does not exist on this host and no write grant is at or beneath it, so the run cannot start there", resolved.Workdir)}
+	return nil
 }
 
 // Refusals is every grant this host will not honor for a reason the manifest holds, in

@@ -1968,16 +1968,99 @@ func TestDiscoveryPolicyCarriesABroadWorkdirUngranted(t *testing.T) {
 // the whole checkout is exactly the one a reviewer needs pointed at.
 func TestWorkdirGrantNoteFollowsTheWorkdir(t *testing.T) {
 	var buf strings.Builder
+	// A checkout that is really there: an absent workdir is a different note now - the
+	// enforced run cannot start in one no write grant creates - and this test is about
+	// which directory the breadth note follows, not about absence.
+	checkout := t.TempDir()
 	p := &policy.Policy{
 		Entrypoint: "/opt/agent/bin/agent",
-		Workdir:    "/srv/checkout",
-		Read:       []string{"/srv/checkout"},
+		Workdir:    checkout,
+		Read:       []string{checkout},
 	}
 	notes := printWorkdirGrants(&buf, p, p.Entrypoint)
-	if len(notes) != 1 || notes[0].Path != "/srv/checkout" {
+	if len(notes) != 1 || notes[0].Path != checkout {
 		t.Errorf("the note must name the directory the run starts in; got %+v", notes)
 	}
-	if !strings.Contains(buf.String(), "/srv/checkout") {
+	if !strings.Contains(buf.String(), checkout) {
 		t.Errorf("the prose must name it too; got:\n%s", buf.String())
+	}
+}
+
+// printUngrantedWorkdir answered only "is anything granted here", so it passed two host
+// states gate already refused - and the proposal it writes is read beside a profiling run
+// that started, which the enforced run will not. The clause that quiets a workdir the
+// sandbox carries (a base image tree, /tmp) also quieted these, which is a fix that
+// widened a row rather than stopping short of one.
+func TestPrintUngrantedWorkdirNamesTheStatesTheEnforcedRunRefuses(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "s.py")
+	file := filepath.Join(root, "notadir")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(root, "nowhere")
+
+	for name, tc := range map[string]struct {
+		p    *policy.Policy
+		says string
+	}{
+		// bwrap's chdir into a file fails with ENOTDIR, and nothing the sandbox binds
+		// turns a host file into a directory there.
+		"exists but is not a directory": {
+			p:    &policy.Policy{Entrypoint: script, Workdir: file},
+			says: "is not a directory",
+		},
+		// A read grant covering it binds the host tree as it is, so the absent child is
+		// still absent inside the sandbox - and --ro-bind-try skips a missing source.
+		"absent under a grant that merely covers it": {
+			p:    &policy.Policy{Entrypoint: script, Workdir: absent, Read: []string{root}},
+			says: "does not exist on this host",
+		},
+		// Nor does a read grant naming the workdir itself: only a write grant creates a
+		// path before the sandbox exists.
+		"absent under a read grant at it": {
+			p:    &policy.Policy{Entrypoint: script, Workdir: absent, Read: []string{absent}},
+			says: "does not exist on this host",
+		},
+	} {
+		var out bytes.Buffer
+		notes := printUngrantedWorkdir(&out, tc.p)
+		if !strings.Contains(out.String(), tc.says) {
+			t.Errorf("%s: the enforced run refuses this workdir and profile must say so; got %q", name, out.String())
+		}
+		if len(notes) != 1 {
+			t.Errorf("%s: --json must carry the same decision as the prose; got %+v", name, notes)
+		}
+	}
+}
+
+// The same discarded pathresolve arm gate carried: a directory that exists behind an
+// unreadable parent is not an absent one, and profile must not tell a reviewer to add a
+// grant for a path whose existence it never determined.
+func TestPrintUngrantedWorkdirSeparatesUnreadableFromAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through a 000 directory, so the barrier this needs does not exist")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	wd := filepath.Join(locked, "wd")
+	if err := os.MkdirAll(wd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	var out bytes.Buffer
+	notes := printUngrantedWorkdir(&out, &policy.Policy{Entrypoint: filepath.Join(root, "s.py"), Workdir: wd})
+	if !strings.Contains(out.String(), "could not read") {
+		t.Errorf("profile must say the workdir's existence stayed unknown; got %q", out.String())
+	}
+	if strings.Contains(out.String(), "grants nothing there") {
+		t.Errorf("the directory is there; profile must not send the reviewer off to grant it: %q", out.String())
+	}
+	if len(notes) != 1 {
+		t.Errorf("--json must carry the same decision as the prose; got %+v", notes)
 	}
 }
