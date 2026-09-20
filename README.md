@@ -363,9 +363,11 @@ makes `workdir: .` the checkout rather than the install directory. Keep it relat
 and the manifest stays relocatable: one approval travels with it into every checkout
 it is copied into, the same reason `read:` and `write:` are written relative.
 
-The directory has to be one the run holds. `workdir:` grants nothing on its own, so
-a directory no `read:` or `write:` covers is not in the sandbox and the run fails
-saying so, rather than starting somewhere else.
+`workdir:` grants nothing on its own - it has to name a path a grant covers, or one a
+grant sits under. A path no grant reaches does not exist inside the sandbox and the run
+fails naming it. A path that merely *contains* a grant does exist, but holds only what
+the grants put there, so `workdir: .` alongside `read: ["./data"]` starts the run in a
+directory whose only entry is `data`. Grant the directory the run starts in.
 
 Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
 the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an

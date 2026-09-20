@@ -61,8 +61,11 @@ type sandbox struct {
 	entrypoint  string
 	interpreter string
 	// workdir is the absolute host path the run starts in, or empty for the
-	// entrypoint's own directory. It is a mount point like any other granted path: the
-	// run has to hold it, or bwrap refuses the chdir and the run fails naming it.
+	// entrypoint's own directory. It grants nothing itself: a path no grant covers and
+	// no grant sits under does not exist in the sandbox at all, and bwrap refuses the
+	// chdir naming it. One that is merely an ANCESTOR of a grant does exist - the root
+	// tmpfs carries every mount point's parents - so the run starts in a directory
+	// holding only what the grants put there.
 	workdir string
 	// interpreterName is the interpreter's absolute path BEFORE symlink resolution - the
 	// name the policy asked for, kept so the observation record can show what a proposal

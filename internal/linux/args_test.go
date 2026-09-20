@@ -682,21 +682,42 @@ func TestWorkdirSetsTheStartingDirectory(t *testing.T) {
 	}
 }
 
-// A workdir that is not absolute would be taken by bwrap against its own working
-// directory - the caller's - so the run would start somewhere no manifest named. The
-// CLI never produces one (manifest.Resolve anchors it), which is exactly why the
-// refusal is here: a Go embedder building a policy by hand reaches newSandbox directly.
-func TestNewSandboxRefusesRelativeWorkdir(t *testing.T) {
+// The policy's workdir has to reach the sandbox the argv is compiled from. Nothing
+// else asserts that one assignment: the compiler test above sets the field by hand, so
+// dropping the wire would leave `workdir:` a key that parses, fingerprints, resolves
+// and then silently starts every run in the entrypoint's directory anyway.
+//
+// A relative one is refused instead of carried. bwrap would take it against its own
+// working directory - the caller's - so the run would start somewhere no manifest
+// named. The CLI never produces one (manifest.Resolve anchors it), which is exactly
+// why the refusal is here: a Go embedder building a policy by hand reaches newSandbox
+// directly.
+func TestNewSandboxCarriesWorkdir(t *testing.T) {
 	dir := t.TempDir()
 	entrypoint := filepath.Join(dir, "run.sh")
 	if err := os.WriteFile(entrypoint, []byte("true\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p := &policy.Policy{Entrypoint: entrypoint, Workdir: "checkout"}
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
-	cleanup()
+
+	checkout := filepath.Join(dir, "checkout")
+	if err := os.Mkdir(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sb, cleanup, err := newSandbox(&policy.Policy{Entrypoint: entrypoint, Workdir: checkout}, "bento-placeholder", false, nil)
+	if err != nil {
+		t.Fatalf("newSandbox: %v", err)
+	}
+	defer cleanup()
+	args := compileOrFail(t, &policy.Policy{Entrypoint: entrypoint, Workdir: checkout, Read: []string{checkout}}, sb)
+	if !has(args, "--chdir", checkout) {
+		t.Errorf("the policy's workdir did not reach the compiled argv; argv: %q", args)
+	}
+
+	relative := &policy.Policy{Entrypoint: entrypoint, Workdir: "checkout"}
+	bad, cleanupBad, err := newSandbox(relative, "bento-placeholder", false, nil)
+	cleanupBad()
 	if err == nil {
-		t.Fatalf("newSandbox accepted a relative workdir and built a sandbox starting at %q", sb.workdir)
+		t.Fatalf("newSandbox accepted a relative workdir and built a sandbox starting at %q", bad.workdir)
 	}
 	if !strings.Contains(err.Error(), "workdir") {
 		t.Errorf("the refusal %q does not name workdir", err)
