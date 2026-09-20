@@ -253,6 +253,13 @@ VERIFIED BY SPIKE. Report `Add(filesystem, Enforced, "")` then
 
     hostPosture -> ["filesystem: degraded"]      (reason lost entirely)
 
+**CLOSED** by `1cc7ecf`: `enforce.Report.StatusOf` returns the whole most-severe entry
+`probedState` already selected, and `hostPosture` renders that one status, so the state and
+the account of it can no longer come from different entries. Pinned by
+`TestTheHostNoteReadsOneLayerEntryNotTwo`, landed green from this section's spike. The V3
+summary table and the tally below still list V3.2 as WRONG; they are outside this batch's
+grant on this file.
+
 ## Phase 2 re-open pass (second round - CORRECTIONS BELOW SUPERSEDE TWO CELLS ABOVE)
 
 The first round re-opened only `b5dbe59`. A second round over the rest of the area's
