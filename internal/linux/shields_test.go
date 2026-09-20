@@ -408,6 +408,12 @@ func TestBroadGrantWithoutOptInStillShields(t *testing.T) {
 // path that is actually a file (or the reverse) would otherwise hand bwrap a
 // tmpfs-over-file (or file-over-dir) mount it rejects, aborting the whole run - which
 // is what blocked shielding ~/.cert, whose kind varies across hosts.
+//
+// The credential hunt rests on the same choice from the other side: it prunes a matching
+// directory whole without consulting Rule.Dir, which is only sound while the mount is
+// picked from what is on disk. Were this keyed on the declared kind instead, the 128
+// file-declared rules in the home table would stop hiding the directories they land on,
+// and the hunt would stay silent about trees the run leaves readable.
 func TestDenyAllShieldMatchesRealKind(t *testing.T) {
 	// Declared dir, real file: bind the empty file, not tmpfs.
 	sbFile := testSandbox("/home/u/.cert") // a childless leaf is a file in the fake fs
