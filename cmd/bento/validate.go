@@ -368,6 +368,19 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // Restating that table here would be a second answer to it, and getting it wrong reads
 // as a refusal of a run that works - the direction gate's package doc rules out and this
 // shares. Naming the fact and pointing at whose decision it is, is the honest ceiling.
+// The layers are the FILTERED set, which leaves LayerNetwork out of a zero-rule gateless
+// manifest. enforce.Run reads the unfiltered probe for that one layer instead (run.go's
+// "no network namespace to fence egress into"), refusing a run on a host with no netns
+// whatever the manifest asked for, and it deliberately does not rest on filesystemLayer
+// and networkLayer sharing a namespace probe, because Run takes any Enforcer. This note
+// does rest on it: an enforcer pairing an Unavailable network with an Enforced filesystem
+// would be refused by Run and named by nothing here. That is not a second answer to
+// admission - it is the note going quiet about a refusal - and what holds it up is one
+// fact in another package, internal/linux's
+// TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced, which is exhaustive over
+// both layers' inputs. Said out loud here because nothing in this file would stop
+// compiling if that coupling went, exactly as doctor's readiness gate says it.
+//
 // It returns the statuses whole rather than a rendered line, because its two surfaces
 // disclose to different lengths: the human note keeps the diagnosis and points at doctor
 // for the rest, and --json carries the whole Disclosure, having nowhere to point a machine
