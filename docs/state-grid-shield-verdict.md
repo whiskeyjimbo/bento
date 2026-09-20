@@ -37,7 +37,7 @@ Full = `checkGrants` via `preflightGrants` (linux.go:642) and args.go:264. Degra
 | A9 | AboveShield | R | IMPOSSIBLE: as A7 | same | EXECUTION |
 | A10 | AboveShield | W | HANDLED: `checkWriteNotAboveShield` (grants.go:252) | HANDLED: same function (TestDegradedRefusesWriteAboveShield) | EXECUTION |
 | A11 | AboveWriteShield | R | IMPOSSIBLE: as A7 | same | EXECUTION |
-| A12 | AboveWriteShield | W | HANDLED (holds rather than refuses): shield ro-bind after the grant, last wins (grants.go:259-271; TestWriteGrantDoesNotLeavePyenvInterpreterWritable) | HANDLED: refused at degraded.go:61 (TestDegradedRefusesWriteAboveWriteShield) | EXECUTION (corpus drives `checkWriteNotAboveWriteShield`) |
+| A12 | AboveWriteShield | W | HANDLED (holds rather than refuses): shield ro-bind after the grant, last wins (grants.go:259-271; TestWriteGrantDoesNotLeavePyenvInterpreterWritable). CORRECTED 2026-09-20: byte-exact only - where the shield's own directory folds case, Contains answers FoldedShield instead (verdict.go:180-210, 0418cea) and BOTH tiers refuse | HANDLED: refused at degraded.go:61 (TestDegradedRefusesWriteAboveWriteShield) | EXECUTION (corpus drives `checkWriteNotAboveWriteShield`) |
 | A13 | FoldedShield | R | HANDLED: grants.go:101 | HANDLED: same function | EXECUTION (corpus) |
 | A14 | FoldedShield | W | HANDLED: grants.go:101, ahead of the write-only verdicts | HANDLED: same function | EXECUTION (corpus) |
 | A15 | any non-Honored | R, entrypoint/interpreter | HANDLED: linux.go:878 refuses on `v != Honored`, so no verdict is admitted by omission | HANDLED: `newSandbox` is shared (degraded.go:40) | READING |
@@ -65,7 +65,7 @@ workspace shields). Clamp = `clampShieldedGrants`, `clampWriteShieldedGrants`,
 
 | # | Shape | Full | Degraded | Verdict | Stamp |
 |---|---|---|---|---|---|
-| C1 | Write containing a workspace-derived shield (`write: ~/proj` over `~/proj/.git/hooks`, `.git/config`, `.vscode`, `.cargo/config.toml`) | holds: ro-bind of each derived shield | admits; those paths are writable on the host. `Contains` consults workspace shields in the INSIDE direction only, and `checkWriteNotAboveWriteShield` passes nil workspace (grants.go:279). Detected after the fact by the auto-exec baseline (`ChangedAutoExec`) and listed in `Exposed` | HANDLED (disclosed), per degraded-tier grid F4 x A1 | SPIKE |
+| C1 | Write containing a workspace-derived shield (`write: ~/proj` over `~/proj/.git/hooks`, `.git/config`, `.vscode`, `.cargo/config.toml`) | holds: ro-bind of each derived shield - CORRECTED 2026-09-20: on a case-FOLDING mount it does not hold unconditionally. A bind covers the one spelling it names, so on a mount presenting a second dentry for the shield's directory `.git/HOOKS` is inside the grant's read-write bind - the shape 0418cea measured; a mount folding in the dentry layer may hit the bind under either spelling, and the verdict cannot tell them apart. The built-in half of that row was escalated to FoldedShield at 0418cea and the workspace half was not. See docs/state-grid-folding-reopen.md cell E8 (UNHANDLED, VERIFIED BY SPIKE) | admits; those paths are writable on the host. `Contains` consults workspace shields in the INSIDE direction only, and `checkWriteNotAboveWriteShield` passes nil workspace (grants.go:279). Detected after the fact by the auto-exec baseline (`ChangedAutoExec`) and listed in `Exposed` | HANDLED (disclosed), per degraded-tier grid F4 x A1 | SPIKE |
 | C2 | Read containing a DenyAll shield (`read: ~`) | holds: bind over the store | exposed, reported in `Exposed` | Documented cost (degraded.go:106-110), outside the invariant | READING |
 | C3 | Caller deny on the degraded tier | n/a | run refused (linux.go:87) | HANDLED | READING |
 
@@ -104,6 +104,9 @@ Sorted by whether they break the forbidden direction of the invariant.
   differential" suspicion is half true: `corpusVerdict` does run `checkWriteNotAboveWriteShield`, so
   the degraded tier's refusal set is corpus-tested; what no corpus test reaches is Landlock
   enforcement itself (C1, C2). VERIFIED BY READING.
+  CORRECTED 2026-09-20: nor can the corpus express a WORKSPACE-derived case at all -
+  `shieldcorpus.Case` has no field for one and no differential harness passes a `workspace`
+  argument to `Contains` - which is why grid-folding-reopen cell E8 could only be spiked.
 
 ## Rejected
 

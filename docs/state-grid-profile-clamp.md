@@ -149,7 +149,7 @@ Forbidden-direction violations first.
 | A14, A15, A16 | gate FileWriteGrantProblems / LoopedGrantProblems via withholdRunRefused; pinned by TestClampProposalProposesNothingTheRunRefuses |
 | A17 | ScratchWrite (profile.go:511), resolvesIntoProc, MountGrantProblems via withhold |
 | A18 | every clamp and floor asks both spellings through pathresolve.Existing |
-| A20 | clampShieldedGrants drops any non-Honored read verdict, including FoldedShield |
+| A20 | clampShieldedGrants drops any non-Honored read verdict, including FoldedShield. CORRECTED 2026-09-20: that covers the DenyAll fold only. Contains raises FoldedShield over a DenyWrite shield too (0418cea), for a WRITE alone, so the read ask never sees it; dae2b38 dropped it here and 75c0087 reverted that - the channel is withholdRunRefused via gate.ShieldedWriteProblems. See docs/state-grid-folding-reopen.md grid D |
 | B1 | withheld though honored (allowed narrowing, clamp.go:33) |
 | B2, B9, B10, B11 | clampShieldedGrants + gate ShieldedReadProblems |
 | B3, B4, B5 | kept; run honors |
