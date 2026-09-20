@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1601,7 +1602,7 @@ func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
 	report.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "no cgroup delegation")
 	report.Add(enforce.LayerExecStrict, enforce.Unavailable, "no seccomp")
 
-	limited := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll, Limits: policy.Limits{Memory: "64m"}}
+	limited := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll, Limits: policy.Limits{Memory: "64M"}}
 	got := hostPosture(report, limited)
 	if len(got) != 1 || !strings.Contains(got[0], "no cgroup delegation") {
 		t.Fatalf("hostPosture = %v, want the one required layer this host falls short on, with the probe's reason", got)
@@ -1623,35 +1624,68 @@ func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
 	}
 }
 
-// Both surfaces carry the same notes. The parity table exempts this writer because its
-// fixture host enforces every layer and so prints nothing; this is the row instead.
+// Both surfaces carry the same notes, through the command rather than beside it: the
+// deleted call site is the failure this pins, and it is invisible on a healthy host,
+// where the writer is silent whether or not anything calls it. So the probe is swapped
+// for a host that is short on everything.
 func TestValidateCarriesTheHostPostureToBothSurfaces(t *testing.T) {
-	notes := []string{"limits.memory: unavailable - no cgroup delegation"}
-
-	var b bytes.Buffer
-	writeHostPosture(&b, notes)
-	human := b.String()
-	if !strings.Contains(human, "does not fully enforce") || !strings.Contains(human, "no cgroup delegation") {
-		t.Errorf("the human output must name the shortfall and the probe's reason; got %q", human)
+	restore := probeHost
+	t.Cleanup(func() { probeHost = restore })
+	probeHost = func(context.Context) (enforce.Report, bool) {
+		var r enforce.Report
+		r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+		r.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "no cgroup delegation")
+		return r, true
 	}
-	// Not a verdict: a reader who takes it as one goes and edits a manifest that is fine.
-	if !strings.Contains(human, "depends on the flags") {
-		t.Errorf("the note must say the refusal is the run's decision, not this one; got %q", human)
-	}
+	path := writeManifest(t, &policy.Policy{
+		Entrypoint: "./x", Exec: policy.ExecAll, Limits: policy.Limits{Memory: "64M"},
+	}, manifest.Provenance{})
 
-	var o policyJSON
-	o.HostUnenforcedLayers = notes
-	data, err := json.Marshal(o)
+	human, err := runCapturingStdout(t, newValidateCmd(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"host_unenforced_layers":["limits.memory: unavailable - no cgroup delegation"]`) {
-		t.Errorf("--json must carry the same notes; got %s", data)
+	if !strings.Contains(human, "does not fully enforce") || !strings.Contains(human, "no cgroup delegation") {
+		t.Errorf("the summary must name the shortfall and the probe's reason; got %q", human)
+	}
+	// Not a verdict: a reader who takes it as one goes and edits a manifest that is fine,
+	// and a gate that takes it as one fails a run this host may well admit.
+	if !strings.Contains(human, "`bento run`'s decision") {
+		t.Errorf("the note must say whose decision the refusal is; got %q", human)
+	}
+	if !strings.Contains(human, "runnable:     yes") {
+		t.Errorf("a host shortfall is not a fault in the manifest and must not change runnable:; got %q", human)
 	}
 
-	var quiet bytes.Buffer
-	writeHostPosture(&quiet, nil)
-	if quiet.Len() != 0 {
-		t.Errorf("a host that enforces everything the manifest needs has nothing to say; got %q", quiet.String())
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var machine map[string]any
+	if err := json.Unmarshal([]byte(out), &machine); err != nil {
+		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
+	}
+	notes, _ := machine["host_unenforced_layers"].([]any)
+	if len(notes) != 1 || !strings.Contains(notes[0].(string), "no cgroup delegation") {
+		t.Errorf("--json must carry the same note; got %v", machine["host_unenforced_layers"])
+	}
+	// The verdict stays clean beside it, which is what makes the note a note.
+	if machine["runnable"] != true {
+		t.Errorf("runnable = %v, want true: a host shortfall is not a reason the manifest cannot start", machine["runnable"])
+	}
+
+	// And a host that meets what this manifest asks for says nothing at all.
+	probeHost = func(context.Context) (enforce.Report, bool) {
+		var r enforce.Report
+		r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+		r.Add(enforce.LayerLimitsMemory, enforce.Enforced, "")
+		return r, true
+	}
+	quiet, err := runCapturingStdout(t, newValidateCmd(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(quiet, "does not fully enforce") {
+		t.Errorf("a host that enforces everything the manifest needs has nothing to say; got %q", quiet)
 	}
 }

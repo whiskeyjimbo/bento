@@ -79,7 +79,7 @@ var parityRows = []parityRow{
 	// Field by field in TestEveryRunnabilityFieldReachesTheUser; these rows pin the command wiring.
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "runnable:", key: "runnable"},
 	{writers: []string{"writeHostPosture"},
-		exempt: "the fixture host enforces every layer, so the writer prints nothing here; the pair is pinned directly in TestValidateCarriesTheHostPostureToBothSurfaces"},
+		exempt: "the fixture runs the real host, which enforces what the fixture manifest needs, so this writer is silent here; TestValidateCarriesTheHostPostureToBothSurfaces swaps the probe for a short host and pins both surfaces through the command"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "names nothing on this host", key: "missing_read_grants"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "spelled like a file", key: "fileish_write_grants"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "XDG_RUNTIME_DIR is", key: "unshieldable_runtime_dir"},

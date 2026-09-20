@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -60,7 +61,9 @@ func newValidateCmd() *cobra.Command {
 			"and neither is relocatable, so a gate that wants \"portable apart from these\" reads\n" +
 			"`pinned_paths` and compares it against the set it expects rather than asking for\n" +
 			"--relocatable, which answers a narrower question than that.\n\n" +
-			"validate builds no sandbox, so it runs on a host bento cannot run a manifest on.\n" +
+			"validate runs no manifest, so it answers on a host bento cannot run one on. It does\n" +
+			"probe the host, as doctor does, to say which of the layers this manifest needs are\n" +
+			"fully enforced here.\n" +
 			"Off Linux it cannot check who else can write an approved manifest, and says so\n" +
 			"rather than passing over the question - a warning, as every trust finding is.",
 		Args: exactArgs(1, "a manifest path"),
@@ -72,12 +75,9 @@ func newValidateCmd() *cobra.Command {
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := gate.Check(resolved)
-			// Silent where the answer cannot be had rather than failing: validate is
-			// documented to run on a host bento cannot run anything on, and a backend
-			// that will not open is that host.
 			var posture []string
-			if e, err := backend.New(); err == nil {
-				posture = hostPosture(e.Probe(cmd.Context()), doc.Policy)
+			if report, ok := probeHost(cmd.Context()); ok {
+				posture = hostPosture(report, doc.Policy)
 			}
 			pinned := pinnedPaths(doc.Policy)
 			if asJSON {
@@ -360,12 +360,14 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // restated here: a layer a policy can newly require would otherwise be admitted by the
 // run and invisible to the validator, which is the drift one shared table exists to stop.
 //
-// A NOTE and never a verdict. It does not reach Runnability or --strict, because whether
-// a shortfall refuses the run turns on flags this command has not got: a Degraded core
-// layer refuses by default and runs under --allow-degraded, and any shortfall at all
-// refuses under --strict. Naming the fact is the honest ceiling; deciding on the
-// reader's behalf would refuse a run that works, which is the direction gate's package
-// doc rules out and this shares.
+// A NOTE and never a verdict. It does not reach Runnability or --strict, and it does not
+// say which of these will refuse: admission is enforce's (Options.admit), it turns on
+// flags this command has not got, and the answer is not even the same shape per layer -
+// a core layer that enforces nothing refuses under every flag, a hardening shortfall
+// runs under none, and only the middle of that range moves with --allow-degraded.
+// Restating that table here would be a second answer to it, and getting it wrong reads
+// as a refusal of a run that works - the direction gate's package doc rules out and this
+// shares. Naming the fact and pointing at whose decision it is, is the honest ceiling.
 func hostPosture(report enforce.Report, p *policy.Policy) []string {
 	var notes []string
 	for _, l := range enforce.RequiredLayers(p, enforce.Options{}) {
@@ -394,13 +396,31 @@ func writeHostPosture(w io.Writer, notes []string) {
 		return
 	}
 	fmt.Fprintf(w, "host:         this host does not fully enforce everything this manifest asks for.\n")
-	fmt.Fprintf(w, "              Whether that refuses the run depends on the flags it is given:\n")
-	fmt.Fprintf(w, "              --strict refuses any shortfall, --allow-degraded accepts some.\n")
+	fmt.Fprintf(w, "              Whether that refuses the run is `bento run`'s decision: some of these\n")
+	fmt.Fprintf(w, "              refuse under every flag, some run under none, and some turn on\n")
+	fmt.Fprintf(w, "              --strict or --allow-degraded. `bento doctor` reports this host in full.\n")
 	for _, n := range notes {
 		for _, line := range wrapText(n, textWidth-len("              ")) {
 			fmt.Fprintf(w, "              %s\n", line)
 		}
 	}
+}
+
+// probeHost asks this host what it can enforce, for hostPosture to read the manifest
+// against. A variable so a test can hand validate a host it cannot have - every layer
+// short at once - which is the only way to watch the command carry the answer to both of
+// its surfaces; the fixture host enforces what the fixture manifest needs, so the writer
+// is silent there and a deleted call site looks identical to a healthy host.
+//
+// False, not an error, where the answer cannot be had: validate answers on a host bento
+// cannot run a manifest on, and a backend that will not open is that host, so the note is
+// absent rather than the command failing.
+var probeHost = func(ctx context.Context) (enforce.Report, bool) {
+	e, err := backend.New()
+	if err != nil {
+		return enforce.Report{}, false
+	}
+	return e.Probe(ctx), true
 }
 
 // strictRunnableError is the strict verdict on gate.Runnability, shared by the human and
