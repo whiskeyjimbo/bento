@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -414,6 +415,15 @@ func parityProfile(t *testing.T) (string, map[string]any) {
 	return human.String(), machine
 }
 
+// Captured at init, before any t.Setenv can have moved it - which is also what makes
+// hostHasBwrap a fact about the HOST rather than about whatever PATH is current. A guard
+// that looked bwrap up again inside the fixture would read the same polluted PATH the
+// probe does, agree with it by construction, and never fire.
+var (
+	hostPATH     = os.Getenv("PATH")
+	hostHasBwrap = func() bool { _, err := exec.LookPath("bwrap"); return err == nil }()
+)
+
 func parityDoctor(t *testing.T) (string, map[string]any) {
 	return renderDoctor(t)
 }
@@ -428,7 +438,20 @@ func parityDoctor(t *testing.T) (string, map[string]any) {
 // host whose core layers fall short, and what these rows assert is what it printed.
 func renderDoctor(t *testing.T) (string, map[string]any) {
 	t.Helper()
+	// The host's own PATH, not whatever a fixture rendered earlier in this test left
+	// behind: parityValidate replaces PATH with a directory holding only fakepython, and
+	// t.Setenv restores at the END of the test, so every fixture after it inherits that.
+	// doctor is the one fixture that probes the host - it looks for bwrap - so it would
+	// report a shape nobody chose. Ordering the fixtures instead would fix today's
+	// arrangement and nothing would fail when a row added later reverses it.
+	t.Setenv("PATH", hostPATH)
+	// And the fixture says so out loud rather than trusting the line above: the rows below
+	// assert facts about a probe, and the one way this goes wrong is silent - the table
+	// fills in against a host shape nobody chose and still looks like a doctor report.
 	human, _ := runCapturingStdout(t, newDoctorCmd())
+	if hostHasBwrap && strings.Contains(human, "bubblewrap (bwrap) is not installed") {
+		t.Fatalf("doctor probed a host without bwrap although this one has it, so an earlier fixture's PATH is still in place:\n%s", human)
+	}
 	out, _ := runCapturingStdout(t, newDoctorCmd(), "--json")
 	var machine map[string]any
 	if err := json.Unmarshal([]byte(out), &machine); err != nil {
