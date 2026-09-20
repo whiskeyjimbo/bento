@@ -106,7 +106,7 @@ var doctorHostFacts = []hostFactRow{
 	{key: "no_usable_passwd_home", exempt: "who decides where the shields land; the same anchors validate checks the grants against, and it reports what they refused rather than how they were chosen"},
 	{key: "libc_nss_passwd_lookup", exempt: "a property of this build, not of this host or this manifest"},
 	{key: "unshieldable_runtime_dir", validate: "unshieldable_runtime_dir"},
-	{key: "unshieldable_relocations", exempt: "which built-in shields this host's environment moved out of reach; validate answers the manifest's own grants against the set that remains, as refused_grants and shielded_grants"},
+	{key: "unshieldable_relocations", validate: "unshieldable_relocations"},
 	{key: "nested_anchors", exempt: "the shape of this host's homes, which no grant in a manifest can change"},
 	{key: "relocated_shields", exempt: "where this host's environment moved a shield to; the grants are checked against the moved set, so validate's answer already accounts for it"},
 	{key: "truncated_stores", exempt: "a store the shield walk did not cover whole, which narrows no grant this manifest names - it is a caution about the stores themselves"},
@@ -139,12 +139,21 @@ func TestEveryHostFactOutsideTheLayerModelIsClassified(t *testing.T) {
 		if row.exempt == "" && !validateKeys[row.validate] {
 			t.Errorf("%q is said to reach validate as %q, which validate --json has no field for", key, row.validate)
 		}
-	}
-	for key := range rows {
-		if !inLayerModel[key] && !meta[key] {
-			continue
+		// The exemption is the answer that costs nothing to write, so it is the one the
+		// table drifts toward - which would leave this test agreeing that a fact validate
+		// already carries never reaches it.
+		if row.exempt != "" && validateKeys[key] {
+			t.Errorf("%q is exempted as a fact validate has no field for, and validate --json carries that very key: %s", key, row.exempt)
 		}
-		t.Errorf("%q is part of the layer model both commands share, not a host fact outside it", key)
+	}
+	doctorKeys := jsonKeys(reflect.TypeOf(doctorOutputJSON{}))
+	for key := range rows {
+		switch {
+		case inLayerModel[key] || meta[key]:
+			t.Errorf("%q is part of the layer model both commands share, not a host fact outside it", key)
+		case !doctorKeys[key]:
+			t.Errorf("%q is classified here and doctor no longer reports it", key)
+		}
 	}
 }
 

@@ -438,4 +438,4 @@ review. **Now landed** (`cmd/bento/validate_test.go`), green, with V3.2 closed: 
 selects the status once through the new `enforce.Report.StatusOf` - the same most-severe
 entry `probedState` reads - and both surfaces render that one entry. This note claimed the
 test body was written out in the V3.2 section above; it never was, so the landed body was
-written from that section'''s spike instead.
+written from that section's spike instead.

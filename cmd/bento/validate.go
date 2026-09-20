@@ -370,8 +370,9 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // shares. Naming the fact and pointing at whose decision it is, is the honest ceiling.
 // The layers are the FILTERED set, which leaves LayerNetwork out of a zero-rule gateless
 // manifest. enforce.Run reads the unfiltered probe for that one layer instead (run.go's
-// "no network namespace to fence egress into"), refusing a run on a host with no netns
-// whatever the manifest asked for, and it deliberately does not rest on filesystemLayer
+// "no network namespace to fence egress into"), refusing a non-degraded run on a host
+// with no netns whatever the manifest asked for - the degraded tier is exempt because it
+// is told to install a seccomp egress block instead - and it deliberately does not rest on filesystemLayer
 // and networkLayer sharing a namespace probe, because Run takes any Enforcer. This note
 // does rest on it: an enforcer pairing an Unavailable network with an Enforced filesystem
 // would be refused by Run and named by nothing here. That is not a second answer to
