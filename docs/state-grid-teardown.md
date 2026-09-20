@@ -133,7 +133,7 @@ claims TMPDIR content persisted. No false "applied" claim.
 | T3 setup failure | **IMPOSSIBLE** - a setup failure before dispatch means no child exists; `killProcessGroup` guards `p == nil \|\| p.Pid <= 0` explicitly (degraded.go:426) so it cannot degenerate into `kill(-0)`, which would sweep bento's own group. |
 | T4 cancel before wrapper starts | **IMPOSSIBLE** - same guard, same cite (degraded.go:426); `cmd.ProcessState == nil` is the arm that names this state (degraded.go:273, linux.go:281). |
 | T5 cancel mid-run | **HANDLED** - degraded: `cmd.Cancel` is overridden to sweep the group (degraded.go:227). bwrap: `exec.CommandContext` SIGKILLs the wrapper, and under `systemd-run --scope` the wrapper *is* bwrap, because a scope execs its command in place (measured - see F4). bwrap's own init then tears the namespace down. |
-| T6 SIGKILL of bento | **HANDLED** - bwrap: `--die-with-parent` at internal/linux/args.go:519 is what makes this column a real verdict rather than the vacuum it invites. degraded: `Pdeathsig: syscall.SIGKILL` at degraded.go:417. Both carry a residual (a `setsid()` descendant escapes the group; `Pdeathsig` reaches only the launcher on the supervise path) and that residual *is* surfaced to the operator at internal/linux/probe.go:284 - reported, not silent. |
+| T6 SIGKILL of bento | **DISCLOSED** - bwrap: `--die-with-parent` at internal/linux/args.go:519 is what makes this column a real verdict rather than the vacuum it invites. degraded: `Pdeathsig: syscall.SIGKILL` at degraded.go:417. The degraded mechanism carries two residuals - a `setsid()` descendant escapes the group, and on a SIGKILLed bento no sweep runs at all while `Pdeathsig` reaches neither a supervised target nor anything the target started - and both *are* surfaced to the operator, the first in the `Consequences` sentence at internal/linux/probe.go:284 and the second in `teardownResidual` (probe.go:454) concatenated at :286. Reported, not silent. Read as HANDLED in the original pass; corrected below. |
 | T7 SIGKILL of target | **HANDLED** - bwrap: pid ns collapse. degraded: the post-`Run` sweep at degraded.go:239 runs on every arm. |
 
 ### A5 - proxy listener, bridge liveness pipe, applied report, exec recorder (bwrap)
@@ -383,37 +383,44 @@ that discard **is** reported - `shieldsApplied` labels exactly that case `discar
 (shields.go:40-42). So on the full tier the second clause of the invariant holds for
 shield tmpfs. **VERIFIED BY READING.**
 
-### A4/T6 degraded vs **bv2-dyz92** - the item is right and MY VERDICT WAS WRONG
+### A4/T6 degraded vs **bv2-dyz92** - MY VERDICT WAS WRONG, and has since been earned
 
 bv2-dyz92 says Pdeathsig reaches only bento's direct child, so on the supervise path
 (`superviseTarget`/`superviseTraced`) the launcher dies and the target plus anything it
 backgrounded survives a SIGKILLed bento, with nobody left to run `killProcessGroup`.
-That is correct and my grid's **A4/T6 verdict of HANDLED is wrong**; it should read
-**WRONG** (the mechanism exists and does not cover the supervise sub-case). Recorded
-here rather than edited above, so the miss is visible.
+That is correct, and at the time of the grid my **A4/T6 verdict of HANDLED was wrong**:
+the mechanism existed, did not cover the supervise sub-case, and nothing said so. The cell
+now reads **DISCLOSED** - the mechanism still does not cover that sub-case, and the
+degraded tier's `Consequences` now names the gap, which is the allowed direction under
+this invariant. Recorded here rather than silently edited above, so the miss stays
+visible.
 
 The specific thing I got wrong is worth naming, because it is another instance of the
 pattern: I accepted `launcherProcAttr`'s own comment
 (internal/linux/degraded.go:413-416), which names both residuals and then says "which
 the degraded report discloses". The report discloses one of them.
 
-**VERIFIED BY SPIKE.** A throwaway test called `filesystemLayer` in its degraded branch
-and asserted the safe behaviour - that the tier's `Consequences` text mentions bento, a
-parent, or a supervisor dying. It does not:
+**VERIFIED BY SPIKE, AND SINCE CLOSED.** A throwaway test called `filesystemLayer` in
+its degraded branch and asserted the safe behaviour - that the tier's `Consequences` text
+mentions bento, a parent, or a supervisor dying. At the time it did not:
 
 ```
 SPIKE R1 CONFIRMED: the degraded tier's disclosure names the setsid escape but never
 says a SIGKILLed bento leaves a supervised target running
 ```
 
-The disclosed sentence is "a background process it leaves is swept only best-effort by
-killing the run's process group, which a setsid() escapes" (internal/linux/probe.go:284)
-- which is about a descendant escaping the sweep, not about the sweep never running.
-Spike deleted.
+The only disclosed sentence was "a background process it leaves is swept only best-effort
+by killing the run's process group, which a setsid() escapes" - about a descendant
+escaping the sweep, not about the sweep never running. Spike deleted.
 
-**Append to bv2-dyz92, do not file.** The addition is that the residual is
-*undisclosed*, not merely unfixed - which matters more than the fix under this invariant,
-since the allowed direction is "leave it and say so" and the report says nothing.
+bv2-dyz92 closed by adding `teardownResidual` (internal/linux/probe.go:454), which the
+degraded `Consequences` now concatenates at probe.go:286. It says the sweep "does not run
+at all if bento itself is killed outright - the launcher is torn down with it, but that
+death reaches the target only where the target was execveat'd over the launcher, and
+reaches nothing the target started in either shape, so a background process it left - and,
+on a run the launcher supervises rather than execs over, the target itself - stays alive
+with nothing left to sweep it". That is both halves R1 named: the sweep never running, and
+`Pdeathsig` reaching neither the supervised target nor its descendants.
 
 Also worth carrying to that item: it already records "systemd-run execs bwrap in place,
 so bwrap's parent is bento". That is the same fact my **F4** measured independently.
@@ -486,7 +493,7 @@ comments or ticket prose rather than code, which is why none of them fails any t
 | F2 (reclaim silence) | **file new**, P2, cross-ref bv2-ntncf and bv2-76tn4; it refutes bv2-76tn4's "the cleanup is correct" |
 | F3 (write dir on setup failure) | **file new**, P3; touches no open item |
 | F4 (contradictory comments) | **file new**, P4/chore; the correct fact is already recorded in bv2-dyz92 |
-| A4/T6 degraded correction | **append to bv2-dyz92** - the residual is undisclosed, not merely unfixed (spike R1) |
+| A4/T6 degraded correction | **appended to bv2-dyz92** - the residual was undisclosed, not merely unfixed (spike R1). Closed since: `teardownResidual` (probe.go:454) discloses it |
 | F5 | **no item** - dismissal stands; instead append to bv2-2dpgj the shield-tmpfs-vs-runtime-tmpfs disclosure asymmetry |
 | grid gaps | bv2-76tn4's during-run window, bv2-2dpgj's in-sandbox tmpfs class, and reapUntil's wait target are three classes my Phase 1 did not enumerate - noted so a later grid inherits them rather than rediscovering them |
 
@@ -588,9 +595,11 @@ No finding, dismissal or verdict above is invalidated by the newer tree.
   carried the correct fact; 89 commits later the stale comment is still there.
 - **F5** - the `Exposed` contract and its single renderer are unchanged in wording. The
   dismissal stands.
-- **R1 / the A4/T6 degraded correction** - `launcherProcAttr` and its half-true
-  disclosure claim are unchanged (degraded.go:425, comment at :421-424), and the
-  degraded `Consequences` text still never mentions a SIGKILLed bento.
+- **R1 / the A4/T6 degraded correction** - was still open at this stamp:
+  `launcherProcAttr` and its half-true disclosure claim were unchanged (degraded.go:425,
+  comment at :421-424), and the degraded `Consequences` text never mentioned a SIGKILLed
+  bento. Closed after this stamp by `teardownResidual` (probe.go:454); see the A4/T6
+  section above.
 
 The filing recommendation table above is therefore unchanged. What this pass changes is
 only the line numbers a reader would follow, and the honesty of two cites that were bad
