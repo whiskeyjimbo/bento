@@ -68,7 +68,7 @@ restriction and names the mechanism.
 | 10 | Capability bounding set | ~~UNHANDLED~~ **A (applied), fixed in 89bf735/f3b781d.** `restrictCapabilityBound` (`internal/launcher/degraded.go:141`) attempts `PR_CAPBSET_DROP`, re-reads `CapBnd` from the kernel rather than assuming it, and refuses the run when the set is still non-empty and the caller holds permitted capabilities | ~~IMPOSSIBLE~~ **B, fixed in d441ca5** - `capBoundResidual` (`probe.go:460`) discloses the unprivileged residual, worded about unspendability rather than about the drop failing, so it holds in every cell the branch emits | HANDLED - fatal on the privileged case, per the call at `degraded.go:327` | ~~WRONG - see F2~~ **fixed in 89bf735/f3b781d/d441ca5** (bv2-7nv8y, bv2-bweer). The unprivileged residual is inert: the call sits after the seccomp installs that set `PR_SET_NO_NEW_PRIVS`, and a bounding set can only be spent through a setuid or file-capability exec |
 | 11 | IPC / UTS / cgroup namespaces | UNHANDLED for System V IPC - `--unshare-ipc` (`args.go:501`) has no degraded substitute: Landlock's scoped IPC covers abstract unix sockets and signals only (`landlock_linux.go:416-428`) and `BlockProcessReach` (`seccomp_linux.go:128`) lists no `shmget`/`shmat`/`msgget`/`semget`. UTS/cgroup likewise unshared only on bwrap. ~~UNHANDLED~~ **A (applied), fixed in 7e483d7**: `BlockProcessReach` now denies all 12 System V IPC syscalls (`seccomp_linux.go:147-149`). POSIX mqueue deliberately excluded - named files under `/dev/mqueue`, already denied by Landlock. UTS/cgroup unchanged | IMPOSSIBLE - nothing records them; the probe text names mount, pid and network namespaces and stops (spike 3) | IMPOSSIBLE - not fatal, nothing called | ~~WRONG - see F3~~ **fixed in 7e483d7** (bv2-xwz5v). Chose apply over record: the fence is cheap and verifiable and the filter beside it already exists for the same threat. Pinned by `TestTierDifferential`'s sysv-ipc row; cost recorded as bv2-3mxlo |
 | 12 | Limits (systemd scope) + teardown | HANDLED for the wrap - the same `wrapWithLimits` on both (`linux.go:197` / `internal/linux/degraded.go:215`), same `canCreateScope` gate and `preflightLimits`; `--die-with-parent` (`args.go:519`) / `Pdeathsig` + process-group sweep + `WaitDelay` (`internal/linux/degraded.go:226-233`) | IMPOSSIBLE - the limits layers are deliberately left "as the probe found them" (`internal/linux/degraded.go:378-381`), so no degraded channel carries a drop | IMPOSSIBLE - not fatal | ~~WRONG - see F1~~ **HANDLED - `internal/linux/degraded.go:247` (3cc71f9).** F1 is struck: that commit routes `runDegraded` through `runCmd` with a sampling callback and calls `noteScopeLimits` once, ahead of all four return arms. See the base-correction section below - F1 was found by two reviewers independently and both were reading a stale base |
-| 13 | In-sandbox self-verification | HANDLED - `verifyEmptyNetns`/`FreshTmp`/`PidNamespace` (`launcher.go:150-162`) / `degradedPrerequisites` (`degraded.go:120`) | IMPOSSIBLE for the first three - they verify that bwrap built the sandbox it was asked for; the degraded tier installs its fences itself and the kernel's own return value attests them (`degraded.go:75-95`). No bwrap to be shimmed | IMPOSSIBLE - same | ~~UNHANDLED for the capability leg~~ **fixed with row 10** - `verifyEmptyCapBound` was the one verify with a live counterpart question on this tier; `restrictCapabilityBound` now supplies it, verifying against the kernel rather than assuming. See also bv2-d8vkd (bv2-1qsug was closed as its duplicate), a provenance gap this grid has no row for: a scoped run of either tier is wrapped in a `systemd-run` resolved on PATH. Closed in e607a3b - `resolveScopeRunner` (`internal/linux/limits.go:89`) holds it to the same `trustLauncherPath` refusal as bwrap, and `preflightLimits` (`limits.go:230`) is the gate every wrapped launch reaches |
+| 13 | In-sandbox self-verification | HANDLED - `verifyEmptyNetns`/`FreshTmp`/`DevMount`/`Shields`/`PidNamespace`/`EmptyCapBound` (`launcher.go:165-195`) / `degradedPrerequisites` (`degraded.go:120`) | IMPOSSIBLE for the first three - they verify that bwrap built the sandbox it was asked for; the degraded tier installs its fences itself and the kernel's own return value attests them (`degraded.go:75-95`). No bwrap to be shimmed | IMPOSSIBLE - same | ~~UNHANDLED for the capability leg~~ **fixed with row 10** - `verifyEmptyCapBound` was the one verify with a live counterpart question on this tier; `restrictCapabilityBound` now supplies it, verifying against the kernel rather than assuming. See also bv2-d8vkd (bv2-1qsug was closed as its duplicate), a provenance gap this grid has no row for: a scoped run of either tier is wrapped in a `systemd-run` resolved on PATH. Closed in e607a3b - `resolveScopeRunner` (`internal/linux/limits.go:89`) holds it to the same `trustLauncherPath` refusal as bwrap, and `preflightLimits` (`limits.go:230`) is the gate every wrapped launch reaches |
 
 ## Grid B - ordering (8 pairs)
 
@@ -264,7 +264,8 @@ independence of base.
 - **`internal/landlock`** changed only in its off-Linux stubs and its probe helper; the
   degraded ruleset and the scoped-IPC domain (`landlock_linux.go:416-429`) are unchanged.
 - **`internal/launcher/launcher.go` gained a fifth verify** (see below), so cites after
-  line 155 shift by roughly +5, and two comment blocks grew: `PR_SET_DUMPABLE` is now
+  line 155 shift by roughly +5 - and has since gained a sixth, `verifyShields`
+  (`verify.go:197`), shifting them again, and two comment blocks grew: `PR_SET_DUMPABLE` is now
   `:229` (was 224), `applyLayers` `:285` (was 280), `landlockRestrict` `:322` (was 303),
   `refuseNetworkStdio` `:585` with its degraded-waiver text at `:590` (was 566-572), and
   the "Nothing refuses a root run" sentence F2 leans on is now at `:728` (was 706-710).
@@ -342,7 +343,7 @@ Walked all 20 commits in `924e291..0a45ddb` touching these packages; the load-be
 
 | Commit | Cell it fixed | Was the row carried? |
 |---|---|---|
-| 4cca01a / fa39384 / f8801b3 / 3091825 / dd20d59 (the `/dev` fence) | Grid A row 7, bwrap side: `verifyDevMount` (`verify.go:133`) added as a FIFTH in-sandbox verify, asserting `/dev` is the mount bwrap built and letting a `/dev` grant and a nested grant past | **Yes, structurally.** The degraded tier mounts no `/dev`; its exposure is the four nodes `degradedSystemPaths` grants plus anything `resolveGrants` adds, and Landlock denies every other `/dev` name by default. There is no degraded counterpart to add. Row 7's verdicts stand with `verify.go:133` added to the bwrap cite |
+| 4cca01a / fa39384 / f8801b3 / 3091825 / dd20d59 (the `/dev` fence) | Grid A row 7, bwrap side: `verifyDevMount` (now `verify.go:134`) added as a FIFTH in-sandbox verify, asserting `/dev` is the mount bwrap built and letting a `/dev` grant and a nested grant past. `verifyShields` (`verify.go:197`) has since been added as a sixth | **Yes, structurally.** The degraded tier mounts no `/dev`; its exposure is the four nodes `degradedSystemPaths` grants plus anything `resolveGrants` adds, and Landlock denies every other `/dev` name by default. There is no degraded counterpart to add. Row 7's verdicts stand with `verify.go:134` added to the bwrap cite |
 | 3b7a6d1 (verify the launcher and the new session) | Grid A row 6, bwrap side: `sessionFlags` shared with the probe plus an in-sandbox canary proving `--new-session` took | **No - this is the row that was not carried.** The bwrap terminal cell got a proof; the degraded cell got a sentence in the same comment asserting the substitute exists. See F4, and F6-new below |
 | 3fa521e (refuse a bwrap resolved out of the cwd) + `hostWritablePrefix` (`args.go:797-818`) | Provenance of the sandbox builder, bwrap tier only (`resolveBwrap`, `probe.go:452-520`) | **Not applicable rather than not carried** - the degraded tier launches no bwrap. But see F6-new: the *conclusion* that commit recorded is written where it reads as covering both tiers |
 | 3cc71f9 (attest degraded scope limits) | Grid A row 12 | **Yes** - this is the degraded half of the bwrap attestation, and it is what withdraws F1 |
@@ -389,14 +390,18 @@ cell, written where a reader takes it as a verdict on the whole mechanism (F2's
   degraded tier drops and whether anything records it. A follow-up nomination should say
   "restriction set and its disclosure", not "sequence".
 - **bv2-775q3** (Config carries no grant set, so shields and `/dev`'s extra names cannot be
-  checked against what was granted) - lands on Grid A rows 1 and 7, bwrap side, and the
-  same limitation is now written into `launcher.go:305-320`: the backstop covers writes
-  only, because fencing reads would need a read-grant set `Config` does not carry. Open
-  and correctly described; the grid adds nothing.
+  checked against what was granted) - lands on Grid A rows 1 and 7, bwrap side. Closed
+  since this pass: `Config` carries the hidden and read-only shield sets and the run's
+  `/dev` grant names, `verifyShields` confirms the shields from inside, and
+  `foreignDevNodes` compares against what was granted rather than asking whether a name is
+  a mount of its own. The Landlock backstop is still writes-only for its own reason
+  (`launcher.go:330-345`), which is why the shields needed a verify rather than a
+  backstop.
 - **bv2-dyz92** (descendants of a supervising launcher orphan a SIGKILLed bento) - Grid A
   row 12, teardown half. Consistent with the grid: the process-group sweep is disclosed
   (`probe.go` Consequences names the setsid escape), so it is a recorded weakness, not a
-  silent one.
+  silent one. Closed since by `teardownResidual` (`probe.go:454`), which discloses the
+  other half - that a SIGKILLed bento runs no sweep at all.
 - **bv2-73e4c** (nothing asserts the observe stage has no other live child) and **bv2-83kke**
   (observe resolves exec images in its own mount namespace) - the profiling path, which
   applies no fences at all (`launcher.go:391`). Outside this grid's rows by construction.

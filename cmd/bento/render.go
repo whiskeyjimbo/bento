@@ -2047,9 +2047,10 @@ func relocatedShields() map[string][]string {
 // under-covering its farm targets silently. A link below the bound leaves its target
 // unshielded, and a read grant on that target is Honored.
 //
-// The bound stays where it is: it is the backend's git-directory scan's depth on purpose,
-// so raising it here alone would put the two walks back out of step. Flattening the store
-// is the remedy an operator has.
+// The bound stays where it is, and it is not a local number to raise: the backend's
+// git-directory scan reads the same shield.MaxWalkDepth, so moving it moves how deep that
+// scan descends too, and TestGitDirShieldsFailsClosedAtTheDepthCutoff is what holds the
+// two together. Flattening the store is the remedy an operator has.
 func writeTruncatedStores(w io.Writer) {
 	stores := truncatedStores()
 	if len(stores) == 0 {
