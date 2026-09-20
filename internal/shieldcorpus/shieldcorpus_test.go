@@ -80,6 +80,7 @@ func TestEveryCaseGrantIsStagedUnlessItIsDeliberatelyAbsent(t *testing.T) {
 		"farm/keys/id_absent": "the absent half of the pair inside a symlinked credential subdirectory",
 		".local/bin/mytool":   "the tool a run would install into a DenyWrite shield, which is refused before anything is there to stat",
 		".local/BIN/mytool":   "the same tool by the spelling only a folding mount reaches, which Build cannot stage at all",
+		"checkout/.git/HOOKS": "the checkout's hooks directory by the spelling only a folding mount reaches, which Build cannot stage at all",
 	}
 	for _, c := range shieldcorpus.Cases {
 		home, err := shieldcorpus.Build(t.TempDir(), c)

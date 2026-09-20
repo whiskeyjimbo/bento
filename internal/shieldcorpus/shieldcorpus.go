@@ -272,6 +272,15 @@ var Cases = []Case{
 		WorkspaceDerived: true,
 	},
 	{
+		Name:             "write to a folded spelling of an enclosing checkout's hooks dir",
+		Why:              "the checkout-derived half on a folding mount: the shield is one byte-exact bind at <checkout>/.git/hooks, so where the mount folds, <checkout>/.git/HOOKS reaches the same directory and a write there plants a pre-commit the developer's next commit runs; the rules are derived from the layout by each site rather than listed, so this is the case that holds the two deriving sites to folding the derived half alike",
+		Grant:            "checkout/.git/HOOKS",
+		Write:            true,
+		Folding:          true,
+		Verdict:          UnderWriteShield,
+		WorkspaceDerived: true,
+	},
+	{
 		Name:    "write over a checkout whose hooks directory is a symlink",
 		Why:     "the shield binds at the resolved path while the host's git opens the link's own name, which stays inside the writable grant for the run to delete and replace with real hooks; the gate cannot see it without walking the grant, so this is the case that keeps its silence stated rather than assumed and the clamp's withholding pinned",
 		Grant:   "redirected",
