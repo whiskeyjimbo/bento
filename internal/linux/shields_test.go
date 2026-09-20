@@ -1088,6 +1088,43 @@ func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
 	}
 }
 
+// An absent DenyAll path needs a shield only where a write grant could create it:
+// shieldNeeded takes sb.exists(r.Path) || writable, and for an absent path that is
+// writable alone. gate.workdirProblems rests on that arm - it consults only the write
+// grants when deciding whether a workdir the host does not have will be materialized -
+// and gate/ cannot import this package to hold the claim, which make layering enforces.
+//
+// Driven at denyArgs rather than through compile for the same reason the absent
+// caller-deny test below is: checkWriteNotAboveShield refuses a write grant at or above
+// a DenyAll path before a run reaches the shield pass, so the writable half is not
+// constructible through compile at all. That makes this the only level the claim can be
+// pinned at, and it is the level the gate's reasoning is about.
+//
+// Both directions are asserted because either alone is vacuous: without the write half,
+// a test demanding only the absence of a shield passes when shielding breaks outright.
+func TestAbsentDenyAllIsShieldedOnlyWhereAWriteGrantReachesIt(t *testing.T) {
+	// ~/.aws is a DenyAll directory rule, deliberately absent from the fake filesystem,
+	// so an emitted shield is the "declared-dir DenyAll absent" tmpfs of the grid below.
+	const store = "/home/u/.aws"
+	sb := testSandbox("/home/u/.bashrc")
+
+	t.Run("read grant alone", func(t *testing.T) {
+		args, _ := denyArgs(sb, []string{"/home/u"}, nil, nil)
+
+		if has(args, "--tmpfs", store) {
+			t.Errorf("an absent credential store no write grant can create needs no shield; got %v", args)
+		}
+	})
+
+	t.Run("write grant", func(t *testing.T) {
+		args, _ := denyArgs(sb, []string{"/home/u"}, []string{"/home/u"}, nil)
+
+		if !has(args, "--tmpfs", store) {
+			t.Errorf("a write grant could create the absent store, so it must be shielded; got %v", args)
+		}
+	})
+}
+
 // A pip --user runtime at ~/.local/bin/python3 makes the prefix mount bind
 // ~/.local read-only. The deny-list must still shield the credential directories
 // inside it: the mount exposes them just as a read grant would, and skipping the
