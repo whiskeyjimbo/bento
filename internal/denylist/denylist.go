@@ -1800,6 +1800,12 @@ func Runtime(runtimeDir string, homes ...string) []Rule {
 // is enforced reads Holds, which is why ExpandLinks is declared per rule rather than
 // derived from it. A surface naming what lifting a shield exposes must therefore say
 // which rule it is describing and read Holds off that rule, not ask this for it.
+//
+// ExpandLinks is the fourth, and the sentence above is not a statement about it: that one
+// says why the field is declared per rule, not what the rule this returns carries in it.
+// stricter ties on Deny and Dir alone, so among equally strict matches the flag that comes
+// back is slice order - and a caller asking whether a store's links are expanded wants the
+// rule the expansion really ran over, not whichever one this picked.
 func Covers(path string, rules []Rule) (Rule, bool) {
 	// Cleaned once, so the exact match below judges the same spelling the enclosing-
 	// directory match does. Without this the two disagree: a DenyAll rule on a FILE (the
