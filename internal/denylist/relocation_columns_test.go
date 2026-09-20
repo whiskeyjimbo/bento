@@ -89,3 +89,38 @@ func TestEveryRelocationTargetIsAbsoluteShieldableAndNotADefault(t *testing.T) {
 		}
 	}
 }
+
+// A dirEnvs or dirSubEnvs relocation emits its rule with Holds and ExpandLinks written
+// out literally, while the default store at the same path gets them from the dirGroups
+// table. Nothing joins the two, so a row whose default lives in historyDirs or
+// bulkStoreDirs would describe the store one way at its default location and another
+// once a variable moves it - a callout that changes its noun with the environment, and,
+// for a bulk store deliberately left unexpanded, a recursive walk of it on every launch.
+func TestARelocatedStoreDeclaresWhatItsDefaultDeclares(t *testing.T) {
+	const home = "/home/u"
+	byPath := map[string]Rule{}
+	for _, r := range Home(home) {
+		byPath[r.Path] = r
+	}
+
+	check := func(table, env, def string) {
+		t.Helper()
+		r, ok := byPath[filepath.Join(home, def)]
+		if !ok {
+			t.Errorf("%s/%s: no default rule at %s, so the relocation's literal fields answer to nothing", table, env, def)
+			return
+		}
+		if r.Holds != HoldsCredentials {
+			t.Errorf("%s/%s: default %s holds %s, but the relocation emits HoldsCredentials", table, env, def, r.Holds.Code())
+		}
+		if !r.ExpandLinks {
+			t.Errorf("%s/%s: default %s does not expand links, but the relocation emits ExpandLinks", table, env, def)
+		}
+	}
+	for _, d := range dirEnvs {
+		check("dirEnvs", d.env, d.def)
+	}
+	for _, d := range dirSubEnvs {
+		check("dirSubEnvs", d.env, filepath.Join(d.def, d.sub))
+	}
+}
