@@ -6,6 +6,12 @@ Area: `internal/denylist/denylist.go` (the rule tables and the three emitters - 
 `credentialLinks`, `linksUnder`, `Mount`/`target`; `verdict.go`'s `Contains`, `OptIns`,
 `callerDenied`).
 
+The backend is the boundary: `internal/linux` is cited where a verdict's consequence lands
+there and is not gridded. One cell it holds is named on bv2-12pba rather than left silent -
+`internal/linux/shields.go:391-398` dedups mounted rules on `{path, deny, dir}` and so
+resolves `Source` deterministically while leaving `Holds` to arrival order, which is F5's
+tie-break one package over.
+
 Out of scope by instruction: whether the 2724 lines should split store-table data from
 matching logic. That is answered at the end as a conclusion, not taken as an input.
 
