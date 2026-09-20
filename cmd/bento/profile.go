@@ -553,6 +553,12 @@ func relocatable(p *policy.Policy, manifestPath string) *policy.Policy {
 	if strings.ContainsRune(p.Interpreter, filepath.Separator) {
 		cp.Interpreter = rewrite(p.Interpreter)
 	}
+	// The workdir is anchored like a grant (policy.Policy.Workdir), and a re-profile
+	// resolves the existing manifest's copy to an absolute path before the merge - so
+	// leaving it alone writes `workdir: .` back out as one checkout's absolute path,
+	// which is the same de-relativization the interpreter note above describes, on the
+	// field whose headline use is exactly `.`. rewrite passes "" through untouched.
+	cp.Workdir = rewrite(p.Workdir)
 	cp.Read = mapSlice(p.Read, rewrite)
 	cp.Write = mapSlice(p.Write, rewrite)
 	// The rewrite is a change of spelling, not of policy, so it must not turn a policy
@@ -1006,8 +1012,10 @@ func printListedDirGrants(w io.Writer, p *policy.Policy, obs profile.Observation
 	return notes
 }
 
-// printWorkdirGrants names a proposed grant that is the whole directory the script runs
-// from, rather than the files under it the run actually opened.
+// printWorkdirGrants names a proposed grant that is the whole directory the run starts
+// in, rather than the files under it the run actually opened. That is the manifest's
+// workdir when it sets one and the script's own directory otherwise - the same fallback
+// the backend's --chdir makes, and the same one tmpGrants uses.
 //
 // It is the broadest grant profiling still proposes: isBroadDir already drops the home
 // directory and a top-level one, so the working directory is what survives, and a script
@@ -1025,7 +1033,11 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 	// reached through a symlinked component arrives resolved while filepath.Abs left the
 	// script path as the user typed it. Matching only the literal one would go quiet on
 	// exactly the grant this exists to name.
-	dirs := []string{filepath.Dir(script)}
+	start := filepath.Dir(script)
+	if p.Workdir != "" {
+		start = p.Workdir
+	}
+	dirs := []string{start}
 	if resolved, _ := pathresolve.Existing(dirs[0]); resolved != dirs[0] {
 		dirs = append(dirs, resolved)
 	}
@@ -1341,20 +1353,20 @@ func discoveryPolicy(script, interpreter, workdir string, interpreterArgs, args 
 	// relies on. A broad-dir script still runs - the entrypoint is bound regardless -
 	// with its sibling reads recorded as intent, not honored.
 	//
-	// The workdir travels only when it can be granted, and that is not fussiness: bwrap
-	// cannot chdir into a path it did not bind, so carrying a broad workdir without its
-	// grant would fail the run outright instead of under-reporting it. A broad one is
-	// dropped back to the script's directory under the same judgement as above - binding
-	// a home directory to match the cwd would re-expose exactly what default-deny is for.
+	// The workdir gets that grant under the same rule, and travels whether or not it
+	// does: the enforced run starts there, so a discovery run that started anywhere else
+	// would observe every relative path resolving somewhere the manifest never reaches.
+	// A broad workdir therefore stays on the policy ungranted rather than being dropped
+	// back to the script's directory - dropping it is the one outcome that is both silent
+	// and leaves the proposal describing a cwd the manifest does not name. It runs when
+	// something granted sits beneath it (the sandbox root carries a mount point's
+	// parents) and fails loudly when nothing does, which is the honest pair.
 	for _, dir := range []string{filepath.Dir(script), workdir} {
 		if dir == "" || isBroadDir(dir) || slices.Contains(p.Read, dir) {
 			continue
 		}
 		p.Read = append(p.Read, dir)
 		p.Write = append(p.Write, dir)
-	}
-	if isBroadDir(workdir) {
-		p.Workdir = ""
 	}
 	return p
 }

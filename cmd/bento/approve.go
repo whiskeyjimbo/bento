@@ -273,7 +273,7 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	// re-approval prompt appears with nothing in the grants moved, and the field decides
 	// where every relative path the script opens lands rather than what it may reach.
 	if p.Workdir != "" {
-		notes = append(notes, fmt.Sprintf("workdir: %q - the run starts there rather than in the entrypoint's own directory, so every relative path the script opens resolves under it. Read the grants against that directory, not against %q.", p.Workdir, filepath.Dir(p.Entrypoint)))
+		notes = append(notes, fmt.Sprintf("workdir: %q - the run starts there rather than in the entrypoint's own directory, so every relative path the script opens resolves under it, and the grants below are worth reading against that directory.", p.Workdir))
 	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")

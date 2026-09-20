@@ -460,10 +460,10 @@ type policyJSON struct {
 	// Workdir is the directory the run starts in, absent when the manifest sets none and
 	// the entrypoint's own directory is used. Inside the approval fingerprint, so a gate
 	// diffing manifests across runs has to be able to see it move.
-	Workdir string `json:"workdir,omitempty"`
-	Env             []string `json:"env,omitempty"`
-	Read            []string `json:"read,omitempty"`
-	Write           []string `json:"write,omitempty"`
+	Workdir string   `json:"workdir,omitempty"`
+	Env     []string `json:"env,omitempty"`
+	Read    []string `json:"read,omitempty"`
+	Write   []string `json:"write,omitempty"`
 	// ResolvedRead/ResolvedWrite name what each grant reaches on this host, for the
 	// entries where that differs from the spelling - a ~ or relative prefix, or a
 	// symlink. read/write stay literal because that is what the fingerprint attests and

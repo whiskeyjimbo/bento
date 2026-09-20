@@ -1031,6 +1031,18 @@ func TestTmpGrantsNamesWhatATargetCouldHaveSteered(t *testing.T) {
 		t.Errorf("tmpGrants = %v, want nothing for a run confined to its own temp workspace", got)
 	}
 
+	// Under a workdir the run does not start in the entrypoint's directory, so that is
+	// no longer the workspace the exclusion is about: the checkout the manifest names is,
+	// and the install directory the binary happens to live in is a sibling like any other.
+	moved := &policy.Policy{
+		Entrypoint: "/tmp/install-1234/agent",
+		Workdir:    "/tmp/checkout-5678",
+		Read:       []string{"/tmp/checkout-5678/data", "/tmp/install-1234"},
+	}
+	if got, want := tmpGrants(moved), []string{"/tmp/install-1234"}; !slices.Equal(got, want) {
+		t.Errorf("tmpGrants = %v, want %v - the exclusion follows the workdir the run starts in", got, want)
+	}
+
 	// An entrypoint sitting directly in /tmp would make the exclusion cover everything
 	// under it, hiding exactly the grants this exists to name.
 	loose := &policy.Policy{Entrypoint: "/tmp/run.py", Read: []string{"/tmp/probed-name"}}
@@ -1874,5 +1886,56 @@ func TestProfileHelpBoundsTheConvergencePromise(t *testing.T) {
 		if !strings.Contains(long, want) {
 			t.Errorf("profile --help must say %q, or the convergence advice reads as unconditional;\ngot:\n%s", want, long)
 		}
+	}
+}
+
+// The workdir is anchored like a grant, and a re-profile hands relocatable an absolute
+// one (mergeExisting resolves the existing manifest before the union). Left alone it
+// writes `workdir: .` - the field's headline use - back out as one checkout's absolute
+// path, which --relocatable then flags on a manifest the author had spelled right.
+func TestRelocatableRewritesTheWorkdir(t *testing.T) {
+	dir := t.TempDir()
+	m := filepath.Join(dir, "m.yaml")
+	got := relocatable(&policy.Policy{Entrypoint: filepath.Join(dir, "bin", "agent"), Workdir: dir}, m)
+	if got.Workdir != "." {
+		t.Errorf("workdir = %q, want %q - the manifest's own directory spelled as the manifest spells it", got.Workdir, ".")
+	}
+	if unset := relocatable(&policy.Policy{Entrypoint: filepath.Join(dir, "x")}, m); unset.Workdir != "" {
+		t.Errorf("a manifest that sets no workdir must not gain one; got %q", unset.Workdir)
+	}
+}
+
+// A workdir broad enough that discoveryPolicy will not bind it still has to travel:
+// dropping it would run the discovery in the script's directory while the manifest the
+// proposal is written into starts somewhere else, so every relative path in the proposal
+// names a file the enforced run never opens - and nothing would say so.
+func TestDiscoveryPolicyCarriesABroadWorkdirUngranted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	p := discoveryPolicy(filepath.Join(home, "tool", "run.sh"), "sh", home, nil, nil)
+	if p.Workdir != home {
+		t.Errorf("workdir = %q, want %q - the discovery run must start where the manifest says", p.Workdir, home)
+	}
+	if slices.Contains(p.Read, home) || slices.Contains(p.Write, home) {
+		t.Errorf("a broad workdir must not be bound during discovery; got Read=%v Write=%v", p.Read, p.Write)
+	}
+}
+
+// The whole-directory note is about where the run STARTS. Under a workdir that is the
+// checkout, not the directory the entrypoint happens to be installed in, and a grant on
+// the whole checkout is exactly the one a reviewer needs pointed at.
+func TestWorkdirGrantNoteFollowsTheWorkdir(t *testing.T) {
+	var buf strings.Builder
+	p := &policy.Policy{
+		Entrypoint: "/opt/agent/bin/agent",
+		Workdir:    "/srv/checkout",
+		Read:       []string{"/srv/checkout"},
+	}
+	notes := printWorkdirGrants(&buf, p, p.Entrypoint)
+	if len(notes) != 1 || notes[0].Path != "/srv/checkout" {
+		t.Errorf("the note must name the directory the run starts in; got %+v", notes)
+	}
+	if !strings.Contains(buf.String(), "/srv/checkout") {
+		t.Errorf("the prose must name it too; got:\n%s", buf.String())
 	}
 }
