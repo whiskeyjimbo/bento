@@ -131,6 +131,7 @@ func Check(resolved *policy.Policy) Runnability {
 			r.Problems = append(r.Problems, fmt.Sprintf("interpreter %q not found: %v", resolved.Interpreter, err))
 		}
 	}
+	r.Problems = append(r.Problems, workdirProblems(resolved)...)
 	r.FileishWrites = FileishWrites(resolved.Write)
 	r.MissingReads = MissingReads(resolved.Read)
 	// A host that cannot anchor its shields refuses every run, and it cannot say which
@@ -147,6 +148,38 @@ func Check(resolved *policy.Policy) Runnability {
 	}
 	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
+}
+
+// workdirProblems reports a manifest workdir this host cannot start the run in. The
+// backend chdirs into it after the sandbox is already built (internal/linux --chdir), so
+// without this the manifest validates clean and dies at a step that has already paid for
+// the mount namespace - the exact class Runnability exists to report first.
+//
+// Absence alone is not the answer, and this is the whole subtlety: a write grant at or
+// beneath the workdir is created before the sandbox exists and bound inside it, so
+// `workdir: ./out` beside `write: [./out]` starts fine on a host where ./out has never
+// existed - the shape `bento profile` itself writes. Refusing that would refuse a run that
+// works, the one direction this package rules out.
+//
+// It says nothing about a workdir that EXISTS on the host but has nothing granted
+// beneath it, which the enforced run also refuses. Answering that needs the sandbox's
+// whole bind set - the runtime scratch, the system trees, the shield mounts - and a gate
+// that enumerates them refuses a run the moment one moves. `bento profile` names that
+// case instead, where the proposal is being written.
+func workdirProblems(resolved *policy.Policy) []string {
+	if resolved.Workdir == "" {
+		return nil
+	}
+	if _, err := os.Stat(resolved.Workdir); err == nil {
+		return nil
+	}
+	lands, _ := pathresolve.Existing(resolved.Workdir)
+	for _, g := range resolved.Write {
+		if grant, _ := pathresolve.Existing(g); policy.CoversResolved(lands, grant) {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("workdir %q does not exist on this host and no write grant is at or beneath it, so the run cannot start there", resolved.Workdir)}
 }
 
 // Refusals is every grant this host will not honor for a reason the manifest holds, in

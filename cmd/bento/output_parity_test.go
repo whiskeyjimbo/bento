@@ -328,6 +328,12 @@ func parityValidate(t *testing.T) (string, map[string]any) {
 		Network: []policy.NetworkRule{{Host: "127.0.0.1", Port: "8080"}, {Host: ".internal", Port: "80"}},
 	}
 	path := writeManifest(t, p, manifest.Provenance{BlockedHosts: []string{"metadata.internal:80", "not-a-host-port"}})
+	// The workdir has to be on the host: a manifest naming one that is not is unrunnable
+	// (gate.Check), and this fixture's job is to make every field carry a value, so a
+	// false `runnable` would empty the row rather than guard it.
+	if err := os.Mkdir(filepath.Join(filepath.Dir(path), "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	human, _ := runCapturingStdout(t, newValidateCmd(), "--relocatable", path)
 	out, _ := runCapturingStdout(t, newValidateCmd(), "--json", "--relocatable", path)
