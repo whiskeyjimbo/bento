@@ -1,5 +1,16 @@
 # State grid: the `workdir` manifest key
 
+> **Status, 2026-09-20 (fleet run).** The whole row is FIXED in 9e6c8a2 and ae027f7. F1's
+> root - `workdirProblems` reachable only through `gate.Check`, never `gate.Refusals` - is
+> closed by exporting `gate.WorkdirCheck`/`WorkdirProblems` and calling it from approve's
+> own `requireStartableWorkdir`, deliberately NOT folded into `Refusals`, because `clamp.go`
+> asks `Refusals` per grant. A13 (the discarded `pathresolve` Unreadable arm) is closed by a
+> single guard covering both halves, in the gate and in the profiler. One arm this grid
+> MISSED was found and fixed with them: a READ grant at an absent workdir also quieted
+> profile's warning. One claim of this grid was wrong - the grant-derived shields are not
+> all directories (`denylist.Workspace` carries `.git/config`, `.cargo/config.toml`); the
+> verdict stands for a different reason, recorded at the fix.
+
 Written 2026-09-20. Fit: **GOOD** - two strong signals (a mirror set, and six
 one-at-a-time fixes in nine days).
 

@@ -1,5 +1,15 @@
 # State grid: shield folding, Phase 2 re-open pass
 
+> **Status, 2026-09-20 (fleet run).** One claim of this document is RETRACTED: the corpus
+> could already express checkout-derived cases, and two of the three differential harnesses
+> already derived and passed the workspace rules (`internal/linux` and `cmd/bento`; `gate`
+> passes nil by documented divergence). What was genuinely uncovered was the derived half at
+> a FOLDED spelling, now landed as a real corpus case (af2e925, cd3cd10). The retraction is
+> recorded on bv2-k2g1h, which owns the decision. **E8 remains OPEN and is not a coding
+> task**: it needs a refuse-or-disclose call from a human. One cost now known - if the answer
+> is DISCLOSE, `shieldcorpus.Verdict` models refusals only and has no member for a
+> disclosure-only outcome. The F2c/F3c comment drift is fixed (233ed86).
+
 Reviewed 2026-09-20 at 9a90f6a. This is not a fresh enumeration. It re-opens the two
 existing grids - `docs/state-grid-shield-verdict.md` (verdict x kind x consumer, written at
 924e291 / 5a98897) and `docs/state-grid-profile-clamp.md` (proposal vs run refusals) -

@@ -1,5 +1,16 @@
 # State grid: credhunt's shape signals against denylist's coverage
 
+> **Status, 2026-09-20 (fleet run).** U-1, U-2 and U-3 are FIXED, by the one shared remedy
+> this document argued for: `Hunt` returns a fourth value, `[]Skip{Path, Reason}`, and
+> `cmd/credhunt` prints `skipped` (c22d7aa, a10b898, 1b8fbd8). The dotfile-farm row is fixed
+> separately for the UNVERSIONED case only (84eb583); a farm under git was never silent,
+> being pruned whole by `isCheckout` and disclosed. `FuzzHuntNeverReportsAShieldedFile` now
+> carries a canary with a constant oracle (a4cc548), so its five pre-existing assertions are
+> load-bearing rather than vacuous against a nil return. H-8's pin was resolved differently:
+> the assertion already existed - see that section. Still open: axis A needs its split (a
+> row is missing for "sniffed, but only to `MaxFileSize`"), and sniff depth is measured from
+> the home root rather than the farm root (bv2-c3z78).
+
 Area: `internal/credhunt/credhunt.go` and `cmd/credhunt/main.go`, against
 `internal/denylist/denylist.go` (`Home`/`Relocated`/`Runtime`, `Covers`, `Shieldable`),
 `internal/denylist/index.go`, `internal/denylist/audit/audit.go`, and

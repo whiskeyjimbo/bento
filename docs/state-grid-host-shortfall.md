@@ -1,5 +1,17 @@
 # State grid: host-shortfall disclosure (validate's note) vs what the run refuses on
 
+> **Status, 2026-09-20 (fleet run).** V3.2 and V3.3-json are CLOSED (1cc7ecf); the V3
+> summary table and tally below still read WRONG and are superseded by this note.
+> **V2.9's first clause was REFUTED**: `gate.Check` folds a `denylist.HomeAnchors` failure
+> into `Runnability.ShieldsUnknown` and validate carries it to all three surfaces, landed
+> 2026-08-13 in c2a491b and 7f42238 - five weeks before this grid claimed otherwise. That
+> cell was stamped VERIFIED BY READING and the reading was wrong. What survived is the
+> divergence CLASS, now held by `TestEveryHostFactOutsideTheLayerModelIsClassified`
+> (d739164, 634a847), which fires on the sixth host fact doctor learns outside the layer
+> model. V2.5 was answered by documenting the coupling and citing the exhaustive pin that
+> already existed in `internal/linux`, not by changing the read (6b5e299). Still open:
+> validate says THAT the anchors failed, doctor says WHY (bv2-8owg3).
+
 Area: `cmd/bento/validate.go` (`hostPosture`, `writeHostPosture`, `policyJSON.HostUnenforcedLayers`),
 `enforce/run.go` (`RequiredLayers`, `Options.admit`, the pre-run refusals in `Run`,
 `admitRunID`), `enforce/report.go` (`StateOf`, `Disclosure`, `shortfall`),
