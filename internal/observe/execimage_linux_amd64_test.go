@@ -136,7 +136,7 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 		{name: "junk after the NUL", interp: "/lib64/ld.so\x00/evil\x00", want: "/lib64/ld.so", ok: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := execImage(os.Getpid(), writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp))
+			got, ok := execImage(os.Getpid(), writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp, 56))
 			if got != tc.want || ok != tc.ok {
 				t.Errorf("execImage = %q %v, want %q %v", got, ok, tc.want, tc.ok)
 			}
@@ -147,7 +147,12 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 // writeELFWithInterp builds the smallest ELF64 debug/elf will parse that carries one
 // PT_INTERP segment holding interp verbatim - including its NUL padding, which is what
 // distinguishes a well-formed loader name from a segment the decoder must refuse.
-func writeELFWithInterp(t testing.TB, path, interp string) string {
+//
+// phentsize is what the header CLAIMS an entry is wide, which the table itself does not
+// follow: the one entry is always the real 56 bytes and the segment always sits after it,
+// so a caller passing anything else gets an image whose only defect is the stride the
+// kernel checks. Pass phdrSize for a well-formed one.
+func writeELFWithInterp(t testing.TB, path, interp string, phentsize uint16) string {
 	t.Helper()
 	const ehdrSize, phdrSize = 64, 56
 	var b bytes.Buffer
@@ -161,7 +166,7 @@ func writeELFWithInterp(t testing.TB, path, interp string) string {
 	}
 	// ET_EXEC on EM_X86_64, with no section headers: Progs is all execImage reads.
 	put(uint16(elf.ET_EXEC), uint16(elf.EM_X86_64), uint32(1), uint64(0), uint64(ehdrSize), uint64(0),
-		uint32(0), uint16(ehdrSize), uint16(phdrSize), uint16(1), uint16(0), uint16(0), uint16(0))
+		uint32(0), uint16(ehdrSize), phentsize, uint16(1), uint16(0), uint16(0), uint16(0))
 	put(uint32(elf.PT_INTERP), uint32(elf.PF_R), uint64(ehdrSize+phdrSize), uint64(0), uint64(0),
 		uint64(len(interp)), uint64(len(interp)), uint64(1))
 	b.WriteString(interp)

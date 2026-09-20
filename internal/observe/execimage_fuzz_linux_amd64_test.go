@@ -81,7 +81,9 @@ func refELFInterp(file []byte) (name string, complete, known bool) {
 	phoff := binary.LittleEndian.Uint64(file[32:])
 	phentsize := uint64(binary.LittleEndian.Uint16(file[54:]))
 	phnum := uint64(binary.LittleEndian.Uint16(file[56:]))
-	if phentsize < 56 || phoff+phentsize*phnum > uint64(len(file)) {
+	// Exactly 56, as binfmt_elf's load_elf_phdrs requires: an image at any other stride
+	// is one the kernel answers ENOEXEC for, having opened no loader to name.
+	if phentsize != 56 || phoff+phentsize*phnum > uint64(len(file)) {
 		return "", false, false
 	}
 	for i := range phnum {
@@ -196,7 +198,7 @@ func FuzzExecImageDecode(f *testing.F) {
 	// segment is not something a mutator builds - so the seed is built with the helper the
 	// hand-written ELF test already uses, giving the fuzzer a base to mutate from.
 	for _, interp := range []string{"/lib64/ld.so\x00", "/lib64/ld.so\x00\x00\x00", "/lib64/ld.so"} {
-		elf, err := os.ReadFile(writeELFWithInterp(f, filepath.Join(f.TempDir(), "elf"), interp))
+		elf, err := os.ReadFile(writeELFWithInterp(f, filepath.Join(f.TempDir(), "elf"), interp, 56))
 		if err != nil {
 			f.Fatal(err)
 		}
@@ -333,7 +335,7 @@ func TestImageDecodeOracleRejectsAWrongAnswer(t *testing.T) {
 	// The ELF branch's own teeth, on the harm the shebang cases cannot reach: a loader the
 	// program headers name, silently dropped. The file has to be a real parseable ELF, so
 	// it is built with the helper the hand-written PT_INTERP test already uses.
-	withInterp, err := os.ReadFile(writeELFWithInterp(t, filepath.Join(t.TempDir(), "elf"), "/lib64/ld.so\x00"))
+	withInterp, err := os.ReadFile(writeELFWithInterp(t, filepath.Join(t.TempDir(), "elf"), "/lib64/ld.so\x00", 56))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,16 +412,26 @@ func TestExecImageRefusesATruncatedNameThatExists(t *testing.T) {
 func TestPT_INTERPTerminationMatchesTheKernel(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct {
-		name     string
-		interp   string
-		complete bool
+		name string
+		// phentsize is e_phentsize as the header claims it; 56 is the real width of the
+		// one entry these images carry, which is also the only width binfmt_elf accepts.
+		phentsize uint16
+		interp    string
+		complete  bool
 	}{
-		{name: "nul terminated", interp: "/lib64/ld.so\x00", complete: true},
-		{name: "not terminated", interp: "/lib64/ld.so"},
-		{name: "one byte", interp: "\x00"},
+		{name: "nul terminated", phentsize: 56, interp: "/lib64/ld.so\x00", complete: true},
+		{name: "not terminated", phentsize: 56, interp: "/lib64/ld.so"},
+		{name: "one byte", phentsize: 56, interp: "\x00"},
+		// load_elf_phdrs wants e_phentsize == sizeof(struct elf_phdr) and answers ENOEXEC
+		// otherwise, before it has looked at a single program header. The table here is
+		// well-formed under it - one PT_INTERP naming a real loader - so a decoder that
+		// only FLOORS the stride walks it and names that loader for an exec that cannot
+		// happen. The whole image is otherwise identical to the first row, which is what
+		// makes the stride the only thing this arm can be reading.
+		{name: "oversized phentsize", phentsize: 64, interp: "/lib64/ld.so\x00"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp)
+			path := writeELFWithInterp(t, filepath.Join(dir, tc.name), tc.interp, tc.phentsize)
 			refused := errors.Is(exec.Command(path).Run(), unix.ENOEXEC)
 			if refused == tc.complete {
 				t.Fatalf("the kernel refused = %v for a %s segment; the case assumes the opposite", refused, tc.name)

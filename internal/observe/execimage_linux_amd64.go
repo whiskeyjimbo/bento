@@ -222,14 +222,14 @@ func elfInterp(f *os.File, head []byte) (string, bool) {
 	// ehdrSize is also where the header ends; phSize is the width of the offset and size
 	// fields, which is the only thing that differs between the two layouts besides where
 	// the fields sit.
-	var ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt int
+	var ehdrSize, phSize, phdrSize, phoffAt, phentAt, offAt, fileszAt int
 	switch {
 	case len(head) < 6 || head[5] != byte(elf.ELFDATA2LSB):
 		return "", false
 	case head[4] == byte(elf.ELFCLASS64):
-		ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt = 64, 8, 56, 32, 54, 8, 32
+		ehdrSize, phSize, phdrSize, phoffAt, phentAt, offAt, fileszAt = 64, 8, 56, 32, 54, 8, 32
 	case head[4] == byte(elf.ELFCLASS32):
-		ehdrSize, phSize, phentMin, phoffAt, phentAt, offAt, fileszAt = 52, 4, 32, 28, 42, 4, 16
+		ehdrSize, phSize, phdrSize, phoffAt, phentAt, offAt, fileszAt = 52, 4, 32, 28, 42, 4, 16
 	default:
 		return "", false
 	}
@@ -249,14 +249,15 @@ func elfInterp(f *os.File, head []byte) (string, bool) {
 	// fuzzer-chosen e_phnum cannot happen here: the kernel refuses an image whose header
 	// table does not fit in 64KiB, so one that claims more is not an image that runs.
 	//
-	// The entry size is only FLOORED, which is looser than the kernel: binfmt_elf wants
-	// e_phentsize to equal its own struct exactly and answers ENOEXEC otherwise, so an
-	// oversized stride walks a table no exec will ever read and may name a loader for an
-	// image the kernel refuses. debug/elf floored it the same way before this walk
-	// replaced it, so this is the behaviour as it stood rather than something introduced
-	// here, and an image recorded for an exec that fails is what this file does anyway -
-	// the decode runs at the entry stop, before the kernel has validated anything.
-	if phentsize < phentMin || phnum < 1 || phnum*phentsize > 65536 {
+	// The entry size is the kernel's own, EXACTLY: load_elf_phdrs refuses an image whose
+	// e_phentsize is not sizeof(struct elf_phdr) and answers ENOEXEC having read nothing,
+	// so a table at any other stride belongs to no exec that can happen. Equality cannot
+	// lose a real loader - an image the kernel loads has this stride by definition - and
+	// a floor instead would walk that table anyway and name a loader for an image the
+	// kernel refuses, which is the truncated-shebang shape this file refuses on the other
+	// branch. That the two verdicts agree is held against a real exec's errno by
+	// TestPT_INTERPTerminationMatchesTheKernel's oversized-stride case.
+	if phentsize != phdrSize || phnum < 1 || phnum*phentsize > 65536 {
 		return "", false
 	}
 	table := make([]byte, phnum*phentsize)
