@@ -123,7 +123,7 @@ func run(stdout, stderr io.Writer, homes []string) int {
 
 	for _, h := range homes {
 		fmt.Fprintf(stdout, "scanning %q against %d shields\n", h, len(rules))
-		found, pruned, unreadable, err := credhunt.Hunt(credhunt.Options{
+		found, pruned, unreadable, skipped, err := credhunt.Hunt(credhunt.Options{
 			Home:          h,
 			Rules:         rules,
 			MachineStores: machineStores(h),
@@ -158,7 +158,15 @@ func run(stdout, stderr io.Writer, homes []string) int {
 		for _, p := range unreadable {
 			fmt.Fprintf(stdout, "  unreadable %q\n", p)
 		}
-		fmt.Fprintf(stdout, "%d lead(s) and %d dense tree(s) under %q that no shield covers (%d tree(s) pruned, %d path(s) unreadable)\n\n", len(leads), len(dense), h, len(pruned), len(unreadable))
+		// The third narrowing, and the one that reads as a clean file rather than as an
+		// absent subtree: a link the walk would not follow and a head read that stopped at
+		// the bound both leave a reachable secret unhunted under a path the report otherwise
+		// says nothing about. The reason is this package's words, so it is printed bare; the
+		// path is off the walked tree, so it is quoted like every other one.
+		for _, s := range skipped {
+			fmt.Fprintf(stdout, "  skipped    %q  %s\n", s.Path, s.Reason)
+		}
+		fmt.Fprintf(stdout, "%d lead(s) and %d dense tree(s) under %q that no shield covers (%d tree(s) pruned, %d path(s) unreadable, %d entr(ies) skipped)\n\n", len(leads), len(dense), h, len(pruned), len(unreadable), len(skipped))
 	}
 	fmt.Fprintln(stdout, "These are LEADS, not gaps: read each one and decide whether it belongs in denylist.go.")
 	fmt.Fprintln(stdout, "A name/suffix hit alone is weak; private-mode plus a content shape is close to certain.")

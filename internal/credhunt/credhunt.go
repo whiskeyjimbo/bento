@@ -52,8 +52,9 @@ type Finding struct {
 	Mode fs.FileMode
 	// Signals names the shapes that fired, cheap signals first and the content shapes
 	// last, following the order shapesOf tests them in - the sniff runs after the cheap
-	// ones, either because one of them narrowed the file or because it sits at the home
-	// root. A single signal is a lead; several on one file is close to a certainty.
+	// ones, either because one of them narrowed the file or because it sits somewhere the
+	// sniff runs unconditionally. A single signal is a lead; several on one file is close
+	// to a certainty.
 	Signals []string
 }
 
@@ -85,6 +86,20 @@ const (
 	// it is not, and making it enumerable is the reason this tool exists.
 	SignalEditorLeaving = "editor-leaving"
 )
+
+// Skip is one entry the scan saw and deliberately did not look into, or did not look all
+// the way into. It is the third disclosure channel alongside the pruned roots and the
+// unreadable paths, and it is a separate one because neither of those is true of it: the
+// entry was reachable and the read did not fail. Filing a symlink the walk declined to
+// follow under "unreadable" would make the report say something false about it, and this
+// output is what a human reads to classify a lead.
+type Skip struct {
+	// Path is absolute.
+	Path string
+	// Reason is this package's own words for what was not looked into. Any path it
+	// quotes is quoted with %q, because it can carry a name off the walked tree.
+	Reason string
+}
 
 // editorLeavingSuffixes are the endings editors give a swap or backup copy: vim's .swp,
 // the generic .bak, emacs' trailing ~ and its numbered ~N~ form.
@@ -150,13 +165,18 @@ type Options struct {
 // on a live home, narrowed nothing and listing those would make the report the churn of
 // the home rather than what the scan could not see.
 //
-// The second and third results are, in order, the roots pruned and the paths that could
-// not be read. Both are paths rather than counts: a count tells the operator the scan
-// narrowed but not where, which for the two failures this tool exists to avoid - a scan
-// root pruned away, a subtree hidden behind a planted marker - is the same as silence.
-func Hunt(opts Options) ([]Finding, []string, []string, error) {
+// The second, third and fourth results are, in order, the roots pruned, the paths that
+// could not be read, and the entries the scan saw and chose not to look all the way into.
+// All three are paths rather than counts: a count tells the operator the scan narrowed but
+// not where, which for the failures this tool exists to avoid - a scan root pruned away, a
+// subtree hidden behind a planted marker, a token past the head read - is the same as
+// silence. The third is its own channel rather than more of the second because a link the
+// walk declined to follow and a head the read stopped bounding CAN be read; calling them
+// unreadable would make the report say something false about every one.
+func Hunt(opts Options) ([]Finding, []string, []string, []Skip, error) {
 	var out []Finding
 	var pruned, unreadable []string
+	var skipped []Skip
 	// Cleaned once, and every comparison below is against this rather than the caller's
 	// spelling. The walk asks whether an entry IS the root and whether its parent is, and
 	// filepath.Dir hands back a cleaned path: a root spelled with a trailing separator
@@ -251,6 +271,9 @@ func Hunt(opts Options) ([]Finding, []string, []string, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
+			if s, narrowed := outboundLink(path, home, d); narrowed {
+				skipped = append(skipped, s)
+			}
 			return nil
 		}
 		// A file that vanished between the walk and the stat cannot be shape-tested; see
@@ -262,9 +285,12 @@ func Hunt(opts Options) ([]Finding, []string, []string, error) {
 			}
 			return nil
 		}
-		signals, opened := shapesOf(path, info, opts.MaxFileSize, filepath.Dir(path) == home)
+		signals, opened, truncated := shapesOf(path, info, opts.MaxFileSize, sniffUnconditionally(path, home))
 		if !opened {
 			unreadable = append(unreadable, path)
+		}
+		if truncated {
+			skipped = append(skipped, Skip{Path: path, Reason: fmt.Sprintf("sniffed only the first %d bytes; a credential past those was not looked at", opts.MaxFileSize)})
 		}
 		if len(signals) > 0 {
 			out = append(out, Finding{Path: path, Mode: info.Mode().Perm(), Signals: signals})
@@ -272,26 +298,76 @@ func Hunt(opts Options) ([]Finding, []string, []string, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, pruned, unreadable, nil
+	return out, pruned, unreadable, skipped, nil
+}
+
+// outboundLink reports the narrowing a non-regular entry represents, if it is one. Only a
+// symlink whose target resolves OUTSIDE the walked home is: the scan can reach that file
+// and declined to, which is the same class shield.credentialLinks chases from the other
+// side, and following it here would walk the host.
+//
+// The three exclusions are each a narrowing of nothing. A link within the home reaches a
+// file the walk visits under its own name. A dangling link reaches nothing, for the reason
+// a name that vanished between the readdir and the stat is not reported either - both are
+// ordinary churn on a live home, and listing them would make the report the home's churn
+// rather than what the scan could not see. A socket, fifo or device node has no stored
+// content for a sniff to have looked into.
+func outboundLink(path, home string, d fs.DirEntry) (Skip, bool) {
+	if d.Type()&fs.ModeSymlink == 0 {
+		return Skip{}, false
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return Skip{}, false
+	}
+	if target == home || strings.HasPrefix(target, home+string(filepath.Separator)) {
+		return Skip{}, false
+	}
+	return Skip{Path: path, Reason: fmt.Sprintf("symlink to %q, outside the home: never followed, so its target was not hunted", target)}, true
+}
+
+// sniffUnconditionally reports whether path is somewhere the content sniff runs whatever
+// the file is named: directly at the home root, or anywhere under a dotdirectory.
+//
+// Both are the class the cheap signals systematically miss. The home root holds the bare
+// ~/.env. The dotdirectories hold the developer token stores - a 0644
+// ~/.config/<tool>/settings.json with an oauth token in it trips no name token, no suffix
+// and no mode, so nothing but its contents can reach it, and that is exactly the class
+// denylist.go:36 records the parity audit missing 19 of 21 of. What the bound keeps out is
+// the rest of the home: a source tree, a documents directory, a downloads directory are
+// all read-free, and the package caches under a dotdirectory are pruned by MachineStores
+// before this is asked.
+func sniffUnconditionally(path, home string) bool {
+	rel, err := filepath.Rel(home, filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing, plus
-// whether the content sniff got to read the file: a sniff that could not open it is a
-// narrowing of the scan the operator has to be told about, not an absence of signals.
+// whether the content sniff got to read the file and whether it read all of it. A sniff
+// that could not open the file, and one that stopped at the bound, are both narrowings of
+// the scan the operator has to be told about rather than an absence of signals.
 //
 // The content sniff runs for a file that already tripped a name or mode signal, and for
-// any file sitting directly at the home root. Reading every file in a home to look for a
-// PEM header would cost a full-tree read for leads the cheap signals have already
-// narrowed, and a PEM block in a file with an ordinary name and world-readable mode is a
-// certificate, not a hunt result. The home root is the exception because it is the class
-// this tool is most for and the one the cheap signals systematically miss: a mode-0644
-// ~/.env holding an AWS_SECRET_ACCESS_KEY trips no name token, no suffix, no editor
-// leaving and no mode, so nothing but its contents can reach it. The extra reads are the
-// few dozen files at the root rather than the thousands under it.
-func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) ([]string, bool) {
+// any file sniffUnconditionally names. Reading every file in a home to look for a PEM
+// header would cost a full-tree read for leads the cheap signals have already narrowed,
+// and a PEM block in a file with an ordinary name and world-readable mode is a
+// certificate, not a hunt result. That argument is about PEM and does not transfer to a
+// token assignment, which is why the unconditional set is where the token stores live.
+func shapesOf(path string, info fs.FileInfo, maxSize int64, always bool) ([]string, bool, bool) {
 	var signals []string
 	name := strings.ToLower(info.Name())
 
@@ -314,9 +390,10 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) ([]
 	// behind ~96 KB of project history, and the shell and editor histories that accumulate
 	// an exported token are larger still. The bound belongs on what contentShapes reads.
 	opened := true
-	if (len(signals) > 0 || atHomeRoot) && info.Size() > 0 {
+	truncated := false
+	if (len(signals) > 0 || always) && info.Size() > 0 {
 		var content []string
-		content, opened = contentShapes(path, maxSize)
+		content, opened, truncated = contentShapes(path, maxSize)
 		signals = append(signals, content...)
 	}
 	// A private mode on its own is a weak prior, not a shape: measured on a developer
@@ -326,19 +403,26 @@ func shapesOf(path string, info fs.FileInfo, maxSize int64, atHomeRoot bool) ([]
 	// cannot carry a finding alone. The content sniff still runs for a mode-only file, so
 	// an unnamed 0600 file with a key inside surfaces on its contents.
 	if len(signals) == 1 && signals[0] == SignalPrivateMode {
-		return nil, opened
+		return nil, opened, truncated
 	}
-	return signals, opened
+	return signals, opened, truncated
 }
 
-// contentShapes reports the secret shapes a file's first bytes carry, and whether it
-// opened the file at all. It returns nothing for a file it cannot open, which on a live
-// home is ordinary rather than exceptional - but reported, so a subtree of files the scan
-// could not read does not look like a subtree of clean ones.
-func contentShapes(path string, maxSize int64) ([]string, bool) {
+// contentShapes reports the secret shapes a file's first bytes carry, whether it opened
+// the file at all, and whether what it read was less than the file. It returns nothing for
+// a file it cannot open, which on a live home is ordinary rather than exceptional - but
+// reported, so a subtree of files the scan could not read does not look like a subtree of
+// clean ones.
+//
+// The short read is reported for the same reason and is the commoner one: the bound exists
+// so a multi-gigabyte file does not stop the hunt, and the cost of it is that a credential
+// past the bound is missed in a file that then reads as clean. A read that failed partway
+// answers the same way - the bytes it got are still shape-tested, and what is behind the
+// error was not looked at, which is the fact the operator needs either way.
+func contentShapes(path string, maxSize int64) ([]string, bool, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
 	defer f.Close()
 
@@ -354,7 +438,15 @@ func contentShapes(path string, maxSize int64) ([]string, bool) {
 	// rather than discarded: a file this hunt has already decided to open is a candidate,
 	// and dropping a PEM header that was read because the read later hit an I/O error is
 	// the same silent give-up the scanner used to produce.
-	head, _ := io.ReadAll(&io.LimitedReader{R: f, N: maxSize})
+	// One byte past the bound, which is what distinguishes "read the whole file" from
+	// "stopped where it was told to": a read that comes back exactly maxSize long could be
+	// either, and guessing would disclose a truncation on every file of exactly that size
+	// or on none of them.
+	head, readErr := io.ReadAll(&io.LimitedReader{R: f, N: maxSize + 1})
+	truncated := int64(len(head)) > maxSize || readErr != nil
+	if int64(len(head)) > maxSize {
+		head = head[:maxSize]
+	}
 
 	var signals []string
 	for line := range strings.SplitSeq(decodeUTF16(head), "\n") {
@@ -368,7 +460,7 @@ func contentShapes(path string, maxSize int64) ([]string, bool) {
 			break
 		}
 	}
-	return signals, true
+	return signals, true, truncated
 }
 
 // decodeUTF16 converts a BOM-marked UTF-16 head to UTF-8, and returns anything else

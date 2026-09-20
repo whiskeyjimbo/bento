@@ -30,7 +30,7 @@ func plant(t *testing.T, home, rel string, mode os.FileMode, content string) str
 
 func hunt(t *testing.T, home string) []Finding {
 	t.Helper()
-	found, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHuntSniffsPastAVeryLongLine(t *testing.T) {
 	long := plant(t, home, ".longline.conf", 0o600,
 		"# "+strings.Repeat("y", 100<<10)+"\napi_token = 0123456789abcdefghijklmnop\n")
 
-	found, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
+	found, _, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestHuntAcceptsAnUncleanHome(t *testing.T) {
 	home := t.TempDir()
 	env := plant(t, home, ".env", 0o644, "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n")
 
-	found, _, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, _, _, err := Hunt(Options{Home: home + string(filepath.Separator), Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestHuntNamesTheVCSObjectStorePrune(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	_, pruned, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestMachineStoresArePrunedAndNamed(t *testing.T) {
 	plant(t, home, ".cache/pkg/some-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 	kept := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 
-	found, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{cache}, MaxFileSize: 64 << 10})
+	found, pruned, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{cache}, MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestDenyWriteIsNotCoverage(t *testing.T) {
 // continues, but the root is worth refusing over.
 func TestHuntRefusesAnUnwalkableRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-home")
-	found, _, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
+	found, _, _, _, err := Hunt(Options{Home: missing, Rules: nil, MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Errorf("Hunt over a nonexistent home returned %d findings and no error; a clean report over a scan that never happened is the failure this refuses", len(found))
 	}
@@ -358,7 +358,7 @@ func TestHuntRefusesASymlinkedHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found, _, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
+	found, _, _, _, err := Hunt(Options{Home: link, Rules: denylist.Home(link), MaxFileSize: 64 << 10})
 	if err == nil {
 		t.Fatalf("Hunt over a symlinked home returned %d findings and no error; the walk never entered it", len(found))
 	}
@@ -381,7 +381,7 @@ func TestUnreadableDirectoryIsNamed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
 
-	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, unreadable, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestUnopenableFileIsNamed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, unreadable, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestAVanishedFileIsNotCountedUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found, _, unreadable, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	found, _, unreadable, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestAMachineStoreEqualToTheScanRootIsNotPruned(t *testing.T) {
 	home := t.TempDir()
 	lead := plant(t, home, ".some-tool/api-token", 0o600, "token = 0123456789abcdefghijklmnop\n")
 
-	found, pruned, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{home}, MaxFileSize: 64 << 10})
+	found, pruned, _, _, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MachineStores: []string{home}, MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,5 +565,89 @@ func gitdir(t *testing.T, dir string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The inverted assertion, and the one the package had none of: every green test here and
+// the fuzz oracle are quantified over what Hunt RETURNED, so a scanner that returned
+// nothing at all satisfied all of them. Each row plants a real secret and names the
+// channel that has to carry it - found when the file is hunted, skipped when the scan
+// reaches the entry and deliberately does not look into it. Silence fails every row,
+// which is the point: silence is this package's failure mode, not a false positive.
+func TestHuntDisclosesEveryPlantedSecret(t *testing.T) {
+	const token = "oauth_token: gho_0123456789abcdefghijklmnopqrstuvwxyz\n"
+	cases := []struct {
+		name    string
+		maxSize int64
+		// plant builds the secret and returns the path the report must name.
+		plant func(t *testing.T, home string) string
+		// channel is "found" or "skipped"; reason is a substring of the Skip's words.
+		channel string
+		reason  string
+	}{
+		{
+			// A 0644 tool config under a dotdirectory trips no name token, no suffix and
+			// no mode: before the sniff reached it the file was never opened at all.
+			name:    "token store below the home root",
+			maxSize: 64 << 10,
+			plant: func(t *testing.T, home string) string {
+				return plant(t, home, ".config/acmecloud/settings.json", 0o644, token)
+			},
+			channel: "found",
+		},
+		{
+			// The walk never follows a link, so the target is not hunted under any name.
+			// Naming the link is the disclosure; following it would walk the host.
+			name:    "home-root symlink to a secret outside the home",
+			maxSize: 64 << 10,
+			plant: func(t *testing.T, home string) string {
+				farm := t.TempDir()
+				target := filepath.Join(farm, "creds")
+				if err := os.WriteFile(target, []byte(token), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(home, ".acmerc")
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+				return link
+			},
+			channel: "skipped",
+			reason:  "outside the home",
+		},
+		{
+			// The bound is on the read, so the file IS opened and reads as clean. Only the
+			// truncation says the credential could be behind the bytes that were sniffed.
+			name:    "credential past the bounded head read",
+			maxSize: 1 << 10,
+			plant: func(t *testing.T, home string) string {
+				return plant(t, home, ".env", 0o644, strings.Repeat("# filler\n", 1400)+token)
+			},
+			channel: "skipped",
+			reason:  "first 1024 bytes",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			want := tc.plant(t, home)
+			found, _, _, skipped, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: tc.maxSize})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.channel == "found" {
+				if !slices.Contains(paths(found), want) {
+					t.Fatalf("found = %v, skipped = %v; %s holds a token and no channel names it", paths(found), skipped, want)
+				}
+				return
+			}
+			i := slices.IndexFunc(skipped, func(s Skip) bool { return s.Path == want })
+			if i < 0 {
+				t.Fatalf("skipped = %v, found = %v; the scan did not look into %s and said so nowhere", skipped, paths(found), want)
+			}
+			if !strings.Contains(skipped[i].Reason, tc.reason) {
+				t.Errorf("skipped reason = %q, want it to say %q - a channel that does not say what was not looked at is a count", skipped[i].Reason, tc.reason)
+			}
+		})
 	}
 }

@@ -43,7 +43,7 @@ func FuzzHuntNeverReportsAShieldedFile(f *testing.F) {
 		plantIfInside(t, home, rel, content)
 
 		opts := benchOpts(home)
-		found, _, _, err := Hunt(opts)
+		found, _, _, _, err := Hunt(opts)
 		if err != nil {
 			t.Fatalf("Hunt: %v", err)
 		}
