@@ -756,3 +756,22 @@ func TestApproveSaysTheShieldsWereNotAnchoredOnEveryPath(t *testing.T) {
 		t.Errorf("said once, or a reader learns to skim it; got:\n%s", out)
 	}
 }
+
+// The other field inside the fingerprint that names no path and no host. A moved workdir
+// re-opens the approval with every grant unchanged, so an approver seeing the prompt
+// again has to be told what moved - and the grants they are reading resolve against that
+// directory, not against the entrypoint's.
+func TestApprovalCalloutsNameTheWorkdir(t *testing.T) {
+	var buf strings.Builder
+	p := &policy.Policy{Entrypoint: "/opt/agent/bin/agent", Workdir: "/srv/checkout"}
+	writeApprovalCallouts(&buf, "m.yaml", "m.yaml", p, p, nil, false)
+	if out := buf.String(); !strings.Contains(out, "workdir") || !strings.Contains(out, strconv.Quote("/srv/checkout")) {
+		t.Errorf("approve did not call out the workdir the run starts in:\n%s", out)
+	}
+	var plain strings.Builder
+	q := &policy.Policy{Entrypoint: "/opt/agent/bin/agent"}
+	writeApprovalCallouts(&plain, "m.yaml", "m.yaml", q, q, nil, false)
+	if strings.Contains(plain.String(), "workdir") {
+		t.Errorf("a manifest that sets no workdir must produce no callout:\n%s", plain.String())
+	}
+}

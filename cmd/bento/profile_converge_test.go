@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -606,5 +609,39 @@ func TestConvergeRunsEveryRoundUnderTheBasesInvocation(t *testing.T) {
 		if !reflect.DeepEqual(d, want) {
 			t.Errorf("round %d ran a different policy than the base modulo grants:\n got %+v\nwant %+v", i+1, d, want)
 		}
+	}
+}
+
+// The whole path a workdir takes through a re-profile: the existing manifest is where
+// the key lives, so the session has to read it back out (existingForMerge), run the
+// discovery under it, and write it again (mergePolicies). Dropping it anywhere along
+// that path silently deletes a key the author wrote and moves where the next run starts.
+func TestReprofileKeepsTheManifestWorkdir(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(dir, "checkout")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := writeManifest(t, &policy.Policy{Entrypoint: script, Workdir: "checkout", Exec: policy.ExecNone}, manifest.Provenance{})
+	// writeManifest writes into its own directory, so the manifest-relative workdir
+	// anchors there rather than beside the script.
+	work = filepath.Join(filepath.Dir(path), "checkout")
+
+	existing, err := existingForMerge(path, script)
+	if err != nil {
+		t.Fatalf("existingForMerge: %v", err)
+	}
+	if existing.Workdir != work {
+		t.Fatalf("the session must read the manifest's workdir back, resolved; got %q want %q", existing.Workdir, work)
+	}
+	if got := discoveryPolicy(script, "sh", existing.Workdir, nil, nil); got.Workdir != work {
+		t.Errorf("the discovery run must start in the manifest's workdir; got %q", got.Workdir)
+	}
+	if got := mergePolicies(existing, discoveryPolicy(script, "sh", existing.Workdir, nil, nil)); got.Workdir != work {
+		t.Errorf("the rewritten manifest must keep the workdir the author wrote; got %q", got.Workdir)
 	}
 }

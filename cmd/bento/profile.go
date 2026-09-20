@@ -152,8 +152,13 @@ func newProfileCmd() *cobra.Command {
 			if out == "" {
 				out = args[0] + ".manifest.yaml"
 			}
-			if err := checkMergeable(out, script); err != nil {
+			existing, err := existingForMerge(out, script)
+			if err != nil {
 				return refuse(err)
+			}
+			workdir := ""
+			if existing != nil {
+				workdir = existing.Workdir
 			}
 
 			// Run with the real HOME (and the config-anchor vars derived from it) so a
@@ -177,7 +182,7 @@ func newProfileCmd() *cobra.Command {
 			if asJSON {
 				cfg.targetStdout = os.Stderr
 			}
-			base := discoveryPolicy(script, interpreter, interpreterArgs, args[1:])
+			base := discoveryPolicy(script, interpreter, workdir, interpreterArgs, args[1:])
 
 			var proposed *policy.Policy
 			var seed *policy.Policy
@@ -913,12 +918,12 @@ const sandboxTmp = "/tmp"
 // can weigh them as such; one who is not told reads them as the same discovered fact as
 // every other line.
 //
-// Grants inside the entrypoint's own directory are excluded. Running from a `mktemp -d`
+// Grants inside the directory the run starts in are excluded. Running from a `mktemp -d`
 // workspace or a CI checkout under /tmp is ordinary, and there the script's own tree is
 // where the user put it rather than anything the script guessed - flagging it would put
 // the note on most temp-dir runs and teach the reader to skip it. A guessed name is a
-// sibling of that tree, not inside it. The exclusion needs the entrypoint to be in a
-// directory under /tmp rather than in /tmp itself, where it would cover everything.
+// sibling of that tree, not inside it. The exclusion needs that directory to be under
+// /tmp rather than /tmp itself, where it would cover everything.
 //
 // Lexical, but on the CLEANED spelling rather than the manifest's own text. profile
 // writes these absolute and already cleaned, so on its own output the two agree; a
@@ -933,7 +938,14 @@ func tmpGrants(p *policy.Policy) []string {
 	if p == nil {
 		return nil
 	}
+	// Where the run STARTS, which is the workdir when the manifest sets one and the
+	// entrypoint's directory otherwise - the same fallback the backend's --chdir makes.
+	// The exclusion is about the directory the script is working in; under a workdir the
+	// entrypoint's own directory is somewhere else entirely.
 	home := filepath.Dir(filepath.Clean(p.Entrypoint))
+	if p.Workdir != "" {
+		home = filepath.Clean(p.Workdir)
+	}
 	if !strings.HasPrefix(home, sandboxTmp+"/") {
 		home = ""
 	}
@@ -1308,12 +1320,18 @@ func printProposalWarnings(out io.Writer, p *policy.Policy) (withheld, flagged [
 // does not already provide via its private /tmp); every other access is recorded as
 // intent, not honored. Exec and network are left open so the run exercises its real
 // code paths; egress is recorded, and forwarded only under --allow-network.
-func discoveryPolicy(script, interpreter string, interpreterArgs, args []string) *policy.Policy {
+//
+// workdir is the one the manifest being widened sets, absolute, or empty for the
+// entrypoint's own directory. It has to travel: the backend chdirs the run there, so
+// every relative path the target opens resolves under it, and a discovery run that
+// started somewhere else would propose grants the enforced run never reaches.
+func discoveryPolicy(script, interpreter, workdir string, interpreterArgs, args []string) *policy.Policy {
 	p := &policy.Policy{
 		Entrypoint:      script,
 		Interpreter:     interpreter,
 		InterpreterArgs: interpreterArgs,
 		Args:            args,
+		Workdir:         workdir,
 		Network:         []policy.NetworkRule{{Host: "*", Port: "*"}},
 		Exec:            policy.ExecAll,
 	}
@@ -1322,9 +1340,21 @@ func discoveryPolicy(script, interpreter string, interpreterArgs, args []string)
 	// credentials that live beside the script, defeating the default-deny the run
 	// relies on. A broad-dir script still runs - the entrypoint is bound regardless -
 	// with its sibling reads recorded as intent, not honored.
-	if dir := filepath.Dir(script); !isBroadDir(dir) {
-		p.Read = []string{dir}
-		p.Write = []string{dir}
+	//
+	// The workdir travels only when it can be granted, and that is not fussiness: bwrap
+	// cannot chdir into a path it did not bind, so carrying a broad workdir without its
+	// grant would fail the run outright instead of under-reporting it. A broad one is
+	// dropped back to the script's directory under the same judgement as above - binding
+	// a home directory to match the cwd would re-expose exactly what default-deny is for.
+	for _, dir := range []string{filepath.Dir(script), workdir} {
+		if dir == "" || isBroadDir(dir) || slices.Contains(p.Read, dir) {
+			continue
+		}
+		p.Read = append(p.Read, dir)
+		p.Write = append(p.Write, dir)
+	}
+	if isBroadDir(workdir) {
+		p.Workdir = ""
 	}
 	return p
 }
@@ -1332,8 +1362,8 @@ func discoveryPolicy(script, interpreter string, interpreterArgs, args []string)
 // discoveryEnvNames are the variables that anchor $HOME-relative paths. Profiling
 // passes their host values to the target so it names real paths, and records the
 // names in the proposed manifest so the enforced run resolves the same paths. Omitted
-// deliberately: PWD (the run is chdir'd to the script's directory, so a host PWD would
-// mislead) and XDG_RUNTIME_DIR (denylist.Runtime shields wherever it points, so a path
+// deliberately: PWD (the run is chdir'd to the manifest's workdir, or to the script's
+// directory when it sets none, so a host PWD would mislead) and XDG_RUNTIME_DIR (denylist.Runtime shields wherever it points, so a path
 // discovered under it is one no grant can honor). PATH is omitted for a different
 // reason: passing it and recording it are not separable, since env: holds names, so
 // recording PATH makes the enforced run resolve bare commands against whatever the
@@ -1596,7 +1626,7 @@ func foreignEntrypointError(path, existing, script string) error {
 		path, existing, script)
 }
 
-// checkMergeable refuses before the profiling session what mergeExisting would refuse
+// existingForMerge refuses before the profiling session what mergeExisting would refuse
 // after it. The write is the enforcement point - a manifest can be replaced while the
 // session runs - but finding out that the result cannot be written only once an
 // interactive granting session has converged throws the whole session away. A missing
@@ -1605,18 +1635,25 @@ func foreignEntrypointError(path, existing, script string) error {
 //
 // It does not replace the checks at the write: the file can be replaced while the
 // session runs, so what this reads is not necessarily what the merge will.
-func checkMergeable(path, script string) error {
+// It returns the resolved policy it read so the session can start where that manifest
+// says it starts: the workdir is not a permission, so nothing else here would carry it,
+// and a discovery run in a different directory resolves every relative path elsewhere.
+// Nil for the first run, where there is no manifest to take one from.
+func existingForMerge(path, script string) (*policy.Policy, error) {
 	doc, _, err := loadDocument(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return nil
+		return nil, nil
 	case err != nil:
-		return fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
+		return nil, fmt.Errorf("refusing to overwrite existing manifest %s: %w", path, err)
 	}
 	if err := manifest.Resolve(doc.Policy, path); err != nil {
-		return err
+		return nil, err
 	}
-	return foreignEntrypointError(path, doc.Policy.Entrypoint, script)
+	if err := foreignEntrypointError(path, doc.Policy.Entrypoint, script); err != nil {
+		return nil, err
+	}
+	return doc.Policy, nil
 }
 
 // only returns the entries of a that b does not carry - the grants that survive a merge
@@ -1680,7 +1717,12 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 }
 
 // mergePolicies unions the permission fields of two policies, keeping the base's
-// entrypoint and args. Used so re-profiling widens a manifest.
+// entrypoint, args and workdir. Used so re-profiling widens a manifest.
+//
+// The workdir comes from the base because it is the author's, not the run's: the
+// proposal carries it only because discoveryPolicy was handed it from this same
+// manifest, and taking it from either side would otherwise let a run that dropped it
+// delete the key the author wrote.
 //
 // The interpreter comes from the run instead, because the grants being merged in are
 // the ones that run produced: keeping an older manifest's interpreter would write a
@@ -1694,6 +1736,7 @@ func mergePolicies(base, add *policy.Policy) *policy.Policy {
 		Interpreter:     add.Interpreter,
 		InterpreterArgs: add.InterpreterArgs,
 		Args:            base.Args,
+		Workdir:         base.Workdir,
 		Env:             union(base.Env, add.Env),
 		Read:            union(base.Read, add.Read),
 		Write:           union(base.Write, add.Write),

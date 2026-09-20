@@ -256,7 +256,7 @@ func TestIsBroadDirResolves(t *testing.T) {
 	}
 	// Discovery binds the script's own directory, so a script sitting behind such a link
 	// would mount the home for the profiling run itself.
-	if p := discoveryPolicy(filepath.Join(link, "run.sh"), "sh", nil, nil); len(p.Read) != 0 || len(p.Write) != 0 {
+	if p := discoveryPolicy(filepath.Join(link, "run.sh"), "sh", "", nil, nil); len(p.Read) != 0 || len(p.Write) != 0 {
 		t.Errorf("discoveryPolicy granted %v/%v for a script directory that resolves to $HOME", p.Read, p.Write)
 	}
 	// A directory genuinely inside the home is still narrow enough to grant.
@@ -348,7 +348,7 @@ func TestPartitionBroad(t *testing.T) {
 // fail-open trial that was removed. Only the script's own directory is granted; a
 // grant of "/" would re-expose every credential the deny-list does not enumerate.
 func TestDiscoveryPolicyIsDefaultDeny(t *testing.T) {
-	p := discoveryPolicy("/home/u/tool/run.sh", "sh", nil, []string{"--flag"})
+	p := discoveryPolicy("/home/u/tool/run.sh", "sh", "", nil, []string{"--flag"})
 
 	if slices.Contains(p.Read, "/") {
 		t.Fatalf("discovery policy must not grant Read:[\"/\"] (fail-open); Read=%v", p.Read)
@@ -375,7 +375,7 @@ func TestDiscoveryPolicyDoesNotGrantBroadScriptDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	p := discoveryPolicy(filepath.Join(home, "deploy.sh"), "sh", nil, nil)
+	p := discoveryPolicy(filepath.Join(home, "deploy.sh"), "sh", "", nil, nil)
 
 	if len(p.Read) != 0 || len(p.Write) != 0 {
 		t.Errorf("a script directly in $HOME must not grant the home dir; Read=%v Write=%v", p.Read, p.Write)

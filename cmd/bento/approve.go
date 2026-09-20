@@ -269,6 +269,12 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	if len(p.InterpreterArgs) > 0 {
 		notes = append(notes, fmt.Sprintf("interpreter_args: %s - these go to %q before the entrypoint, so they change how it is read and some of them (-c, -m) make the interpreter run a program from this list instead of the entrypoint. Read them as code, not as configuration.", quotedList(p.InterpreterArgs), p.Interpreter))
 	}
+	// Raised for the same reason interpreter_args is: it is inside the fingerprint, so a
+	// re-approval prompt appears with nothing in the grants moved, and the field decides
+	// where every relative path the script opens lands rather than what it may reach.
+	if p.Workdir != "" {
+		notes = append(notes, fmt.Sprintf("workdir: %q - the run starts there rather than in the entrypoint's own directory, so every relative path the script opens resolves under it. Read the grants against that directory, not against %q.", p.Workdir, filepath.Dir(p.Entrypoint)))
+	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}

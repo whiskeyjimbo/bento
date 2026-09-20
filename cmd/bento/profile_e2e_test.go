@@ -89,7 +89,7 @@ func TestProfileRoundGrantRevealsDownstream(t *testing.T) {
 		ctx: context.Background(), script: script, interpreter: "sh",
 		env: map[string]string{"HOME": home}, targetStdin: nil,
 	}
-	base := discoveryPolicy(script, "sh", nil, nil)
+	base := discoveryPolicy(script, "sh", "", nil, nil)
 
 	// Round 1: default-deny. The config read fails, so the downstream path is never
 	// attempted and must not appear in the proposal.
@@ -273,7 +273,7 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 			ctx: context.Background(), script: script, interpreter: "sh",
 			env: map[string]string{}, targetStdin: nil,
 		}
-		got, status, err := profileRound(cfg, discoveryPolicy(script, "sh", nil, nil))
+		got, status, err := profileRound(cfg, discoveryPolicy(script, "sh", "", nil, nil))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -297,7 +297,7 @@ func TestProfileWarnsOnlyWhenTheSearchPathLostTheTool(t *testing.T) {
 			ctx: context.Background(), script: script, interpreter: "sh",
 			env: map[string]string{}, targetStdin: nil,
 		}
-		_, status, err := profileRound(cfg, discoveryPolicy(script, "sh", nil, nil))
+		_, status, err := profileRound(cfg, discoveryPolicy(script, "sh", "", nil, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -376,5 +376,41 @@ func TestProfileJSONCarriesTheManifestLocationFlaws(t *testing.T) {
 		if f.Hint == "" {
 			t.Errorf("location_flaws entry %q carries no hint (exit %v)\n%s", f.Reason, runErr, out)
 		}
+	}
+}
+
+// A manifest that sets workdir moves where the run starts, so it moves where every
+// relative path the target opens resolves. Profiling has to observe the same cwd the
+// enforced run will use, or the proposal names paths the enforced run never touches.
+// End to end under real bwrap, because the cwd is set by the backend's --chdir and a
+// unit test on discoveryPolicy alone would not show the observed path moving with it.
+func TestProfileObservesTheManifestWorkdir(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	scriptDir := filepath.Join(dir, "install")
+	work := filepath.Join(dir, "checkout")
+	for _, d := range []string{scriptDir, work} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := filepath.Join(scriptDir, "run.sh")
+	if err := os.WriteFile(script, []byte("cat ./marker\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "marker"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := profileRound(profileConfig{ctx: context.Background(), script: script, interpreter: "sh"},
+		discoveryPolicy(script, "sh", work, nil, nil))
+	if err != nil {
+		t.Fatalf("profiling a workdir manifest: %v", err)
+	}
+	want := filepath.Join(work, "marker")
+	if !hasPath(got.Read, want) {
+		t.Errorf("the discovery run must start in the manifest's workdir, so %q resolves to %q; got %v",
+			"./marker", want, got.Read)
 	}
 }
