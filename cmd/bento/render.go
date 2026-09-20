@@ -2075,7 +2075,8 @@ func writeTruncatedStores(w io.Writer) {
 	fmt.Fprintf(w, "  directory inside it could not be read. Grant nothing that reaches where it links out to.\n")
 }
 
-// truncatedStores is the stores the expansion walked only as far as the bound. A shield
+// truncatedStores is the stores the expansion did not walk whole - either they nest
+// deeper than the bound, or a directory inside one could not be read. A shield
 // set that cannot be built has nothing to say about them: doctor reports that failure
 // through the anchors already.
 func truncatedStores() []string {

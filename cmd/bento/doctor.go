@@ -156,8 +156,10 @@ type doctorOutputJSON struct {
 	NestedAnchors           []anchorNesting   `json:"nested_anchors,omitempty"`
 	// RelocatedShields maps each variable that moved a built-in shield to its new paths.
 	RelocatedShields map[string][]string `json:"relocated_shields,omitempty"`
-	// TruncatedStores names the credential stores the symlink expansion walked only as
-	// far as the walk bound, so whatever they link out to below it is unshielded.
+	// TruncatedStores names the credential stores the symlink expansion did not walk
+	// whole, so whatever they link out to below that point is unshielded. Two causes on
+	// one key: the store nests deeper than the walk bound, or a directory inside it could
+	// not be read.
 	TruncatedStores []string `json:"truncated_stores,omitempty"`
 }
 
