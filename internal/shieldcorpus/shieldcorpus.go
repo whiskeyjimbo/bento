@@ -273,7 +273,7 @@ var Cases = []Case{
 	},
 	{
 		Name:             "write to a folded spelling of an enclosing checkout's hooks dir",
-		Why:              "the checkout-derived half on a folding mount: the shield is one byte-exact bind at <checkout>/.git/hooks, so where the mount folds, <checkout>/.git/HOOKS reaches the same directory and a write there plants a pre-commit the developer's next commit runs; the rules are derived from the layout by each site rather than listed, so this is the case that holds the two deriving sites to folding the derived half alike",
+		Why:              "the checkout-derived half on a folding mount: the shield is one byte-exact bind at <checkout>/.git/hooks, so where the mount folds, <checkout>/.git/HOOKS reaches the same directory and a write there plants a pre-commit the developer's next commit runs; the rules are derived from the layout by each site rather than listed, so this is the case that holds the two deriving sites to handing Contains the derived half on the same folding seam",
 		Grant:            "checkout/.git/HOOKS",
 		Write:            true,
 		Folding:          true,
