@@ -350,7 +350,9 @@ func outboundLink(path, resolvedHome string, d fs.DirEntry) (Skip, bool) {
 }
 
 // sniffUnconditionally reports whether path is somewhere the content sniff runs whatever
-// the file is named: directly at the home root, or shallowly under a dotdirectory.
+// the file is named: directly at the home root, or shallowly under a dotdirectory - or
+// under a dotfile farm, which is a dotdirectory whose whole purpose is to hold its
+// contents UNDOTTED.
 //
 // Both are the class the cheap signals systematically miss. The home root holds the bare
 // ~/.env. The dotdirectories hold the developer token stores - a 0644
@@ -372,6 +374,19 @@ func outboundLink(path, resolvedHome string, d fs.DirEntry) (Skip, bool) {
 // is the same bargain the rest of the home is scanned under.
 const dotDirSniffDepth = 3
 
+// farmDirs are the names a dotfile farm goes by. A farm holds ~/.config/<tool>/<file> as
+// <farm>/config/<tool>/<file>, so every segment the dotdirectory test keys on is gone and
+// a 0644 token store inside one trips nothing at all - the intersection cell where the
+// deny-list does not expand the farm either. chezmoi's private_ prefix and stow's
+// dot-preserving layout rescue their own spellings by accident; a plain copy is silent.
+// ".dotfiles" needs no entry: it is already a dotdirectory.
+//
+// This reaches the UNVERSIONED farm only. A farm under git - the common one - is pruned
+// whole by the isCheckout test above before any file in it is visited, and that prune is
+// named in Hunt's second result, so it is disclosed rather than silent. The two halves
+// leave no farm both unsniffed and unreported.
+var farmDirs = []string{"dotfiles"}
+
 func sniffUnconditionally(path, home string) bool {
 	rel, err := filepath.Rel(home, filepath.Dir(path))
 	if err != nil {
@@ -384,7 +399,9 @@ func sniffUnconditionally(path, home string) bool {
 	if len(segs) > dotDirSniffDepth {
 		return false
 	}
-	return slices.ContainsFunc(segs, func(seg string) bool { return strings.HasPrefix(seg, ".") })
+	return slices.ContainsFunc(segs, func(seg string) bool {
+		return strings.HasPrefix(seg, ".") || slices.Contains(farmDirs, seg)
+	})
 }
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing, plus

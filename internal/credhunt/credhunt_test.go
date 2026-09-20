@@ -596,6 +596,18 @@ func TestHuntDisclosesEveryPlantedSecret(t *testing.T) {
 			channel: "found",
 		},
 		{
+			// The intersection cell: a farm laid out as plain config/<tool>/<file> is
+			// un-expanded by the deny-list and, before farmDirs, un-sniffed here - the
+			// one layout both halves missed at once. Unversioned, because a farm under
+			// git is pruned and named in the second result instead.
+			name:    "token store in an unversioned dotfile farm",
+			maxSize: 64 << 10,
+			plant: func(t *testing.T, home string) string {
+				return plant(t, home, "dotfiles/config/acmecloud/settings.json", 0o644, token)
+			},
+			channel: "found",
+		},
+		{
 			// The walk never follows a link, so the target is not hunted under any name.
 			// Naming the link is the disclosure; following it would walk the host.
 			name:    "home-root symlink to a secret outside the home",
