@@ -1371,6 +1371,43 @@ func TestPrintWorkdirGrantsNamesTheWholeDirectory(t *testing.T) {
 	}
 }
 
+// The failure this closes: an existing manifest with workdir = $HOME profiled clean and
+// was written back with no grant beneath it, because the profiling sandbox covers $HOME
+// with an empty tmpfs and so can always chdir there. The enforced run binds only what the
+// manifest grants, so `bento run` dies at the chdir after the sandbox is built.
+func TestPrintWorkdirGrantsNamesAWorkdirNothingReaches(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.py")
+	elsewhere := t.TempDir()
+
+	var out bytes.Buffer
+	notes := printWorkdirGrants(&out, &policy.Policy{
+		Entrypoint: script, Workdir: elsewhere, Read: []string{filepath.Join(dir, "data")},
+	}, script)
+	if got := out.String(); !strings.Contains(got, "grants nothing there") {
+		t.Errorf("output = %q, want the ungranted workdir named", got)
+	}
+	want := accessNoteJSON{Kind: "read", Path: elsewhere, Reason: "ungranted-workdir"}
+	if len(notes) != 1 || notes[0] != want {
+		t.Errorf("notes = %+v, want exactly %+v", notes, want)
+	}
+
+	// A grant either side of it clears the warning, and so does the entrypoint: the run
+	// binds that regardless, so a workdir holding it exists inside the sandbox.
+	for name, p := range map[string]*policy.Policy{
+		"granted at it":        {Entrypoint: script, Workdir: elsewhere, Read: []string{elsewhere}},
+		"granted beneath it":   {Entrypoint: script, Workdir: elsewhere, Write: []string{filepath.Join(elsewhere, "out")}},
+		"granted above it":     {Entrypoint: script, Workdir: elsewhere, Read: []string{filepath.Dir(elsewhere)}},
+		"holds the entrypoint": {Entrypoint: script, Workdir: dir},
+	} {
+		var quiet bytes.Buffer
+		printWorkdirGrants(&quiet, p, script)
+		if strings.Contains(quiet.String(), "grants nothing there") {
+			t.Errorf("%s: the run can start there, so nothing may be said; got %q", name, quiet.String())
+		}
+	}
+}
+
 // The --json envelope carries what the exit code cannot: the policy as the manifest
 // spells it, why the proposal cannot be vouched for, the accesses profiling declined,
 // the grants it wants reviewed, and which half of a widened manifest came from the file.

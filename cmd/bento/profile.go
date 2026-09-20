@@ -1037,11 +1037,11 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 	if p.Workdir != "" {
 		start = p.Workdir
 	}
+	notes := printUngrantedWorkdir(w, p)
 	dirs := []string{start}
 	if resolved, _ := pathresolve.Existing(dirs[0]); resolved != dirs[0] {
 		dirs = append(dirs, resolved)
 	}
-	var notes []accessNoteJSON
 	for _, g := range []struct {
 		kind   string
 		grants []string
@@ -1066,6 +1066,44 @@ func printWorkdirGrants(w io.Writer, p *policy.Policy, script string) []accessNo
 		fmt.Fprintf(w, "[bento] should see.\n")
 	}
 	return notes
+}
+
+// printUngrantedWorkdir is printWorkdirGrants' inverse: the manifest names a workdir that
+// nothing in it reaches. The profiling round says nothing about that by itself, because
+// its sandbox covers $HOME with an empty tmpfs (internal/linux) and so can always chdir
+// there - the round succeeds, the merged manifest is written, and the broad workdir
+// discoveryPolicy deliberately carried ungranted arrives with no grant beneath it.
+//
+// The enforced run is stricter: bwrap chdirs into the workdir after the sandbox is built,
+// and a directory nothing in the manifest binds is not in the sandbox, so `bento run` dies
+// once it has already paid for the namespace. Said here, where the proposal is being
+// written and the reviewer can still narrow the workdir or add the grant.
+//
+// A grant either side of the workdir clears it: one AT or BENEATH it creates the mount
+// point, and one COVERING it binds the tree the workdir sits in. So does the entrypoint,
+// which is bound regardless, when the workdir holds it. Said only when none of those
+// holds - profile proposes, it does not refuse, and a warning about a run that works is
+// the one this is worth less than silence.
+func printUngrantedWorkdir(w io.Writer, p *policy.Policy) []accessNoteJSON {
+	if p.Workdir == "" {
+		return nil
+	}
+	dir, _ := pathresolve.Existing(p.Workdir)
+	entrypoint, _ := pathresolve.Existing(p.Entrypoint)
+	if policy.CoversResolved(dir, entrypoint) {
+		return nil
+	}
+	for _, g := range slices.Concat(p.Read, p.Write) {
+		grant, _ := pathresolve.Existing(g)
+		if policy.CoversResolved(dir, grant) || policy.CoversResolved(grant, dir) {
+			return nil
+		}
+	}
+	fmt.Fprintf(w, "[bento] the manifest starts in %q and grants nothing there - this round could chdir into it\n", p.Workdir)
+	fmt.Fprintf(w, "[bento] because profiling covers the home directory with an empty scratch, but the enforced\n")
+	fmt.Fprintf(w, "[bento] run binds only what the manifest grants, so `bento run` will refuse to start there.\n")
+	fmt.Fprintf(w, "[bento] Narrow workdir: to a directory the manifest grants, or add a grant under it.\n")
+	return []accessNoteJSON{{Kind: "read", Path: p.Workdir, Reason: "ungranted-workdir"}}
 }
 
 // grantKinds returns one note per list the grant appears in, so a path granted both read
