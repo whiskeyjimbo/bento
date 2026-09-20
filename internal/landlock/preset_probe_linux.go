@@ -42,11 +42,11 @@ func SetScopedIPCPreset(name string) error {
 // The result is a HYBRID, and every assertion over it has to be true of the hybrid rather
 // than of the kernel it names: withIoctlDev and withResolveUnix ask for their rights
 // unconditionally and referSupported reads effectiveABI, which this does not swap, so all
-// three keep answering for the REAL kernel while the handled sets come from the preset. A rule therefore still asks for ioctl_dev and
-// resolve_unix at any preset; BestEffort intersects those away per rule below the ABI
-// that handles them, which is the same thing the older kernel would have done, but the
-// route there is not the same and a comment claiming "this is an ABI-2 kernel" would be
-// wrong.
+// three keep answering for the REAL kernel while the handled sets come from the preset.
+// A rule therefore still asks for ioctl_dev and resolve_unix at any preset; BestEffort
+// intersects those away per rule below the ABI that handles them, which is the same thing
+// the older kernel would have done, but the route there is not the same and a comment
+// claiming "this is an ABI-2 kernel" would be wrong.
 //
 // V1 is excluded rather than merely uninteresting: refer is absent from its handled set,
 // and refer is the one right go-landlock answers by collapsing the config to v0 and

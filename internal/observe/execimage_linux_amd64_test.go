@@ -151,7 +151,7 @@ func TestExecImagePT_INTERPMustBeAbsolute(t *testing.T) {
 // phentsize is what the header CLAIMS an entry is wide, which the table itself does not
 // follow: the one entry is always the real 56 bytes and the segment always sits after it,
 // so a caller passing anything else gets an image whose only defect is the stride the
-// kernel checks. Pass phdrSize for a well-formed one.
+// kernel checks. 56 is the well-formed value.
 func writeELFWithInterp(t testing.TB, path, interp string, phentsize uint16) string {
 	t.Helper()
 	const ehdrSize, phdrSize = 64, 56
