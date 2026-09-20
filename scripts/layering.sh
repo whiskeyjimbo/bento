@@ -112,7 +112,7 @@ cmd/bento'
 # builds its own rules for a home OTHER than the profiler's, to report grants reaching it.
 # That is a different question from what a run shields - the run shields only the home it
 # executes as - so it is not a fourth answer to this one, but it is the last place outside
-# internal/shield that builds rules at all. Tracked as bv2-pj8x.8.
+# internal/shield that builds rules at all, and moving it there is tracked.
 #
 # internal/linux is not reading rules as data: workspaceShields and gitDirShields really do
 # assemble part of a run's shield set, from what the grants reached, using host facts

@@ -53,7 +53,7 @@ graph TD
 | `gate` | Answers what this host will refuse about a policy without building a sandbox - the verdict `bento validate` reports, reachable as a library. |
 | `trust` | Whether a manifest's stamped fingerprint still matches its policy, and who besides the observing identity can rewrite the file it is stamped on. |
 | `internal/shield` | Assembles the built-in shield set and answers "does this grant land inside a shielded path" for the backend, the validate gate, and the profiler's clamp, so the three cannot diverge. Rule data stays in `internal/denylist`. |
-| `internal/credhunt` | The pre-run walk of the home for credential-shaped files - by name, suffix, mode and content shape - reported as leads for a human to triage. Host-made aliases (hardlinks, bind mounts) are `internal/linux/alias.go`. |
+| `internal/credhunt` | The `cmd/credhunt` walk of the home for credential-shaped files - by name, suffix, mode and content shape - reported as leads for a human to triage. Host-made aliases (hardlinks, bind mounts) are `internal/linux/alias.go`. |
 | `internal/pathresolve` | Resolves a host path the way a write through it lands, including through components that do not exist yet. Shared by `internal/linux` and `profile` so the two cannot disagree about where a grant goes. |
 
 ---

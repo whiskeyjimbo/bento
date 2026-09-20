@@ -396,9 +396,9 @@ this invariant. Recorded here rather than silently edited above, so the miss sta
 visible.
 
 The specific thing I got wrong is worth naming, because it is another instance of the
-pattern: I accepted `launcherProcAttr`'s own comment
-(internal/linux/degraded.go:413-416), which names both residuals and then says "which
-the degraded report discloses". The report discloses one of them.
+pattern: I accepted `launcherProcAttr`'s own comment (internal/linux/degraded.go, then
+cited :413-416, now :437-446), which names both residuals and then says "which the
+degraded report discloses". At the time the report disclosed one of them.
 
 **VERIFIED BY SPIKE, AND SINCE CLOSED.** A throwaway test called `filesystemLayer` in
 its degraded branch and asserted the safe behaviour - that the tier's `Consequences` text
