@@ -1091,14 +1091,17 @@ func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
 // An absent DenyAll path needs a shield only where a write grant could create it:
 // shieldNeeded takes sb.exists(r.Path) || writable, and for an absent path that is
 // writable alone. gate.workdirProblems rests on that arm - it consults only the write
-// grants when deciding whether a workdir the host does not have will be materialized -
-// and gate/ cannot import this package to hold the claim, which make layering enforces.
+// grants when deciding whether a workdir the host does not have will be materialized.
+// The claim cannot be held in gate/ because denyArgs is unexported, not because the
+// layering rules forbid the import - they say nothing about importers of this package.
 //
-// Driven at denyArgs rather than through compile for the same reason the absent
-// caller-deny test below is: checkWriteNotAboveShield refuses a write grant at or above
-// a DenyAll path before a run reaches the shield pass, so the writable half is not
-// constructible through compile at all. That makes this the only level the claim can be
-// pinned at, and it is the level the gate's reasoning is about.
+// Driven at denyArgs rather than through compile for the same reason
+// TestShieldsAppliedReportsAnAbsentDenyAllAsDiscarded is driven at shieldsApplied: a
+// write grant that would make writable true is refused before the shield pass, at or
+// under the path by checkWriteNotShielded and strictly above it by
+// checkWriteNotAboveShield, so the writable half is not constructible through compile at
+// all. That makes this the only level the claim can be pinned at, and it is the level
+// the gate's reasoning is about.
 //
 // Both directions are asserted because either alone is vacuous: without the write half,
 // a test demanding only the absence of a shield passes when shielding breaks outright.

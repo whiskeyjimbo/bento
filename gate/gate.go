@@ -167,8 +167,8 @@ func Check(resolved *policy.Policy) Runnability {
 // writable`, and for an absent path that is `writable` alone - so `workdir: ~/.aws`
 // beside `read: [~]` gets no tmpfs and does not start. Measured against the backend's
 // shield emission, not reasoned from the mount shapes, and held by internal/linux's
-// TestAbsentDenyAllIsShieldedOnlyWhereAWriteGrantReachesIt - which lives there rather
-// than here because the layering check keeps gate/ from importing the backend.
+// TestAbsentDenyAllIsShieldedOnlyWhereAWriteGrantReachesIt - which lives there because
+// the claim is only constructible at denyArgs, which is unexported.
 //
 // One path escapes that and is left alone: a PROFILING run covers HOME with an empty
 // tmpfs, so a manifest whose workdir is a home that is not on the host starts under
