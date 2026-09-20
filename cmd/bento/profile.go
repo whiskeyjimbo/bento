@@ -1107,9 +1107,6 @@ func printUngrantedWorkdir(w io.Writer, p *policy.Policy) []accessNoteJSON {
 		return nil
 	}
 	dir, _ := pathresolve.Existing(p.Workdir)
-	if enforce.InBaseImage(dir) || dir == sandboxTmp || filepath.Clean(p.Workdir) == sandboxTmp {
-		return nil
-	}
 	// The three states below are the gate's answer, not a second reading of the host:
 	// profile and gate disagreeing about the same directory is what put this function and
 	// gate.WorkdirCheck on the same predicate. What stays here is the half gate declines -
@@ -1140,6 +1137,14 @@ func printUngrantedWorkdir(w io.Writer, p *policy.Policy) []accessNoteJSON {
 		fmt.Fprintf(w, "[bento] the sandbox exists. This round could chdir into it because profiling covers the home\n")
 		fmt.Fprintf(w, "[bento] directory with an empty scratch, so `bento run` will refuse to start there.\n")
 		return []accessNoteJSON{{Kind: "read", Path: p.Workdir, Reason: "ungranted-workdir"}}
+	}
+	// After the switch, not before it: what the sandbox carries with no grant is a
+	// directory the run can start in, which is an answer about the grants below rather
+	// than about the host state above. A base image tree that is a FILE, or a path under
+	// one this host has not got, is refused by the run either way - /usr is bound as it
+	// is - so quieting first passed exactly what gate refuses.
+	if enforce.InBaseImage(dir) || dir == sandboxTmp || filepath.Clean(p.Workdir) == sandboxTmp {
+		return nil
 	}
 	entrypoint, _ := pathresolve.Existing(p.Entrypoint)
 	if policy.CoversResolved(dir, entrypoint) {

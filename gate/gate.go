@@ -201,11 +201,13 @@ const (
 // TestAbsentDenyAllIsShieldedOnlyWhereAWriteGrantReachesIt - which lives there because
 // the claim is only constructible at denyArgs, which is unexported. The grant-derived
 // half of the shield set, which the gate does not carry at all (see ShieldedReadProblems'
-// last paragraph), is all directories - .git/hooks, .husky, a resolved core.hooksPath
-// (internal/linux/autoexec.go) - and under either shield shape a directory stays a
-// directory at that path, so the chdir still works and the paragraph above is the whole
-// of what the shields change here. A derived shield that ever became file-shaped would
-// end that.
+// last paragraph), changes nothing here for a different reason: its directory-shaped
+// rules - .git/hooks, .vscode, .idea, .husky, a resolved core.hooksPath
+// (internal/denylist.Workspace, internal/linux/autoexec.go) - leave a directory a
+// directory at that path under either shield shape, and its file-shaped ones
+// (.git/config, .cargo/config.toml) name paths that are host FILES, which this already
+// answers as WorkdirNotDirectory. A derived rule that shielded a host DIRECTORY as a file
+// would end that, and nothing executable pins it: see bv2-kxv8p.
 func WorkdirCheck(resolved *policy.Policy) WorkdirState {
 	if resolved == nil || resolved.Workdir == "" {
 		return WorkdirStartable

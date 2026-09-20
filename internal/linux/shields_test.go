@@ -1098,7 +1098,7 @@ func TestReadOnlyDenyWritePathIsNotShielded(t *testing.T) {
 
 // An absent DenyAll path needs a shield only where a write grant could create it:
 // shieldNeeded takes sb.exists(r.Path) || writable, and for an absent path that is
-// writable alone. gate.workdirProblems rests on that arm - it consults only the write
+// writable alone. gate.WorkdirCheck rests on that arm - it consults only the write
 // grants when deciding whether a workdir the host does not have will be materialized.
 // The claim cannot be held in gate/ because denyArgs is unexported, not because the
 // layering rules forbid the import - they say nothing about importers of this package.

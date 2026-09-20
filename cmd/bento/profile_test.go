@@ -2022,6 +2022,13 @@ func TestPrintUngrantedWorkdirNamesTheStatesTheEnforcedRunRefuses(t *testing.T) 
 			p:    &policy.Policy{Entrypoint: script, Workdir: absent, Read: []string{absent}},
 			says: "does not exist on this host",
 		},
+		// A base image tree the sandbox carries with no grant quiets a workdir that is a
+		// DIRECTORY there and nothing else: /usr is bound as it is, so a file under it is
+		// still a file inside the sandbox and the chdir still fails with ENOTDIR.
+		"a file inside a base image tree": {
+			p:    &policy.Policy{Entrypoint: script, Workdir: "/usr/bin/env"},
+			says: "is not a directory",
+		},
 	} {
 		var out bytes.Buffer
 		notes := printUngrantedWorkdir(&out, tc.p)
