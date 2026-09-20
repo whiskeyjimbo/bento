@@ -334,3 +334,141 @@ adding a verdict the frontends do not know - and it did not happen.
   that run is a baseline rather than a verification of an edit.
 - Permanent corpus seed candidate: E8 (folding mount x `write: <checkout>` with a derived
   `.git/hooks` shield). Not landable as a `shieldcorpus.Case` today - see Grid E.
+
+## Phase 2 re-open, second half: the known-open list (2026-09-20)
+
+Handed over after the grid was written, as the skill requires, so none of it biased Phase 1.
+
+### E8 vs bv2-kxv8p - one defect or two?
+
+**Two, and the distinction is the whole point.** They are the same *symptom* - built-in
+shields get something checkout-derived shields do not - with different root causes, and they
+cannot be fixed by one change.
+
+- **bv2-kxv8p is a LAYERING gap.** `gate.ShieldCarveProblems` (gate.go:562) iterates
+  `set.Mount(set.Rules())` - built-ins only - while the backend's `checkShieldsCarvable`
+  (internal/linux/shields.go:367) iterates `shieldRules(sb, writes)`, which appends
+  `workspaceShields` at shields.go:141. The gate cannot reach the derived half because
+  deriving it needs `sb.isDir` / `sb.listDir` / `checkoutRoot`, host facts a cross-platform
+  package has no access to. The bead says so itself and records it as a boundary decision
+  `scripts/layering.sh` names an exception for. The derived rules **exist** on one side and
+  are **unreachable** on the other.
+- **E8 is a DIRECTIONALITY gap inside one function.** `Contains` is *handed* the derived
+  rules - the caller passes them - and consults them in the inside direction
+  (verdict.go:153-158) and not the above direction (the fold loop at :196-212 and the
+  `AboveShield` loop at :159-178 both iterate `s.applied` alone). Nothing is unreachable;
+  one direction is deliberately not asked. Fixing kxv8p - having the gate derive workspace
+  shields - changes nothing about E8, and vice versa.
+
+**The sweep the coordinator asked for, and its result.** Every non-test site that derives or
+takes the workspace half:
+
+| Site | Derived half consulted? | Verdict |
+|---|---|---|
+| `shield.Contains`, inside loop (verdict.go:153) | YES | HANDLED, pinned by 052f651 |
+| `shield.Contains`, `AboveShield` loop (verdict.go:159) | no | IMPOSSIBLE to matter: that loop guards on `Deny == DenyAll` and every rule `denylist.Workspace` / `WorkspaceGitfile` emits is `DenyWrite` - verified by the spike (12 rules, all DenyWrite) and pinned forward by 052f651's `TestEveryWorkspaceRuleRefusesAWriteAtItself` |
+| `shield.Contains`, fold loop (verdict.go:196) | **no** | **UNHANDLED - E8** |
+| `checkWriteNotUnderReadOnlyShield` (grants.go:161-176) | YES | HANDLED |
+| `checkWorkspaceShieldNotRedirected` (grants.go:215) | YES - it is the derived half's own check | HANDLED |
+| `checkWriteNotAboveShield` (grants.go:252) | no, passes nil | IMPOSSIBLE, same DenyAll guard as above |
+| `checkWriteNotAboveWriteShield` (grants.go:279) | no, passes nil | The byte-exact sibling of E8. Already on the books as grid C1 / rejected finding F3, disclosed through `Exposed` |
+| `shieldRules` -> `denyArgs`, `createdShields` (shields.go:116,141,504) | YES | HANDLED - the enforcement side has always had it |
+| `checkShieldsCarvable` (shields.go:367) | YES | HANDLED |
+| `gate.ShieldCarveProblems` (gate.go:562) | **no** | **bv2-kxv8p** |
+| `clampWriteShieldedGrants` (clamp.go:94) | YES | HANDLED |
+| `aboveWriteShieldGrants` (clamp.go:131) | no, passes nil | Mirrors grants.go:279 deliberately |
+| `redirectedWorkspaceProblem` (clamp.go:501) | YES | HANDLED - the clamp's mirror of grants.go:215 |
+| credential-alias scan, both sides (`internal/linux/alias.go:793`, `gate/alias_unix.go:159`) | no, both | IMPOSSIBLE: both filter `r.Deny == denylist.DenyAll` (alias.go:794), and no workspace rule is DenyAll. Symmetric, so no mirror gap |
+
+**No third or fourth undiscovered site.** That is the sweep's real result, and it is worth
+stating as a negative: the above-direction exclusion of derived shields is not scattered
+neglect, it is **one decision applied at four call sites** (verdict.go:159, verdict.go:196,
+grants.go:279, clamp.go:131), documented at `Contains`' own doc (verdict.go:80-88) - a
+self-derived shield sits strictly under its own grant, so refusing a grant that contains one
+would refuse every project write there is. E8 is the single cell where that decision was
+made before the fold existed and was not revisited when 0418cea showed the fold removes the
+full tier's hold. VERIFIED BY EXECUTION (the grep) plus READING of each site.
+
+### Does kxv8p's disposition constrain E8's?
+
+**No, and E8 should NOT follow it.** kxv8p's recorded direction is "closing it means the
+gate deriving workspace shields, which is the layering exception scripts/layering.sh names -
+so it is a boundary decision, not a patch", carried forward by the 2026-09-18 groom as
+HAS-A-BAR. That bar is about *who may compute* the derived set. E8 has no such bar: the
+derived set is already in the function's hands.
+
+What E8 does inherit from kxv8p is the shape of its own bar, which is different and worth
+stating so the filing does not copy the wrong one: E8's open question is not "may this code
+see the rules" but "**refuse or disclose**". The symmetric fix - adding the derived half to
+the fold loop - refuses every `write: <checkout>` on every folding mount, because the above
+relation is structurally always true for a self-derived shield. That is a far larger
+proposition than 0418cea's `write: ~/.pyenv`. The narrower answer is the channel the
+degraded tier already uses for the byte-exact sibling (`Exposed` / `exposedShields`),
+extended to the full tier where the mount folds. I am not deciding it here; I am recording
+that kxv8p's bar does not transfer and E8's is its own.
+
+### bv2-g7tno - absent DenyAll shield x folding
+
+**IMPOSSIBLE, and here is the mechanism rather than the assertion.** An absent shield cannot
+fold because the fold question is answered by an `Lstat` of both spellings:
+
+- `shield.hostSameFile` (`internal/shield/shield.go:90-99`) lstats `a`, returns false on
+  error, then lstats `b`, returns false on error. A path that is not there fails the first
+  call.
+- `foldsCase` (`internal/shield/verdict.go:310-321`) asks `s.fs.SameFile(path, flipped)` and
+  nothing else, so both fold loops (verdict.go:134, :211) decline for an absent rule.
+- The corpus's folding seam makes the same guarantee independently and says why:
+  `shieldcorpus.sameFolded` (`internal/shieldcorpus/shieldcorpus.go:361-368`) lstats the
+  folded path, with the comment "A name with nothing behind it still reaches nothing, which
+  is what keeps a shield that does not exist from being reported as folding."
+
+So g7tno's axis (absent DenyAll shield needs a write grant to be worth a tmpfs) and this
+grid's fold axis do not interact: the absent case exits both fold loops before the
+containment question is even reached. Note the coupling, since it is one `Lstat` in another
+package holding it: `17e3c01`'s test pins the absent-shield need, and the corpus comment
+pins the fold half, but no single test asserts the pair. VERIFIED BY READING.
+
+### bv2-ntncf - stranded artifacts x folding
+
+A SIGKILL strands materialized shield artifacts inside the checkout; E8 is about a derived
+shield being plantable under the ordinary project grant on a folding mount. They compound in
+one direction only: a stranded `.git/hooks` artifact is a real directory where the run
+expected a mount point, so on a folding mount it is reachable under a second spelling by the
+*next* run's grant as well - but that next run's exposure is E8's, not ntncf's, and neither
+makes the other's fix harder. Worth no more than this line.
+
+### New item: the corpus cannot express a workspace-derived case at all
+
+Recorded as its own finding rather than as E8's obstacle, because
+`internal/shieldcorpus` is this repo's designated "two sides share one source" precedent
+(named in CLAUDE.md alongside `limitControllers`), and a class of cases it structurally
+cannot carry is invisible by construction - nothing fails when a site diverges there.
+
+What is missing, concretely:
+
+- `shieldcorpus.Case` has fields for `Grant`, `Write`, `OptInRead`, `Folding`,
+  `WorkspaceDerived` (a *comment* field about the clamp's derivation, not a rule set),
+  `ClampKeeps` and `Verdict`. There is no field carrying checkout-derived rules.
+- None of the three `*shield_differential_test.go` harnesses passes a `workspace` argument to
+  `Contains`. They call it with `nil`.
+- So every cell in the above table whose answer depends on the derived half - E8, the
+  byte-exact sibling at grants.go:279, and kxv8p's cell - is unreachable from the corpus, and
+  each has had to be settled by a spike or by unit tests in one package, which is exactly the
+  per-site divergence the corpus exists to prevent.
+
+What it would take: a `Case.Workspace bool` that `Build` honours by creating a checkout
+layout (`.git/hooks`, `.vscode`) under the staged home, plus each harness deriving its own
+side's rules from that layout - `denylist.Workspace(checkout)` in the corpus-facing helper,
+`workspaceShields(sb, w)` in the backend harness, `workspaceShields([]string{w})` in the
+clamp harness - and passing them through. That is the same three-seam shape `Case.Folding`
+already has, so the precedent for doing it exists. It is a test-infrastructure item, not a
+behaviour fix, and it gates how cheaply the next sweep can settle this family.
+
+### Net after the known-open pass
+
+- No grid cell changed verdict. E8 stays UNHANDLED; the F2c/F3c prose cells stay WRONG.
+- E8 and bv2-kxv8p are **two defects, one symptom family**; the shared fact is that the
+  derived shield set is threaded into some checks and not others, but the *reasons* differ
+  (layering vs directionality) and so do the fixes.
+- Two items beyond the two already reported: the corpus-expressiveness gap above, and the
+  coupling note under g7tno.
