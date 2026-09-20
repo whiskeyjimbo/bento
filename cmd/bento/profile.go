@@ -1358,9 +1358,12 @@ func discoveryPolicy(script, interpreter, workdir string, interpreterArgs, args 
 	// would observe every relative path resolving somewhere the manifest never reaches.
 	// A broad workdir therefore stays on the policy ungranted rather than being dropped
 	// back to the script's directory - dropping it is the one outcome that is both silent
-	// and leaves the proposal describing a cwd the manifest does not name. It runs when
-	// something granted sits beneath it (the sandbox root carries a mount point's
-	// parents) and fails loudly when nothing does, which is the honest pair.
+	// and leaves the proposal describing a cwd the manifest does not name. Discovery can
+	// always chdir there: it covers $HOME with an empty tmpfs, so a broad workdir exists
+	// inside the box whether or not anything is bound at it, and the target sees an empty
+	// directory rather than the home it would see unsandboxed - which is the default-deny
+	// the round is for. The enforced run is stricter and is where an ungranted workdir
+	// with nothing granted beneath it is refused.
 	for _, dir := range []string{filepath.Dir(script), workdir} {
 		if dir == "" || isBroadDir(dir) || slices.Contains(p.Read, dir) {
 			continue

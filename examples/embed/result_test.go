@@ -322,9 +322,9 @@ func TestWriteFailureSurfacesShieldAndNetworkFacts(t *testing.T) {
 }
 
 // "left exposed to the target" frames absence as exposure. A "discarded" entry names a
-// path that is not on the host, so there is nothing there to expose - what the tier
-// really costs is the opposite, and sharper: a full run would have discarded writes to
-// it at teardown, and this one leaves them where the host will find them.
+// path that is not on the host, so there is nothing there to expose - the kind carries
+// provenance only, and the warning has to say that a full run materialized a stand-in
+// and removed it while this one did not, without claiming what a write there does.
 func TestExposedDiscardedIsNotFramedAsExposure(t *testing.T) {
 	res, p := populatedResult()
 	res.Exposed = []enforce.ShieldApplied{{Path: "/repo/.git/hooks", Kind: "discarded"}}
@@ -335,7 +335,7 @@ func TestExposedDiscardedIsNotFramedAsExposure(t *testing.T) {
 	if strings.Contains(got, "left exposed to the target") {
 		t.Errorf("a discarded path is not on the host, so it was not left exposed:\n%s", got)
 	}
-	for _, want := range []string{"nothing is there now", "leaves them on the host"} {
+	for _, want := range []string{"nothing is at that path", "materializes nothing"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the warning must say what a discarded entry really costs (%q);\ngot:\n%s", want, got)
 		}

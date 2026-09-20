@@ -497,13 +497,15 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.
 	//
 	// "discarded" is the kind the obvious wording gets wrong: that path is not on the
-	// host at all, so framing it as exposure describes a file nothing is at. What a full
-	// run would have done there is give the target a scratch copy that went at teardown,
-	// and what this tier does is let a write land on the host and stay - a sharper
-	// warning than the one "left exposed" gives, not a softer one.
+	// host at all, so framing it as exposure describes a file nothing is at. The kind
+	// carries provenance and nothing else (enforce.ShieldApplied) - a full run
+	// materialized a stand-in there and removed it at teardown, this one materializes
+	// nothing - so the warning stops there rather than claiming what a write does. The
+	// two shapes disagree on that: an absent directory becomes a writable scratch mount,
+	// an absent FILE an empty read-only stand-in that refuses writes.
 	for _, s := range res.Exposed {
 		if s.Kind == "discarded" {
-			fmt.Fprintf(w, "embed: WARNING: host cannot shield %q: nothing is there now, but a full run would have discarded writes to it at teardown and this one leaves them on the host\n", s.Path)
+			fmt.Fprintf(w, "embed: WARNING: host cannot shield %q: nothing is at that path, so a full run would have materialized a stand-in there and removed it at teardown; this run materializes nothing, so whatever the target leaves there is a real host file\n", s.Path)
 			continue
 		}
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)

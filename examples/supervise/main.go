@@ -457,16 +457,19 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 	//
 	// The header says what did not happen rather than what the script can read, because
 	// "read them" is wrong for one of the three kinds: a "discarded" entry names a path
-	// that is NOT on the host, so there is nothing there to read. The fact for that kind
-	// is the inverse and sharper - under bwrap a write there would have landed on a
-	// scratch mount and gone at teardown, and here it lands on the host and stays - so it
-	// is said per entry rather than folded into one loose sentence.
+	// that is NOT on the host, so there is nothing there to read. What it says instead
+	// stays on the provenance, which is all the kind carries (enforce.ShieldApplied): a
+	// full run materialized a stand-in there and took it away at teardown, and this one
+	// materializes nothing. Deliberately not "a write lands on the host and stays" - the
+	// two shapes do not agree on what a write does (an absent directory becomes a
+	// writable scratch mount, an absent FILE an empty read-only stand-in that refuses
+	// one), and this tier may not have made the path writable at all.
 	if len(res.Exposed) > 0 {
 		fmt.Fprintf(w, "\n%s\n", t.warn("this host applied none of the shields a full run would have:"))
 		for _, s := range res.Exposed {
 			note := s.Kind + " on a host that can shield"
 			if s.Kind == "discarded" {
-				note = "nothing is at this path - a full run would have given the script a scratch copy that went at teardown; here a write lands on the host and stays"
+				note = "nothing is at this path on the host - a full run would have materialized a stand-in and removed it at teardown; this run materializes nothing, so whatever the script leaves here is a real host file"
 			}
 			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+note+")"))
 		}
