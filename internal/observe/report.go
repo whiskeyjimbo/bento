@@ -28,9 +28,11 @@ const ReportEnd = "#bento-observe"
 // And the parser refuses an unrecognized record rather than skipping it, so a verb
 // renamed here - which this function cannot propagate, the reader being a parser of
 // text and not a caller - surfaces as a parse error instead of a silently missing
-// fact. A shared table of verbs would take the rename case away from that test and
-// give nothing back: the parser reads each verb's payload differently, so there is
-// no single table both sides could drive.
+// fact. A shared table of verbs is deliberately not the shape here: it would make a
+// rename agree by construction and take away the only proof binding the two sides,
+// and the parser handles each verb's payload its own way - a bare verb, a quoted
+// path, an integer that refuses rather than counts - so the table would have to carry
+// those parse functions and would be the parser rather than a source it reads.
 //
 // Paths are quoted (%q) so a newline inside one cannot forge extra records, and
 // ReportEnd is written last: a caller that did not complete a trace writes nothing
