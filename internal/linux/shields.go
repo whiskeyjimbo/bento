@@ -388,8 +388,9 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// consults Path, Deny and Dir alone (shieldNeeded, shieldMount, the exposed/
 	// underExposed pass, shieldsApplied, shieldChecks), Holds is read only off a
 	// shield.OptIn and never off a rule from here, and ExpandLinks has its one reader
-	// inside shield.Set.Mount, upstream of this loop. A reader added here for either
-	// field would have to settle the tie-break first, the way Source's is settled.
+	// in shield.Assemble, which finishes the expansion before the set this loop mounts
+	// from exists. A reader added here for either field would have to settle the
+	// tie-break first, the way Source's is settled.
 	type shieldKey struct {
 		path string
 		deny denylist.Deny
