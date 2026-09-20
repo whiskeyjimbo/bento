@@ -214,6 +214,18 @@ func TestRunNamesEveryPathItSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+	// The third channel, and the one whose reason embeds a second name off a tree the
+	// operator did not ask about: a link out of the home is reported by naming its target,
+	// which is a path somebody else wrote.
+	farm := t.TempDir()
+	outside := filepath.Join(farm, "\x1b[2K\rcreds")
+	if err := os.WriteFile(outside, []byte("token = 0123456789abcdefghijklmnop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".acmerc")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
 
 	var out strings.Builder
 	if code := run(&out, &out, []string{home}); code != 0 {
@@ -221,6 +233,9 @@ func TestRunNamesEveryPathItSkipped(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "pruned    "+strconv.Quote(hostile)) {
 		t.Errorf("the pruned checkout is not named in the report; a count alone cannot tell a prune of the scan root from a clean home:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "skipped    "+strconv.Quote(link)) {
+		t.Errorf("the link out of the home is not named in the report; a secret the scan chose not to follow reads as one that is not there:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "unreadable "+strconv.Quote(closed)) {
 		t.Errorf("the unreadable directory is not named in the report; a subtree the scan never saw reads as a clean one:\n%s", out.String())

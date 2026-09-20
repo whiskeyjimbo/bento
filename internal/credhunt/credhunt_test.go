@@ -651,3 +651,36 @@ func TestHuntDisclosesEveryPlantedSecret(t *testing.T) {
 		})
 	}
 }
+
+// The skipped channel has to be as honest about what it does NOT carry. A link's target
+// comes back from EvalSymlinks with every ancestor resolved, so testing it against the
+// home's own spelling calls a dotfile farm inside the home an outbound link on any host
+// whose home sits under a symlinked parent - /home -> var/home on an ostree system, which
+// is a default rather than an exotic layout. The farm is exactly the stow/chezmoi shape
+// the exclusion is written for, so getting this wrong says something false about the
+// commonest case rather than a rare one.
+func TestAnInHomeLinkIsNotSkippedUnderASymlinkedHomePrefix(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var/home/user"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("var/home", filepath.Join(root, "home")); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "home/user")
+	target := plant(t, home, "dotfiles/netrc", 0o600, "password = 0123456789abcdefghijklmnop\n")
+	if err := os.Symlink(target, filepath.Join(home, ".acmerc")); err != nil {
+		t.Fatal(err)
+	}
+
+	found, _, _, skipped, err := Hunt(Options{Home: home, Rules: denylist.Home(home), MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("skipped = %v; the farm is inside the home and the walk hunts its target under its own name", skipped)
+	}
+	if !slices.Contains(paths(found), target) {
+		t.Errorf("found = %v, want the farm entry %s hunted under its own name", paths(found), target)
+	}
+}
