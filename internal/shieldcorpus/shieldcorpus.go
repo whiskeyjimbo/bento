@@ -56,6 +56,9 @@ const (
 	// so it honors the grant, while the Landlock-only tier has no bind and takes the union
 	// of matching rules, leaving the shielded directory writable unless the run is refused.
 	//
+	// Byte-exact only: where the shield's own directory folds case the grant earns
+	// FoldedShield instead, and every tier refuses it.
+	//
 	// The two sites outside the backend diverge from it, both in the under-refusing
 	// direction and both because neither knows which tier will run: the gate answers
 	// Honored (gate.writeShieldProblem declines the verdict at its own arm), and the clamp
@@ -63,9 +66,15 @@ const (
 	// that is carried on the verdict rather than a per-case field, because it holds for
 	// every case of this shape.
 	AboveWriteShield
-	// FoldedShield means a grant that CONTAINS a DenyAll shield whose directory folds
-	// case, refused by grantrefusal.FoldedShield for either kind. It is the one verdict
-	// no layout on disk produces (see Case.Folding).
+	// FoldedShield means a grant that CONTAINS a shield whose directory folds case,
+	// refused by grantrefusal.FoldedShield for either kind. It is the one verdict no
+	// layout on disk produces (see Case.Folding).
+	//
+	// A DenyWrite shield answers here too, and that is where the tier split above ends:
+	// AboveWriteShield's reasoning is a ro-bind landing last, and a bind covers the one
+	// spelling it names, so a second spelling of the shim directory is inside the grant's
+	// read-write bind on the full tier as well. Both tiers refuse, so the divergences
+	// AboveWriteShield carries do not apply to these cases.
 	FoldedShield
 	// WorkspaceRedirected means a write grant whose checkout-derived shield is redirected
 	// by a symlinked directory component, refused by checkWorkspaceShieldNotRedirected.
@@ -117,12 +126,17 @@ type Case struct {
 	// proposal, since an opt-in is something a reviewer adds by hand rather than
 	// something a draft manifest arrives with.
 	OptInRead bool
-	// ClampKeeps marks a case the profiler's clamp deliberately does not mirror. Only
-	// AboveShield: the clamp keeps a grant that merely contains a shield, because the
+	// ClampKeeps marks a case the profiler's clamp does not mirror. AboveShield is the
+	// deliberate one: the clamp keeps a grant that merely contains a shield, because the
 	// enforced run re-shields the interior, and dropping every enclosing grant would gut
 	// the ordinary "read: ~" proposal. The clamp also keeps an AboveWriteShield grant, but
 	// that is read off the verdict rather than set here, because it holds for the shape
 	// rather than for the one case.
+	//
+	// The other one is a KNOWN GAP rather than a decision, and is marked here so the case
+	// can be carried at all: clampShieldedGrants asks Contains as a READ, and the folding
+	// verdict over a DenyWrite shield is raised for a write alone, so a grant the run
+	// refuses on both tiers is kept and not even reported.
 	ClampKeeps bool
 	// Folding judges the case against a host whose mount folds case. It is the one host
 	// property Build cannot stage - creating two spellings under a temp directory on ext4
@@ -282,6 +296,15 @@ var Cases = []Case{
 		Grant:   ".pyenv",
 		Write:   true,
 		Verdict: AboveWriteShield,
+	},
+	{
+		Name:       "write containing a write shield on a case-folding mount",
+		Why:        "the same grant as the case above, on a folding mount: AboveWriteShield's tier split rests on the full tier's ro-bind landing after the grant and winning, and a bind covers the spelling it names - so ~/.pyenv/SHIMS is inside the grant's read-write bind there too and the refusal is no longer the degraded tier's alone",
+		Grant:      ".pyenv",
+		Write:      true,
+		Folding:    true,
+		Verdict:    FoldedShield,
+		ClampKeeps: true,
 	},
 	{
 		Name:    "read containing a shield on a case-folding mount",

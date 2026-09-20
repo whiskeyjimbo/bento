@@ -42,12 +42,18 @@ const (
 	// shield's ro-bind is emitted after the grant's bind and wins, so the shield holds,
 	// while the Landlock-only tier has no binds and no way to carve a narrower right out
 	// of a granted tree - Landlock takes the UNION of every matching rule - so the
-	// shielded directory is plainly writable on the host there.
+	// shielded directory is plainly writable on the host there. Where the shield's own
+	// directory folds case the bind is walked around on both tiers, and the grant earns
+	// FoldedShield instead.
 	AboveWriteShield
-	// FoldedShield means a grant CONTAINS a fully-shielded path whose directory folds
-	// case, so the byte-exact bind that shields it leaves the same file reachable under
-	// another spelling. Unlike AboveShield it applies to reads as much as writes, because
-	// what leaks is the content, not the name.
+	// FoldedShield means a grant CONTAINS a shielded path whose directory folds case, so
+	// the byte-exact bind that shields it leaves the same file reachable under another
+	// spelling. Unlike AboveShield it applies to reads as much as writes, because what
+	// leaks is the content, not the name.
+	//
+	// Raised over a DenyWrite shield too, and there it is the write surface that leaks
+	// rather than the content: AboveWriteShield's tier split rests on a ro-bind that the
+	// second spelling walks around, so the grant has to be refused on both tiers instead.
 	FoldedShield
 )
 
@@ -170,6 +176,36 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
 		if s.covers(grant, a.Resolved) || s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveShield
+		}
+	}
+
+	// The tier split the verdict below exists for is what a fold takes away, so the
+	// folding shape is asked first and in its own loop - a grant above several write
+	// shields must not have a byte-exact one answer for a folding one that sorts after it
+	// (~/.pyenv holds both ~/.pyenv/bin and ~/.pyenv/shims).
+	//
+	// AboveWriteShield rests on the shield's ro-bind landing after the grant's bind and
+	// winning, and a bind is scoped to the path it names: where the shield's own directory
+	// hands the same directory out under a second spelling, that spelling stays inside the
+	// grant's read-WRITE bind and the shims are planted on the host on the tier that was
+	// meant to be the safe one. Measured rather than assumed - on a mount presenting two
+	// entries for one directory, a read-only bind at one spelling left the other writable
+	// through to the host. Answered in the folding sentence because that is the one both
+	// tiers refuse, and its remedy - a grant that stops short of the directory - is the
+	// only one that holds here too.
+	for _, a := range s.applied {
+		if a.Rule.Deny != denylist.DenyWrite {
+			continue
+		}
+		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
+		// The containment tests first and the fold second, though the fold is what the
+		// loop is for: foldsCase is a syscall per rule and containment is arithmetic, so
+		// the other order pays for the host's answer about every write shield on it.
+		if !s.covers(grant, a.Resolved) && !s.covers(grant, loc) && !s.covers(grant, a.Rule.Path) {
+			continue
+		}
+		if s.foldsCase(a.Resolved) {
+			return a.Rule, FoldedShield
 		}
 	}
 

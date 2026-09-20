@@ -270,3 +270,42 @@ func TestTheReadOptInSurvivesAFoldingMount(t *testing.T) {
 		t.Errorf("a home grant with ~/.ssh opted in: got %v, want Honored", got)
 	}
 }
+
+// The containing direction of the same DenyWrite question, and the one that decides which
+// TIER refuses. A write of ~/.pyenv above the ~/.pyenv/shims shield is AboveWriteShield on
+// a byte-exact mount, which the full tier honors because its ro-bind lands after the
+// grant's bind and wins. A bind is scoped to the path it names, so where the shield's
+// directory folds, ~/.pyenv/SHIMS reaches the same shims beside that bind and inside the
+// grant's read-write one - measured on a second-dentry mount, where the write landed on
+// the host - and the grant has to be refused on both tiers instead.
+func TestWriteAboveAReadOnlyShieldThatFoldsCaseIsRefusedOnBothTiers(t *testing.T) {
+	home := t.TempDir()
+	// Only the shims directory, which is also what holds the scan to looking past a write
+	// shield that does not fold: ~/.pyenv/bin is a rule too and sorts ahead of it, and a
+	// shield that is not there folds nothing.
+	if err := os.MkdirAll(filepath.Join(home, ".pyenv", "shims"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	grant := filepath.Join(home, ".pyenv")
+
+	for _, tc := range []struct {
+		name string
+		fold bool
+		want shield.Verdict
+	}{
+		// Byte-exact, the shipped tier split: refused on the degraded tier alone.
+		{"case-sensitive mount", false, shield.AboveWriteShield},
+		{"case-folding mount", true, shield.FoldedShield},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := shield.Assemble(folding(tc.fold), []string{home}, denylist.RuntimeDir(), nil)
+			r, got := set.Contains(grant, shield.Write, nil, nil)
+			if got != tc.want {
+				t.Fatalf("write grant of %q: got %v, want %v", grant, got, tc.want)
+			}
+			if !strings.HasPrefix(r.Path, grant+"/") {
+				t.Errorf("the refusal must name the shield it is about; got %q", r.Path)
+			}
+		})
+	}
+}
