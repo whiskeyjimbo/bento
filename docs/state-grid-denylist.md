@@ -247,8 +247,17 @@ harder to pin, not easier. The pin landed instead.
 (`internal/denylist/relocation_columns_test.go:99`) is the one spike that became a real
 test, because the cell it pins - Grid A row 5 - is held today by nothing but two tables
 happening to agree. Proved red by adding a `dirEnvs` row whose default lives in
-`historyDirs`: `dirEnvs/FAKE_NE_DIR: default .ne holds history, but the relocation emits
-HoldsCredentials`. Reverted.
+`bulkStoreDirs`, which is the group that disagrees on BOTH fields at once
+(`{HoldsPrivateData, false, ...}`, `denylist.go:562`), so one mutation exercises the whole
+assertion:
+
+```
+dirEnvs/FAKE_MAIL_DIR: default .thunderbird holds private-data, but the relocation emits HoldsCredentials
+dirEnvs/FAKE_MAIL_DIR: default .thunderbird does not expand links, but the relocation emits ExpandLinks
+```
+
+Reverted; green with the table restored. A `historyDirs` row trips the `Holds` arm alone -
+that group expands - which is why the bulk-store row is the one recorded here.
 
 ## Spikes (deleted; Phase 4)
 
