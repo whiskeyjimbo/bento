@@ -129,10 +129,17 @@ about something genuinely shielded: the allowed direction. *VERIFIED BY READING*
 **The coupling gap is the finding.** Both sides ignore `r.Dir` for the same *outcome* and
 for entirely different *stated reasons* - credhunt because `Index.Covers` matches exactly
 and the walk branches on `d.IsDir()`; the backend because handing bwrap a tmpfs-over-file
-mount aborts the run. Nothing connects them, nothing would fail to compile if
-`shieldMount` started honouring `r.Dir`, and credhunt would then be pruning 128 paths the
-run leaves readable - the forbidden direction, arriving silently. This is the cross-file
-prose shape the repo's CLAUDE.md asks for a test or a bead on, and there is neither.
+mount aborts the run. Nothing connects them, and nothing would fail to compile if
+`shieldMount` started honouring `r.Dir`.
+
+**Corrected after review (2026-09-20).** This section first said that honouring `r.Dir`
+would leave those 128 trees readable while credhunt stayed silent. It would not: bwrap
+refuses a file bound over a directory and the run aborts loudly (measured on this host -
+`bwrap --ro-bind <emptyfile> <realdir> true` exits 1, "Is a directory"), which the
+existing test's own comment already said. The silent variant needs a different edit -
+dropping a kind-mismatched rule to dodge that refusal - and the same assertion catches it,
+because the mount then comes back nil rather than `--tmpfs`. The coupling is real; the
+failure mode named here was wrong.
 
 **H-2 (B3 x A1/A2) - `credhunt.go:175-180`.** `DenyWrite` is deliberately not coverage, and
 the comment says why. *VERIFIED BY SPIKE, inverted* - planted a 0600 token file under a
@@ -395,6 +402,7 @@ if `shieldMount` ever starts honouring `r.Dir`:
 // credhunt.go:180 prunes a directory on any DenyAll match without consulting r.Dir, which
 // is only safe because shieldMount picks the mount from what is on disk. If that ever
 // keys on r.Dir instead, the hunt goes silent about 128 paths the run leaves readable.
+// ^ this last sentence is wrong; see the correction below the block.
 func TestFileRuleOnADirectoryIsHiddenBothWays(t *testing.T) {
 	dir := t.TempDir()
 	r := denylist.Rule{Path: dir, Deny: denylist.DenyAll, Dir: false} // declared a FILE
@@ -406,10 +414,20 @@ func TestFileRuleOnADirectoryIsHiddenBothWays(t *testing.T) {
 }
 ```
 
-It lives in `internal/linux` (that is where `shieldMount` and `sandbox` are) and names
-credhunt in its failure message, because the consequence lands one package over and nothing
-else says so. It passes today - it is a pin, not a red test, and unlike U-1/U-2/U-3's
-assertions it **can land as a standalone commit now**.
+**Resolved differently, 2026-09-20 - do not add this test.** The assertion already exists.
+`TestDenyAllShieldMatchesRealKind` (`internal/linux/shields_test.go`, the second block)
+has always covered this cell: a file-declared `DenyAll` rule on a real directory must
+return `--tmpfs`. Adding the function above would duplicate a live assertion one function
+away. Measured: making `shieldMount` read `dir := r.Dir` alone turns exactly two tests red,
+that one and `TestReportedShieldKindMatchesTheMount` - a direct guard, not collateral.
+
+The `t.TempDir()` in the sketch above is decorative, which is what hid the duplication: the
+body still hands `shieldMount` a constructed `sandbox`, so no real directory ever reaches
+the code under test. The existing fake-fs test exercises the identical seam.
+
+What was actually missing was the disclosure, not the assertion - the existing test named
+only its own reason (bwrap aborts on a kind-mismatched mount) and said nothing about the
+second consumer. Landed as a paragraph on that test's doc comment. No new test.
 
 ## Revised finding count
 

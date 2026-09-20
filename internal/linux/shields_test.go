@@ -410,8 +410,10 @@ func TestBroadGrantWithoutOptInStillShields(t *testing.T) {
 // is what blocked shielding ~/.cert, whose kind varies across hosts.
 //
 // The credential hunt rests on the same choice from the other side: it prunes a matching
-// directory whole without consulting Rule.Dir, which is only sound while the mount is
-// picked from what is on disk. Were this keyed on the declared kind instead, the 128
+// directory whole without consulting Rule.Dir, which is only sound while the mount hides
+// whatever is really at the path. Keying this on the declared kind would not leave those
+// trees readable - bwrap refuses a file bound over a directory and aborts the run, as
+// above - but dropping a kind-mismatched rule to dodge that refusal would: the 128
 // file-declared rules in the home table would stop hiding the directories they land on,
 // and the hunt would stay silent about trees the run leaves readable.
 func TestDenyAllShieldMatchesRealKind(t *testing.T) {
