@@ -209,13 +209,27 @@ func (r Report) StateOf(layer Layer) State {
 // Enforced while a later duplicate Degraded/Unavailable entry is the one that governs
 // admission.
 func (r Report) probedState(layer Layer) (State, bool) {
-	state, found := Enforced, false
+	status, found := r.StatusOf(layer)
+	return status.State, found
+}
+
+// StatusOf returns the whole status probedState takes its state from - the most severe
+// entry for the layer - and whether the report mentions the layer at all.
+//
+// A frontend rendering a layer needs the status as one thing. Taking the state from here
+// and the reason or consequences from a separate scan pairs the most severe entry's state
+// with a different entry's account of it, which is the defect
+// TestTheHostNoteReadsOneLayerEntryNotTwo pins: most-severe-wins and first-match are not
+// the same selection, and they only agree while no probe emits a layer twice.
+func (r Report) StatusOf(layer Layer) (LayerStatus, bool) {
+	var out LayerStatus
+	found := false
 	for _, l := range r.Layers {
-		if l.Layer == layer && (!found || l.State > state) {
-			state, found = l.State, true
+		if l.Layer == layer && (!found || l.State > out.State) {
+			out, found = l, true
 		}
 	}
-	return state, found
+	return out, found
 }
 
 // HasDegradation reports whether any layer is not fully enforced.

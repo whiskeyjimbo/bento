@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -46,6 +47,18 @@ func TestEveryLayerFrontendDisclosesOrPointsAtOneThatDoes(t *testing.T) {
 		}},
 		{"the run's degradation notice", func(w *bytes.Buffer) { writeDegradations(w, report) }},
 		{"validate's host note", func(w *bytes.Buffer) { writeHostPosture(w, hostPosture(report, bare)) }},
+		// The --json field, not the envelope around it: a consequence that reached the
+		// blob through some neighbouring key would satisfy a whole-envelope match while
+		// the field a consumer reads still carried half the disclosure. A machine has
+		// nowhere to be sent, so for this surface the pointer half of the contract is not
+		// available and only the consequences satisfy it.
+		{"validate's --json host note", func(w *bytes.Buffer) {
+			var o policyJSON
+			o.setHostUnenforcedLayers(hostPosture(report, bare))
+			if err := json.NewEncoder(w).Encode(o.HostUnenforcedLayers); err != nil {
+				panic(err)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer

@@ -433,5 +433,9 @@ It does NOT cover the `--json` surface, which is the one still failing the contr
 something to land red now.
 
 `TestTheHostNoteReadsOneLayerEntryNotTwo` was written for V3.2 and deliberately **not
-landed**: it fails today, and V3.2 is a cell to file rather than a fix to smuggle in under a
-review. Its body is in this grid's V3.2 section and it is the acceptance test for that item.
+landed**: it failed then, and V3.2 was a cell to file rather than a fix to smuggle in under a
+review. **Now landed** (`cmd/bento/validate_test.go`), green, with V3.2 closed: `hostPosture`
+selects the status once through the new `enforce.Report.StatusOf` - the same most-severe
+entry `probedState` reads - and both surfaces render that one entry. This note claimed the
+test body was written out in the V3.2 section above; it never was, so the landed body was
+written from that section'''s spike instead.

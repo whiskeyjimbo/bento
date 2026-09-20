@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1604,7 +1605,7 @@ func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
 
 	limited := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll, Limits: policy.Limits{Memory: "64M"}}
 	got := hostPosture(report, limited)
-	if len(got) != 1 || !strings.Contains(got[0], "no cgroup delegation") {
+	if len(got) != 1 || !strings.Contains(hostNote(got[0], got[0].Reason), "no cgroup delegation") {
 		t.Fatalf("hostPosture = %v, want the one required layer this host falls short on, with the probe's reason", got)
 	}
 
@@ -1612,7 +1613,7 @@ func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
 	// keeps the note honest: the same host falls short on seccomp too, and a manifest
 	// that never asked for exec: none-strict must not be told about it - a note about a
 	// shortfall that cannot refuse this run is the invented refusal in prose form.
-	if strings.Contains(strings.Join(got, "\n"), "seccomp") {
+	if strings.Contains(fmt.Sprint(got), "seccomp") {
 		t.Errorf("a manifest that does not ask for exec: none-strict must not be told about seccomp; got %v", got)
 	}
 
@@ -1621,6 +1622,25 @@ func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
 	bare := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}
 	if got := hostPosture(report, bare); got != nil {
 		t.Errorf("hostPosture = %v, want nothing for a manifest this host fully enforces", got)
+	}
+}
+
+// The state comes from the most severe entry for the layer and the account of it used to
+// come from the first, so a report holding an Enforced entry ahead of a Degraded one
+// printed the severe state beside the benign entry's empty reason. Latent while every
+// shipped probe emits each layer once, which is why it is pinned here rather than left to
+// the probe to keep true.
+func TestTheHostNoteReadsOneLayerEntryNotTwo(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	report.Add(enforce.LayerFilesystem, enforce.Degraded, "why it is broken")
+
+	got := hostPosture(report, &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll})
+	if len(got) != 1 {
+		t.Fatalf("hostPosture = %v, want the one layer this host falls short on", got)
+	}
+	if got[0].State != enforce.Degraded || got[0].Reason != "why it is broken" {
+		t.Errorf("the state and the reason must come from the same entry; got %+v", got[0])
 	}
 }
 

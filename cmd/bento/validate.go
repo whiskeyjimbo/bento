@@ -75,7 +75,7 @@ func newValidateCmd() *cobra.Command {
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := gate.Check(resolved)
-			var posture []string
+			var posture []enforce.LayerStatus
 			if report, ok := probeHost(cmd.Context()); ok {
 				posture = hostPosture(report, doc.Policy)
 			}
@@ -86,7 +86,7 @@ func newValidateCmd() *cobra.Command {
 				out.ApprovalNote = stampNote(mt.RealPath, doc)
 				out.StampAtRisk = toFlawsJSON(stampFlaws(doc, mt))
 				out.setRunnable(run)
-				out.HostUnenforcedLayers = posture
+				out.setHostUnenforcedLayers(posture)
 				out.setHostNotes(doc.Policy)
 				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
 				if relocatable {
@@ -368,39 +368,53 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // Restating that table here would be a second answer to it, and getting it wrong reads
 // as a refusal of a run that works - the direction gate's package doc rules out and this
 // shares. Naming the fact and pointing at whose decision it is, is the honest ceiling.
-func hostPosture(report enforce.Report, p *policy.Policy) []string {
-	var notes []string
+// It returns the statuses whole rather than a rendered line, because its two surfaces
+// disclose to different lengths: the human note keeps the diagnosis and points at doctor
+// for the rest, and --json carries the whole Disclosure, having nowhere to point a machine
+// consumer at. Both read the SAME entry - Report.StatusOf - so the state and the account
+// of it can never come from different duplicate entries for the layer.
+func hostPosture(report enforce.Report, p *policy.Policy) []enforce.LayerStatus {
+	var short []enforce.LayerStatus
 	for _, l := range enforce.RequiredLayers(p, enforce.Options{}) {
-		state := report.StateOf(l)
-		if state == enforce.Enforced {
+		// A layer the probe never mentioned has no status of its own, and StateOf folds
+		// that silence into Unavailable; say it here in the same shape, with no reason,
+		// since there is none to give.
+		status, found := report.StatusOf(l)
+		if !found {
+			status = enforce.LayerStatus{Layer: l, State: enforce.Unavailable}
+		}
+		if status.State == enforce.Enforced {
 			continue
 		}
-		// The reason is the probe's own account of what is broken on this host and how to
-		// fix it; a layer the probe never mentioned has none, and StateOf has already
-		// folded that silence into Unavailable.
-		note := fmt.Sprintf("%s: %s", l, state)
-		if i := slices.IndexFunc(report.Layers, func(s enforce.LayerStatus) bool { return s.Layer == l }); i >= 0 && report.Layers[i].Reason != "" {
-			note += " - " + report.Layers[i].Reason
-		}
-		notes = append(notes, note)
+		short = append(short, status)
 	}
-	return notes
+	return short
+}
+
+// hostNote renders one shortfall as the line both surfaces print, with detail the half
+// that surface discloses.
+func hostNote(s enforce.LayerStatus, detail string) string {
+	note := fmt.Sprintf("%s: %s", s.Layer, s.State)
+	if detail != "" {
+		note += " - " + detail
+	}
+	return note
 }
 
 // writeHostPosture prints what hostPosture found, under a header that says plainly it is
 // about this host rather than about the manifest - the same separation writeRunnability
 // keeps, and for the same reason: a reader who reads it as a fault in the file goes
 // looking in the wrong place.
-func writeHostPosture(w io.Writer, notes []string) {
-	if len(notes) == 0 {
+func writeHostPosture(w io.Writer, short []enforce.LayerStatus) {
+	if len(short) == 0 {
 		return
 	}
 	fmt.Fprintf(w, "host:         this host does not fully enforce everything this manifest asks for.\n")
 	fmt.Fprintf(w, "              Whether that refuses the run is `bento run`'s decision: some of these\n")
 	fmt.Fprintf(w, "              refuse under every flag, some run under none, and some turn on\n")
 	fmt.Fprintf(w, "              --strict or --allow-degraded. `bento doctor` reports this host in full.\n")
-	for _, n := range notes {
-		for _, line := range wrapText(n, textWidth-len("              ")) {
+	for _, s := range short {
+		for _, line := range wrapText(hostNote(s, s.Reason), textWidth-len("              ")) {
 			fmt.Fprintf(w, "              %s\n", line)
 		}
 	}
@@ -665,7 +679,10 @@ type policyJSON struct {
 	LoopbackNetworkRules []string `json:"loopback_network_rules,omitempty"`
 
 	// HostUnenforcedLayers names the layers this manifest requires that this host does
-	// not fully enforce, each with the probe's reason. A note and not a verdict, for the
+	// not fully enforce, each with the layer's whole Disclosure - the probe's reason and
+	// the standing consequences of the state. The human note prints the reason and sends
+	// the reader to `bento doctor` for the rest; a machine consumer has nowhere to be
+	// sent, so what it is given here is the full account. A note and not a verdict, for the
 	// reason hostPosture gives, so a gate reading it decides for itself what a shortfall
 	// is worth - `runnable` stays true and --strict does not fail on it.
 	HostUnenforcedLayers []string `json:"host_unenforced_layers,omitempty"`
@@ -675,6 +692,14 @@ type policyJSON struct {
 	// answer, as it is for Runnable: the question is only asked under --relocatable.
 	Relocatable *bool    `json:"relocatable,omitempty"`
 	PinnedPaths []string `json:"pinned_paths,omitempty"`
+}
+
+// setHostUnenforcedLayers carries the shortfalls to the machine surface, disclosing each
+// layer in full since nothing here can point a consumer at the frontend that would.
+func (o *policyJSON) setHostUnenforcedLayers(short []enforce.LayerStatus) {
+	for _, s := range short {
+		o.HostUnenforcedLayers = append(o.HostUnenforcedLayers, hostNote(s, s.Disclosure()))
+	}
 }
 
 // setHostNotes fills the host facts writePolicySummary prints as notes, from the same
