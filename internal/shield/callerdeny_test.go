@@ -42,3 +42,42 @@ func TestCallerDenyOverABuiltinIsBlamedAtTheCallersOwnPath(t *testing.T) {
 		t.Errorf("a built-in outside every caller deny must name itself; got %q", r.Path)
 	}
 }
+
+// The expansion is derived from the built-ins alone, so a caller deny on a farm-managed
+// credential directory shields that directory and nothing the farm points at - whatever it
+// sets on the rule (rules.go's Assemble says so, and credentialLinks iterates base alone).
+// Delete that restriction and the sentence becomes false while everything still compiles,
+// which is what this pins.
+//
+// The asymmetry that makes it worth pinning rather than changing: Assemble defensively
+// scrubs Source on a caller rule two lines from where ExpandLinks is left to be ignored.
+func TestACallerDenysExpandLinksIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	store := filepath.Join(home, "creds")
+	farm := filepath.Join(home, "farm")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(farm, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(farm, "k")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(store, "k")); err != nil {
+		t.Fatal(err)
+	}
+
+	deny := []denylist.Rule{{Path: store, Deny: denylist.DenyAll, Dir: true, ExpandLinks: true}}
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), deny)
+
+	if got := set.CredentialLinks(); len(got) != 0 {
+		t.Errorf("a caller deny contributed link rules: %v", got)
+	}
+	// And the consequence the sentence is really about: the farm target the caller's store
+	// points at carries no shield, so a read grant naming it is honored.
+	if _, got := set.Contains(target, shield.Read, nil, nil); got != shield.Honored {
+		t.Errorf("read of the farm target %q: got %v, want Honored", target, got)
+	}
+}

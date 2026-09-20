@@ -1,6 +1,8 @@
 package shield_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -80,4 +82,37 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 	case shieldcorpus.Honored, shieldcorpus.WorkspaceRedirected:
 	}
 	return shield.Honored
+}
+
+// Contains consults the run's workspace shields under a Deny == DenyWrite guard
+// (verdict.go's workspace loop), and every rule denylist.Workspace and WorkspaceGitfile
+// emit is DenyWrite today, so the guard costs nothing. Nothing held that in place: a
+// DenyAll rule added to Workspace - a checkout-local credential store is the obvious next
+// entry - would be assembled, mounted by the enforcer, and never once refuse a grant,
+// with nothing failing to compile and nothing failing to pass.
+//
+// Asserted through Contains rather than over the rules' Deny field, so the pin is on the
+// consequence: a rule this guard drops is a write the run would have bound.
+func TestEveryWorkspaceRuleRefusesAWriteAtItself(t *testing.T) {
+	home := t.TempDir()
+	checkout := filepath.Join(home, "proj")
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	set := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), nil)
+
+	for _, emitter := range []struct {
+		name  string
+		rules []denylist.Rule
+	}{
+		{"Workspace", denylist.Workspace(checkout)},
+		{"WorkspaceGitfile", denylist.WorkspaceGitfile(checkout)},
+	} {
+		for _, r := range emitter.rules {
+			if _, got := set.Contains(r.Path, shield.Write, nil, emitter.rules); got != shield.UnderWriteShield {
+				t.Errorf("%s rule %s (Deny %v) refuses nothing: Contains answered %v, and a rule its DenyWrite guard drops is mounted by the enforcer while every grant under it is honored",
+					emitter.name, r.Path, r.Deny, got)
+			}
+		}
+	}
 }
