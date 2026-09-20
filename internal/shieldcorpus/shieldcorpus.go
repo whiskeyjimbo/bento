@@ -135,6 +135,12 @@ type Case struct {
 	// the ordinary "read: ~" proposal. The clamp also keeps an AboveWriteShield grant, but
 	// that is read off the verdict rather than set here, because it holds for the shape
 	// rather than for the one case.
+	//
+	// The third is the folding write over a DenyWrite shield. The clamp keeps it for a
+	// narrower reason than the others: the verdict is raised for a write alone, so the
+	// clamp's read ask never sees it, and the channel that withholds it is the proposal's
+	// run-refusal pass, which reports it in the refusal's own sentence. Asserted there
+	// rather than carried as a gap.
 	ClampKeeps bool
 	// Folding judges the case against a host whose mount folds case. It is the one host
 	// property Build cannot stage - creating two spellings under a temp directory on ext4
@@ -300,8 +306,9 @@ var Cases = []Case{
 		Why:     "the same grant as the case above, on a folding mount: AboveWriteShield's tier split rests on the full tier's ro-bind landing after the grant and winning, and a bind covers the spelling it names - so a mount that presents ~/.pyenv/SHIMS as a second entry leaves it inside the grant's read-write bind there too and the refusal is no longer the degraded tier's alone",
 		Grant:   ".pyenv",
 		Write:   true,
-		Folding: true,
-		Verdict: FoldedShield,
+		Folding:    true,
+		Verdict:    FoldedShield,
+		ClampKeeps: true,
 	},
 	{
 		Name:    "read containing a shield on a case-folding mount",

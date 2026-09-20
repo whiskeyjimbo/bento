@@ -168,6 +168,12 @@ func Check(resolved *policy.Policy) Runnability {
 // beside `read: [~]` gets no tmpfs and does not start. Measured against the backend's
 // shield emission, not reasoned from the mount shapes.
 //
+// One path escapes that and is left alone: a PROFILING run covers HOME with an empty
+// tmpfs, so a manifest whose workdir is a home that is not on the host starts under
+// `bento profile` and is reported here. An absent home is rare, the report is only ever
+// read beside a run that did start, and buying the exception means telling this function
+// which mode it is predicting.
+//
 // It says nothing about a workdir that EXISTS as a directory on the host but has nothing
 // granted beneath it, which the enforced run also refuses. Answering that needs the
 // sandbox's whole bind set - the runtime scratch, the system trees, the shield mounts -

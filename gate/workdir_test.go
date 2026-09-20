@@ -94,7 +94,7 @@ func TestCheckRefusesAWorkdirThatIsAFile(t *testing.T) {
 	}
 	got := workdirProblem(t, gate.Check(workdirPolicy(t, file, []string{file})))
 	if got == "" {
-		t.Fatalf("a workdir that is a file fails bwrap's chdir and must be a problem; got %+v", gate.Check(workdirPolicy(t, file, nil)).Problems)
+		t.Fatalf("a workdir that is a file fails bwrap's chdir and must be a problem; got %+v", gate.Check(workdirPolicy(t, file, []string{file})).Problems)
 	}
 	if !strings.Contains(got, file) {
 		t.Errorf("the problem must name the workdir so the reader can go and look; got %q", got)

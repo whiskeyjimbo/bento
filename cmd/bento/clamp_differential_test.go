@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
@@ -63,6 +64,19 @@ func TestShieldCorpusClampDrops(t *testing.T) {
 			if c.Verdict == shieldcorpus.AboveWriteShield && !slices.Contains(aboveWriteShieldGrants(set, keptWrites), g) {
 				t.Errorf("%s\nthe run refuses it on the degraded tier, and the clamp keeps it without reporting it (reported: %v)\nshape: %s",
 					g, aboveWriteShieldGrants(set, keptWrites), c.Why)
+			}
+			// The folding write over a DenyWrite shield is the ClampKeeps case whose next
+			// channel is neither of the two above: the run refuses it on BOTH tiers, so
+			// aboveWriteShieldGrants' degraded-tier report is not it either. What withholds
+			// it is the proposal's run-refusal pass, asking gate as a write - and asked here
+			// against the staged set, because the pass itself reads the real host under
+			// $HOME, whose mount does not fold, which is why
+			// TestShieldCorpusProposalWithholdsRunRefusedGrants skips every folding case.
+			if c.Write && c.Folding && c.Verdict == shieldcorpus.FoldedShield && c.ClampKeeps {
+				if len(gate.ShieldedWriteProblems(set, keptWrites)) == 0 {
+					t.Errorf("%s\nthe clamp keeps it and the run refuses it on both tiers, and the run-refusal pass does not withhold it either (kept=%v)\nshape: %s",
+						g, keptWrites, c.Why)
+				}
 			}
 			kept := append(append([]string{}, keptReads...), keptWrites...)
 			gotDropped := len(dropped) > 0 || len(writeShielded) > 0
