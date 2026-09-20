@@ -81,12 +81,17 @@ func WriteAboveWriteShield(grant, shield string) error {
 }
 
 // FoldedShield refuses a grant containing a shielded path whose directory folds case, so
-// the shield's single byte-exact bind leaves the same file readable under another
+// the shield's single byte-exact bind leaves the same file reachable under another
 // spelling. It offers no opt-in and no narrower grant of the shield itself, because a
 // folding directory reaches one inode under every spelling there is: nothing bento can
 // bind contains it, and only a grant that stops short of the directory does.
+//
+// The noun is kind-neutral where WriteAboveShield's is not, because Contains raises this
+// verdict over a DenyWrite shield (~/.pyenv/shims, whose bind is read-only rather than
+// hiding) as readily as over a DenyAll store. Calling that one always-shielded would tell
+// an author their shims are hidden from the run when only writes to them are fenced.
 func FoldedShield(grant, shield string) error {
-	return fmt.Errorf("grant %q contains the always-shielded path %q on a case-insensitive filesystem, where a second spelling of that name reaches the same file past the shield; no set of shields can cover every spelling - grant a directory that does not contain %q, or move it to a case-sensitive filesystem", grant, shield, shield)
+	return fmt.Errorf("grant %q contains the shielded path %q on a case-insensitive filesystem, where a second spelling of that name reaches the same file past the shield; no set of shields can cover every spelling - grant a directory that does not contain %q, or move it to a case-sensitive filesystem", grant, shield, shield)
 }
 
 // WriteIsRoot refuses a write grant of the host root, which would defeat the sandbox
