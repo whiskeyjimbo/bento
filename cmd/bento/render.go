@@ -2097,6 +2097,18 @@ func commonDir(paths []string) string {
 // summary confirms the boundary engaged; this is its counterpart when the boundary
 // could not. The paths carry host-enumerated names (submodule directories), so they
 // are quoted.
+//
+// "discarded" gets its own line, as examples/embed and examples/supervise now word it:
+// that path is not on the host at all, so "left exposed to the script" describes a file
+// nothing is at. The kind carries provenance and nothing else
+// (enforce.ShieldApplied) - a full run materialized a stand-in there and removed it at
+// teardown, this one materializes nothing - so the line stops there rather than claiming
+// what a write does. The two shapes disagree on that: an absent directory becomes a
+// writable scratch mount, an absent FILE an empty read-only stand-in that refuses writes.
+//
+// The header still names two kinds and the list can print a third; changing it would move
+// the parity marker in output_parity_test.go, and the per-entry line is where the wrong
+// claim was actually made.
 func writeExposedWarning(w io.Writer, res enforce.Result) {
 	if len(res.Exposed) == 0 {
 		return
@@ -2104,6 +2116,12 @@ func writeExposedWarning(w io.Writer, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] WARNING: this host cannot shield credentials or persistence surfaces, so these paths")
 	fmt.Fprintln(w, "[bento] a normal run would hide or make read-only were left exposed to the script - review:")
 	for _, s := range res.Exposed {
+		if s.Kind == "discarded" {
+			fmt.Fprintf(w, "[bento]   %q: nothing is at that path, so a full run would have materialized a stand-in\n", s.Path)
+			fmt.Fprintf(w, "[bento]   there and removed it at teardown; this run materializes nothing, so whatever the\n")
+			fmt.Fprintf(w, "[bento]   script leaves there is a real host file\n")
+			continue
+		}
 		fmt.Fprintf(w, "[bento]   %q (%s)\n", s.Path, s.Kind)
 	}
 }

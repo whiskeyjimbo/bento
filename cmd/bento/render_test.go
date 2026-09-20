@@ -1137,6 +1137,24 @@ func TestWriteExposedWarning(t *testing.T) {
 		}
 	}
 
+	// "discarded" names a path that is NOT on the host, so the "(kind)" line the two kinds
+	// above take would frame a file nothing is at as something the script could read. The
+	// examples word it as provenance instead (examples/embed/main.go,
+	// examples/supervise/main.go) and this is the same sentence.
+	var discarded bytes.Buffer
+	writeExposedWarning(&discarded, enforce.Result{Exposed: []enforce.ShieldApplied{
+		{Path: "/home/u/.aws", Kind: "discarded"},
+	}})
+	got := discarded.String()
+	if strings.Contains(got, `"/home/u/.aws" (discarded)`) {
+		t.Errorf("a discarded path must not be listed as a kind of exposure; got %q", got)
+	}
+	for _, want := range []string{"nothing is at that path", "materialized a stand-in", "materializes nothing"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the discarded line must say what did not happen; %q missing from %q", want, got)
+		}
+	}
+
 	var empty bytes.Buffer
 	writeExposedWarning(&empty, enforce.Result{})
 	if empty.Len() != 0 {

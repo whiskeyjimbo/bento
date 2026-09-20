@@ -284,8 +284,10 @@ evidence anything was hidden", enforce/enforce.go:479-491), and the only rendere
 would hide or make read-only were left exposed to the script - review".
 **VERIFIED BY READING** of both the field contract and its single render site.
 
-Residual worth one line, not a finding: that warning sentence names two kinds and the
-list can print a third, `discarded`, which the sentence does not explain.
+Residual worth one line, not a finding: that HEADER sentence names two kinds and the
+list can print a third, `discarded`, which the sentence does not explain. The per-entry
+line no longer frames that kind as exposure - it words it as the provenance the kind
+actually carries, as both examples do - so what is left is the header alone.
 
 ### Verification of the remaining verdicts
 
@@ -565,7 +567,7 @@ Unchanged region of a changed file (the edit is confined to :94-99 and is net-ze
 | internal/launcher/launcher.go:339 (`rec.runs = nil`) | **:358** | |
 | internal/launcher/launcher.go:1001-1004, :1058 | **~:1019-1022, :1077** | |
 | enforce/enforce.go:479-491 (the `Exposed` contract) | **:489-501** | wording unchanged; F5's dismissal re-read in full and intact |
-| cmd/bento/render.go:1999 (`writeExposedWarning`) | **:2027**, warning text at :2032 | wording unchanged, including the two-kinds-names-three residual |
+| cmd/bento/render.go:1999 (`writeExposedWarning`) | **:2027**, warning text at :2032 | header wording unchanged, and with it the two-kinds-names-three residual; the per-entry line now branches on `discarded` |
 
 ## Cites that were wrong in the original pass, independent of the base
 
