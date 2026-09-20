@@ -45,6 +45,12 @@ func (p *Policy) Fingerprint() string {
 
 	line("entrypoint\x00%s", p.Entrypoint)
 	line("interpreter\x00%s", p.Interpreter)
+	// Emitted only when set, for the reason the argument lists are: a manifest written
+	// before this field has no workdir, and hashing an empty one would restamp every
+	// approval that exists.
+	if p.Workdir != "" {
+		line("workdir\x00%s", p.Workdir)
+	}
 	for _, a := range p.InterpreterArgs {
 		line("interpreter_arg\x00%s", a)
 	}

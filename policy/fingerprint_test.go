@@ -285,3 +285,26 @@ func TestFingerprintIgnoresAbsentInterpreterArgs(t *testing.T) {
 		t.Error("an empty interpreter_args must hash the same as an absent one")
 	}
 }
+
+// The fingerprint a manifest written before workdir existed hashed to, pinned as a
+// literal. workdir is the second field added to the policy after manifests were in
+// circulation, and the guarantee is the one interpreter_args needed: a policy that does
+// not set it must hash exactly as it did before the field, or every approval in
+// existence is stale over a permission nobody changed. Nothing derives this value; it
+// was read off the commit before the field, which is what makes it an assertion rather
+// than a restatement.
+const preWorkdirFingerprint = "1921da8c9a7362dbf14ab4e844d4804157ca15992a846dff9a18bc3b6852065c"
+
+func TestWorkdirDoesNotRestampManifestsThatOmitIt(t *testing.T) {
+	p := &Policy{Entrypoint: "./run.py", Interpreter: "python3", Read: []string{"./data"}, Exec: ExecNone}
+	if got := p.Fingerprint(); got != preWorkdirFingerprint {
+		t.Errorf("a policy with no workdir fingerprints as %s, want the pre-workdir %s; every approved manifest that omits the key is now stale", got, preWorkdirFingerprint)
+	}
+	// The other half: a workdir is a permission-relevant change, so setting one must
+	// move the fingerprint. Without this the omission above could hold because the
+	// field is hashed nowhere at all.
+	p.Workdir = "."
+	if got := p.Fingerprint(); got == preWorkdirFingerprint {
+		t.Error("setting workdir left the fingerprint unchanged, so the approval would not be asked for again")
+	}
+}

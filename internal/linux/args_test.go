@@ -4,6 +4,7 @@ package linux
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -652,5 +653,52 @@ func TestObserveHomeTmpfsSkipsRootAndBaseTmpfs(t *testing.T) {
 	proc := enforce.Process{Env: map[string]string{"HOME": "/home/u"}}
 	if got := observeHomeTmpfs(proc, sandbox{}); got != "" {
 		t.Errorf("an enforced run got a $HOME tmpfs at %q", got)
+	}
+}
+
+// The run starts where the policy says, and only falls back to the entrypoint's
+// directory when it says nothing. The fallback is asserted alongside, because it is
+// what every manifest written before the key relies on: a chdir that always honored
+// the workdir would silently start those runs at "".
+func TestWorkdirSetsTheStartingDirectory(t *testing.T) {
+	sb := testSandbox()
+	sb.entrypoint = "/opt/agent/bin/agent"
+
+	args := compileOrFail(t, &policy.Policy{Entrypoint: sb.entrypoint}, sb)
+	if !has(args, "--chdir", "/opt/agent/bin") {
+		t.Errorf("with no workdir the run must start in the entrypoint's directory; argv: %q", args)
+	}
+
+	sb.workdir = "/work/checkout"
+	args = compileOrFail(t, &policy.Policy{Entrypoint: sb.entrypoint, Workdir: "/work/checkout"}, sb)
+	if !has(args, "--chdir", "/work/checkout") {
+		t.Errorf("the run did not start in the policy's workdir; argv: %q", args)
+	}
+	// The entrypoint's directory must be gone, not merely outranked: bwrap takes the
+	// last --chdir, so a compiler that emitted both would pass the check above while
+	// leaving the earlier one in the argv a reader reviews.
+	if has(args, "--chdir", "/opt/agent/bin") {
+		t.Errorf("the entrypoint's directory is still passed as a chdir; argv: %q", args)
+	}
+}
+
+// A workdir that is not absolute would be taken by bwrap against its own working
+// directory - the caller's - so the run would start somewhere no manifest named. The
+// CLI never produces one (manifest.Resolve anchors it), which is exactly why the
+// refusal is here: a Go embedder building a policy by hand reaches newSandbox directly.
+func TestNewSandboxRefusesRelativeWorkdir(t *testing.T) {
+	dir := t.TempDir()
+	entrypoint := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entrypoint, Workdir: "checkout"}
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	cleanup()
+	if err == nil {
+		t.Fatalf("newSandbox accepted a relative workdir and built a sandbox starting at %q", sb.workdir)
+	}
+	if !strings.Contains(err.Error(), "workdir") {
+		t.Errorf("the refusal %q does not name workdir", err)
 	}
 }

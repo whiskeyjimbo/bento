@@ -302,10 +302,12 @@ To report a boundary failure privately, and for how versioning treats a shield r
 Manifests define the sandbox policy in YAML:
 
 ```yaml
-entrypoint: ./fetch.py          # Script or binary to execute (also sets the working directory)
+entrypoint: ./fetch.py          # Script or binary to execute
 interpreter: python3            # Optional interpreter (omit for compiled binaries)
 interpreter_args: [-u]          # Options for the interpreter itself, before the entrypoint
 args: [--verbose]               # Arguments for the script
+workdir: .                      # Directory the run starts in (relative to the manifest;
+                                # omitted means the entrypoint's own directory)
 
 env: [LANG, AWS_DEFAULT_REGION]  # Allowlist of environment variable names to pass through
 
@@ -327,12 +329,11 @@ provenance:
   blocked-hosts: []             # Destinations bento's own egress guard refused to reach
 ```
 
-### The entrypoint sets the working directory
+### The working directory
 
-The sandbox starts in the **entrypoint's directory**, not the manifest's
-(`--chdir filepath.Dir(entrypoint)`). The two are usually the same, because an
-entrypoint is usually a script sitting beside its manifest - which is why this is
-easy to miss until it bites.
+Without `workdir:` the sandbox starts in the **entrypoint's directory**, not the
+manifest's. The two are usually the same, because an entrypoint is usually a script
+sitting beside its manifest - which is why this is easy to miss until it bites.
 
 It bites when the entrypoint is elsewhere. A manifest that runs a tool installed
 on the host:
@@ -345,8 +346,26 @@ read:  ["."]
 still grants `.` relative to the *manifest*, so the target can reach that
 directory - but it does not start there. Relative paths it opens resolve against
 the install directory instead, and a target that goes looking for its inputs by
-relative name reports them missing while the grant is working perfectly. Name the
-inputs absolutely in that case, or keep the entrypoint beside the data it reads.
+relative name reports them missing while the grant is working perfectly. That is
+the shape `exec: none` forces: a shell wrapper cannot spawn the agent, because the
+spawn is the exec, so the entrypoint has to be the binary itself.
+
+`workdir:` names the directory instead:
+
+```yaml
+entrypoint: /usr/local/bin/some-agent
+workdir: .
+read:  ["."]
+```
+
+It is anchored like a grant, against the **manifest's** directory - which is what
+makes `workdir: .` the checkout rather than the install directory. Keep it relative
+and the manifest stays relocatable: one approval travels with it into every checkout
+it is copied into, the same reason `read:` and `write:` are written relative.
+
+The directory has to be one the run holds. `workdir:` grants nothing on its own, so
+a directory no `read:` or `write:` covers is not in the sandbox and the run fails
+saying so, rather than starting somewhere else.
 
 Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
 the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an

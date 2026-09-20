@@ -926,3 +926,42 @@ func TestMarshalRoundTripsEveryShape(t *testing.T) {
 		})
 	}
 }
+
+// workdir is anchored against the MANIFEST's directory, not the entrypoint's. That is
+// the whole of the key: the two differ exactly in the case it exists for, an entrypoint
+// named by absolute path outside the tree the run was granted, and anchoring it to the
+// entrypoint would resolve `workdir: .` back to the install directory it is there to
+// escape. Left empty it stays empty, which is what lets the backend keep today's
+// entrypoint-directory default for every manifest that does not set it.
+func TestResolveAnchorsWorkdirToTheManifest(t *testing.T) {
+	src := `
+entrypoint: /usr/local/bin/some-agent
+workdir: .
+read: ["."]
+`
+	p, err := Load(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.Workdir != "." {
+		t.Fatalf("workdir parsed as %q, want the manifest's own %q", p.Workdir, ".")
+	}
+	dir := t.TempDir()
+	if err := Resolve(p, filepath.Join(dir, "bento.yaml")); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if p.Workdir != dir {
+		t.Errorf("workdir resolved to %q, want the manifest's directory %q", p.Workdir, dir)
+	}
+
+	bare, err := Load(strings.NewReader("entrypoint: /usr/local/bin/some-agent\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Resolve(bare, filepath.Join(dir, "bento.yaml")); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if bare.Workdir != "" {
+		t.Errorf("a manifest with no workdir resolved to %q; an absent key must stay absent so the entrypoint's directory remains the default", bare.Workdir)
+	}
+}

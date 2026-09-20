@@ -874,6 +874,13 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		}
 	}
 
+	// Relative here would be taken by bwrap against its own working directory, which is
+	// the caller's - a run that starts somewhere nobody named. manifest.Resolve anchors
+	// the manifest's value; a Go embedder who built the policy by hand gets this.
+	if p.Workdir != "" && !filepath.IsAbs(p.Workdir) {
+		return sandbox{}, noop, fmt.Errorf("workdir %q is not absolute; resolve the policy first (manifest.Resolve) or write the path out in full", p.Workdir)
+	}
+
 	homes, err := denylist.HomeAnchors()
 	if err != nil {
 		return sandbox{}, noop, err
@@ -907,6 +914,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 		runtimeDir:      denylist.RuntimeDir(),
 		emptyFile:       empty,
 		entrypoint:      entrypoint,
+		workdir:         p.Workdir,
 		interpreter:     interp,
 		interpreterName: interpName,
 		exists:          hostExists,

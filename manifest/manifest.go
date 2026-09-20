@@ -52,6 +52,7 @@ type manifest struct {
 	// InterpreterArgs are the interpreter's own options; Args are the script's.
 	InterpreterArgs []string      `yaml:"interpreter_args,omitempty"`
 	Args            []string      `yaml:"args,omitempty"`
+	Workdir         string        `yaml:"workdir,omitempty"`
 	Env             []string      `yaml:"env,omitempty"`
 	Read            []string      `yaml:"read,omitempty"`
 	Write           []string      `yaml:"write,omitempty"`
@@ -368,6 +369,13 @@ func Resolve(p *policy.Policy, manifestPath string) error {
 	if p.Interpreter, err = resolveInterpreter(base, p.Interpreter); err != nil {
 		return err
 	}
+	// Anchored like a grant rather than like the entrypoint's directory: `workdir: '.'`
+	// means the manifest's own directory, which is the whole point of the field - the
+	// two differ exactly when the entrypoint lives somewhere else. An empty value stays
+	// empty and the backend falls back to the entrypoint's directory.
+	if p.Workdir, err = resolveAgainst(base, p.Workdir); err != nil {
+		return err
+	}
 	for i, r := range p.Read {
 		if p.Read[i], err = resolveAgainst(base, r); err != nil {
 			return err
@@ -549,6 +557,7 @@ func fromPolicy(p *policy.Policy) manifest {
 		Interpreter:     p.Interpreter,
 		InterpreterArgs: p.InterpreterArgs,
 		Args:            p.Args,
+		Workdir:         p.Workdir,
 		Env:             p.Env,
 		Read:            p.Read,
 		Write:           p.Write,
@@ -572,6 +581,7 @@ func (m *manifest) toPolicy() *policy.Policy {
 		Interpreter:     m.Interpreter,
 		InterpreterArgs: m.InterpreterArgs,
 		Args:            m.Args,
+		Workdir:         m.Workdir,
 		Env:             m.Env,
 		Read:            m.Read,
 		Write:           m.Write,

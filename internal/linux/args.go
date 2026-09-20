@@ -60,6 +60,10 @@ type sandbox struct {
 	// interpreter is empty when the entrypoint is its own interpreter.
 	entrypoint  string
 	interpreter string
+	// workdir is the absolute host path the run starts in, or empty for the
+	// entrypoint's own directory. It is a mount point like any other granted path: the
+	// run has to hold it, or bwrap refuses the chdir and the run fails naming it.
+	workdir string
 	// interpreterName is the interpreter's absolute path BEFORE symlink resolution - the
 	// name the policy asked for, kept so the observation record can show what a proposal
 	// named. command() builds argv from the resolved interpreter, not from this.
@@ -388,7 +392,15 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	args = append(args, "--remount-ro", "/")
 
 	args = append(args, envArgs(proc)...)
-	args = append(args, "--chdir", filepath.Dir(sb.entrypoint), "--")
+	// The entrypoint's directory is the default, not the rule: a policy that sets
+	// workdir starts there instead. The two differ exactly when the entrypoint lives
+	// outside the tree the run was granted - an agent binary named by absolute path
+	// under exec: none - where the default lands the run in the install directory.
+	chdir := sb.workdir
+	if chdir == "" {
+		chdir = filepath.Dir(sb.entrypoint)
+	}
+	args = append(args, "--chdir", chdir, "--")
 
 	socket := ""
 	if sb.proxySocket != "" {

@@ -42,6 +42,17 @@ type Policy struct {
 	InterpreterArgs []string
 	// Args are fixed arguments passed to the entrypoint.
 	Args []string
+	// Workdir is the directory the run starts in. Empty means the entrypoint's own
+	// directory, which is what every manifest written before this field got, so an
+	// absent value changes nothing and is left out of the fingerprint.
+	//
+	// It is a path like the grants are: relative to the manifest's own directory, so a
+	// manifest that sets it stays relocatable and keeps one approval across every
+	// checkout it is copied into. It exists because the two are not always the same
+	// place - under `exec: none` an agent binary must be the entrypoint by absolute
+	// path, and the run would otherwise start in the install directory rather than in
+	// the checkout it was granted.
+	Workdir string
 	// Env is an allowlist of host environment-variable NAMES passed through to
 	// the sandbox when set. Values are never declared here.
 	Env []string
@@ -154,7 +165,7 @@ func (p *Policy) Problems() []error {
 	// argument carries any of them. Rejecting here, at the
 	// single gate every construction path passes through, closes it for the CLI and Go
 	// embedders alike; the host field is already guarded separately.
-	fields := append([]string{p.Entrypoint, p.Interpreter}, p.Args...)
+	fields := append([]string{p.Entrypoint, p.Interpreter, p.Workdir}, p.Args...)
 	fields = append(fields, p.InterpreterArgs...)
 	fields = append(append(fields, p.Read...), p.Write...)
 	for _, f := range fields {
@@ -200,7 +211,7 @@ func (p *Policy) Problems() []error {
 	for _, f := range []struct {
 		name string
 		path string
-	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}} {
+	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}, {"workdir", p.Workdir}} {
 		if err := screenTilde(f.name, f.path); err != nil {
 			probs = append(probs, err)
 		}
@@ -279,7 +290,7 @@ func (p *Policy) RequireExpanded() error {
 	for _, f := range []struct {
 		name string
 		path string
-	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}} {
+	}{{"entrypoint", p.Entrypoint}, {"interpreter", p.Interpreter}, {"workdir", p.Workdir}} {
 		if err := screenExpanded(f.name, f.path); err != nil {
 			return err
 		}
