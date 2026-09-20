@@ -495,7 +495,17 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	// Exposed: what a full run would have shielded but this tier could not (the degraded,
 	// no-mount-namespace tier). The mirror image of Shields, and the same contract as
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.
+	//
+	// "discarded" is the kind the obvious wording gets wrong: that path is not on the
+	// host at all, so framing it as exposure describes a file nothing is at. What a full
+	// run would have done there is give the target a scratch copy that went at teardown,
+	// and what this tier does is let a write land on the host and stay - a sharper
+	// warning than the one "left exposed" gives, not a softer one.
 	for _, s := range res.Exposed {
+		if s.Kind == "discarded" {
+			fmt.Fprintf(w, "embed: WARNING: host cannot shield %q: nothing is there now, but a full run would have discarded writes to it at teardown and this one leaves them on the host\n", s.Path)
+			continue
+		}
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
 	}
 	// Residue: host paths this run created and left standing - a write-grant directory

@@ -320,3 +320,24 @@ func TestWriteFailureSurfacesShieldAndNetworkFacts(t *testing.T) {
 		t.Errorf("an escape byte reached the terminal unquoted: %q", got)
 	}
 }
+
+// "left exposed to the target" frames absence as exposure. A "discarded" entry names a
+// path that is not on the host, so there is nothing there to expose - what the tier
+// really costs is the opposite, and sharper: a full run would have discarded writes to
+// it at teardown, and this one leaves them where the host will find them.
+func TestExposedDiscardedIsNotFramedAsExposure(t *testing.T) {
+	res, p := populatedResult()
+	res.Exposed = []enforce.ShieldApplied{{Path: "/repo/.git/hooks", Kind: "discarded"}}
+	var out strings.Builder
+	writeResult(&out, p, true, res)
+	got := out.String()
+
+	if strings.Contains(got, "left exposed to the target") {
+		t.Errorf("a discarded path is not on the host, so it was not left exposed:\n%s", got)
+	}
+	for _, want := range []string{"nothing is there now", "leaves them on the host"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the warning must say what a discarded entry really costs (%q);\ngot:\n%s", want, got)
+		}
+	}
+}

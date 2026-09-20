@@ -454,10 +454,21 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 	// The mirror of Shields, populated only by the tier that has no mount namespace and
 	// so applies no shields at all. Same contract as the grants above: bento does not
 	// refuse, so staying quiet is what would hide the exposure.
+	//
+	// The header says what did not happen rather than what the script can read, because
+	// "read them" is wrong for one of the three kinds: a "discarded" entry names a path
+	// that is NOT on the host, so there is nothing there to read. The fact for that kind
+	// is the inverse and sharper - under bwrap a write there would have landed on a
+	// scratch mount and gone at teardown, and here it lands on the host and stays - so it
+	// is said per entry rather than folded into one loose sentence.
 	if len(res.Exposed) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("this host could not shield these paths; the script could read them:"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("this host applied none of the shields a full run would have:"))
 		for _, s := range res.Exposed {
-			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+s.Kind+" on a host that can shield)"))
+			note := s.Kind + " on a host that can shield"
+			if s.Kind == "discarded" {
+				note = "nothing is at this path - a full run would have given the script a scratch copy that went at teardown; here a write lands on the host and stays"
+			}
+			fmt.Fprintf(w, "  %s %s\n", t.bold(strconv.Quote(s.Path)), t.dim("("+note+")"))
 		}
 	}
 	// What the run left on the host: a write-grant directory made for a target that never

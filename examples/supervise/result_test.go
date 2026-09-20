@@ -231,3 +231,24 @@ func TestWriteRunFactsSurfacesShieldAndNetworkFacts(t *testing.T) {
 		}
 	}
 }
+
+// Exposed carries the Kind the full tier WOULD have applied, and "discarded" among them
+// names a path that is NOT on the host. "the script could read them" describes a file
+// nothing is at; the real fact is the inverse - a full run would have handed the target a
+// scratch copy that went at teardown, and here the write stays on the host.
+func TestExposedDiscardedIsNotDescribedAsReadable(t *testing.T) {
+	res := populatedResult()
+	res.Exposed = []enforce.ShieldApplied{{Path: "/repo/.git/hooks", Kind: "discarded"}}
+	var out strings.Builder
+	writeSummary(&out, theme{}, res)
+	got := out.String()
+
+	if strings.Contains(got, "the script could read them") {
+		t.Errorf("a discarded path is not on the host, so nothing can read it:\n%s", got)
+	}
+	for _, want := range []string{"nothing is at this path", "lands on the host and stays"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the summary must say what a discarded entry really costs (%q);\ngot:\n%s", want, got)
+		}
+	}
+}
