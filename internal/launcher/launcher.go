@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -476,67 +475,17 @@ func runObserve(cfg Config, env []string, bridge int) (int, error) {
 	res, traceErr := observe.Trace(cfg.Target, env, os.Stdin, os.Stdout, os.Stderr)
 
 	// The report is written here, after Trace returns, through the close-on-exec
-	// descriptor secured in Run. Paths are quoted (%q) so a newline in a path cannot
-	// forge extra R/W/EXEC records, and the completion marker is written last and only
-	// on a successful trace, so a failed or truncated trace lacks it and is rejected by
-	// the host. The report is NOT tamper-proof against the profiled target itself (see
-	// the Truncate note below): a profiling report is trustworthy only to the degree the
-	// profiled code is.
-	var b strings.Builder
+	// descriptor secured in Run. observe.FormatReport is the only writer of the report
+	// text, so the verbs it emits and the host parser that reads them cannot drift
+	// apart across the re-exec boundary; what stays here is which run gets a report at
+	// all. A failed trace writes nothing, so it lacks the completion marker and the
+	// host rejects it rather than reading a truncated trace as a run that touched
+	// nothing. The report is NOT tamper-proof against the profiled target itself (see
+	// the Truncate note below): a profiling report is trustworthy only to the degree
+	// the profiled code is.
+	var text string
 	if traceErr == nil {
-		absent := map[string]bool{}
-		probed := map[string]bool{}
-		for _, a := range res.Accesses {
-			verb := "R"
-			if a.Write {
-				verb = "W"
-			}
-			fmt.Fprintf(&b, "%s %q\n", verb, a.Path)
-			// The access is reported either way; this only says nothing was ever found
-			// at the path, so the host can report a probe as a probe rather than as a
-			// file the run read. It is a fact about the path, so a path recorded both
-			// read and written annotates once rather than twice.
-			if a.Absent && !absent[a.Path] {
-				absent[a.Path] = true
-				fmt.Fprintf(&b, "ABSENT %q\n", a.Path)
-			}
-			// Annotated the same way and for the same shape of reason: the access stands
-			// on its own R/W line, and this says only that nothing ever opened the path,
-			// so the host can tell what the program reached for from what the kernel
-			// resolved on its behalf.
-			if a.Probed && !probed[a.Path] {
-				probed[a.Path] = true
-				fmt.Fprintf(&b, "PROBED %q\n", a.Path)
-			}
-		}
-		// Two records rather than one, because the two facts do different work on the
-		// host: EXEC is the attempt, which the 127 warning reads, and EXECRAN is the
-		// spawn that actually happened, which is what grants exec: all. A run that
-		// spawned wrote both.
-		if res.ExecAttempted {
-			b.WriteString("EXEC\n")
-		}
-		if res.Execed {
-			b.WriteString("EXECRAN\n")
-		}
-		// The run's exit status, so the host can warn when a signaled/nonzero run may
-		// have stopped partway and the observations are incomplete. Written before the
-		// marker, like the records.
-		if res.Signaled {
-			fmt.Fprintf(&b, "SIGNAL %d\n", res.Signal)
-		} else {
-			fmt.Fprintf(&b, "EXIT %d\n", res.ExitCode)
-		}
-		// Accesses the observer could not read. Without this the host cannot tell a
-		// target that touched nothing from one whose paths the observer failed to fetch,
-		// and a manifest short of what the run needs looks complete.
-		if res.Dropped > 0 {
-			fmt.Fprintf(&b, "DROPPED %d\n", res.Dropped)
-		}
-		if res.SeccompKilled {
-			b.WriteString("SECCOMPKILLED\n")
-		}
-		b.WriteString(observe.ReportEnd + "\n")
+		text = observe.FormatReport(res)
 	}
 	report := os.NewFile(uintptr(cfg.ObserveFD), "observe-report")
 	// Truncate before writing, to discard anything a descendant wrote to this file
@@ -567,7 +516,7 @@ func runObserve(cfg Config, env []string, bridge int) (int, error) {
 	if err := report.Truncate(0); err != nil {
 		return 0, fmt.Errorf("launcher: truncating the observation report: %w", err)
 	}
-	if _, err := report.Write([]byte(b.String())); err != nil {
+	if _, err := report.Write([]byte(text)); err != nil {
 		return 0, fmt.Errorf("launcher: writing observations: %w", err)
 	}
 	if err := report.Close(); err != nil {

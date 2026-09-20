@@ -3,9 +3,9 @@
 package linux
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -13,55 +13,6 @@ import (
 	"github.com/whiskeyjimbo/bento/internal/observe"
 	"github.com/whiskeyjimbo/bento/profile"
 )
-
-// observationReport renders an observe.Result the way the launcher writes it to the
-// report descriptor (internal/launcher/launcher.go, runObserve): a %q-quoted R/W line
-// per access, the ABSENT/PROBED annotations once per path, the exec records, the run's
-// status, the observer's own drop count, and the completion marker last.
-//
-// It is a copy of that writer rather than a call to it: the launcher builds the report
-// inline in the stage that runs inside the sandbox, so there is nothing to call from the
-// host side. The copy is what this test can reach, and it leaves the writer/reader
-// agreement itself uncovered - see bv2-nk1he.
-func observationReport(res observe.Result) string {
-	var b strings.Builder
-	absent := map[string]bool{}
-	probed := map[string]bool{}
-	for _, a := range res.Accesses {
-		verb := "R"
-		if a.Write {
-			verb = "W"
-		}
-		fmt.Fprintf(&b, "%s %q\n", verb, a.Path)
-		if a.Absent && !absent[a.Path] {
-			absent[a.Path] = true
-			fmt.Fprintf(&b, "ABSENT %q\n", a.Path)
-		}
-		if a.Probed && !probed[a.Path] {
-			probed[a.Path] = true
-			fmt.Fprintf(&b, "PROBED %q\n", a.Path)
-		}
-	}
-	if res.ExecAttempted {
-		b.WriteString("EXEC\n")
-	}
-	if res.Execed {
-		b.WriteString("EXECRAN\n")
-	}
-	if res.Signaled {
-		fmt.Fprintf(&b, "SIGNAL %d\n", res.Signal)
-	} else {
-		fmt.Fprintf(&b, "EXIT %d\n", res.ExitCode)
-	}
-	if res.Dropped > 0 {
-		fmt.Fprintf(&b, "DROPPED %d\n", res.Dropped)
-	}
-	if res.SeccompKilled {
-		b.WriteString("SECCOMPKILLED\n")
-	}
-	b.WriteString(observe.ReportEnd + "\n")
-	return b.String()
-}
 
 // An access the observer could not name has to arrive at the proposal as a drop and
 // never as a grant. The observe package's own test assembles the profile.Observation by
@@ -104,7 +55,7 @@ func TestObservationReportRoundTripCountsDropsNotGrants(t *testing.T) {
 			Accesses: []observe.Access{{Path: seen}},
 			Dropped:  2,
 		}
-		obs := synth(t, observationReport(res))
+		obs := synth(t, observe.FormatReport(res))
 		if obs.Dropped != 2 {
 			t.Errorf("Dropped = %d, want the observer's 2", obs.Dropped)
 		}
@@ -120,7 +71,7 @@ func TestObservationReportRoundTripCountsDropsNotGrants(t *testing.T) {
 	t.Run("unquotable record", func(t *testing.T) {
 		res := observe.Result{Accesses: []observe.Access{{Path: seen}}}
 		raw := "R " + unnamed + "\n"
-		report := strings.Replace(observationReport(res), observe.ReportEnd, raw+observe.ReportEnd, 1)
+		report := strings.Replace(observe.FormatReport(res), observe.ReportEnd, raw+observe.ReportEnd, 1)
 
 		obs := synth(t, report)
 		if obs.Dropped != 1 {
@@ -130,4 +81,68 @@ func TestObservationReportRoundTripCountsDropsNotGrants(t *testing.T) {
 			t.Errorf("the proposal grants %q, a record the parser could not read", unnamed)
 		}
 	})
+}
+
+// The launcher's writer and this parser sit on the two sides of the re-exec boundary
+// with no call between them, so the only thing that can bind them is driving the real
+// writer's output through the real parser. Every field of observe.Result is set to a
+// value distinguishable from its zero, because an arm this test leaves at zero is one
+// the writer can stop emitting with nothing failing - which is exactly how the copy
+// this test used to carry hid the writer from the reader.
+func TestObservationReportRoundTripsEveryRecord(t *testing.T) {
+	res := observe.Result{
+		Accesses: []observe.Access{
+			{Path: "/data/lane/read"},
+			{Path: "/data/lane/written", Write: true},
+			{Path: "/data/lane/missing", Absent: true},
+			{Path: "/data/lane/statted", Probed: true},
+		},
+		ExecAttempted: true,
+		Execed:        true,
+		Signaled:      true,
+		Signal:        9,
+		Dropped:       3,
+		SeccompKilled: true,
+	}
+
+	path := filepath.Join(t.TempDir(), "report")
+	if err := os.WriteFile(path, []byte(observe.FormatReport(res)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obs, err := parseObservations(openReport(t, path))
+	if err != nil {
+		t.Fatalf("parseObservations on the launcher's own report text: %v", err)
+	}
+
+	want := profile.Observation{
+		Reads:         []string{"/data/lane/read", "/data/lane/missing", "/data/lane/statted"},
+		Writes:        []string{"/data/lane/written"},
+		Absent:        []string{"/data/lane/missing"},
+		Probed:        []string{"/data/lane/statted"},
+		ExecAttempted: true,
+		Execed:        true,
+		Signaled:      true,
+		Signal:        9,
+		// A signaled run has no exit code of its own; the parser reports the shell's.
+		ExitCode:      128 + 9,
+		Dropped:       3,
+		SeccompKilled: true,
+	}
+	if !reflect.DeepEqual(obs, want) {
+		t.Errorf("the report round-tripped to\n\t%+v\nwant\n\t%+v", obs, want)
+	}
+
+	// The signal arm suppresses EXIT, so a separate run is the only way to hold the
+	// writer to emitting an exit status at all.
+	path = filepath.Join(t.TempDir(), "report")
+	if err := os.WriteFile(path, []byte(observe.FormatReport(observe.Result{ExitCode: 7})), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obs, err = parseObservations(openReport(t, path))
+	if err != nil {
+		t.Fatalf("parseObservations on an unsignaled run's report: %v", err)
+	}
+	if obs.ExitCode != 7 || obs.Signaled {
+		t.Errorf("ExitCode = %d, Signaled = %v; want the writer's exit status 7 unsignaled", obs.ExitCode, obs.Signaled)
+	}
 }
