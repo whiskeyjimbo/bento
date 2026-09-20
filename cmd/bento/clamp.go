@@ -40,21 +40,33 @@ func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, kep
 	// Asked as a READ even for the write grants, which is what leaves the above-shield
 	// refusal to clampWriteShieldedGrants' own reasoning rather than dropping every grant
 	// that encloses a shield. The one enclosing verdict a read does earn is the
-	// case-folding one, and dropping on it is right: the run refuses that grant outright,
-	// for either kind.
-	drop := func(g string) (denylist.Holds, bool) {
+	// case-folding one over a DenyAll store, and dropping on it is right: the run refuses
+	// that grant outright, for either kind.
+	//
+	// A write is asked a second time as a WRITE, for the folding verdict alone. Contains
+	// raises it over a DenyWrite shield too (write: ~/.pyenv above ~/.pyenv/shims on a
+	// folding mount), and that arm sits after its read early return, so a read never sees
+	// it. Refused on both tiers, so it is not aboveWriteShieldGrants' tier-specific report
+	// either: left to the read alone the clamp proposed a manifest the run declines.
+	// Narrowed to FoldedShield because the write's other verdicts are the ones the two
+	// clamps below are for.
+	drop := func(g string, kind shield.Kind) (denylist.Holds, bool) {
 		lands, _ := pathresolve.Existing(g)
 		for _, spelling := range []string{g, lands} {
-			r, v := set.Contains(spelling, shield.Read, nil, nil)
-			if v != shield.Honored {
+			if r, v := set.Contains(spelling, shield.Read, nil, nil); v != shield.Honored {
 				return r.Holds, true
+			}
+			if kind == shield.Write {
+				if r, v := set.Contains(spelling, shield.Write, nil, nil); v == shield.FoldedShield {
+					return r.Holds, true
+				}
 			}
 		}
 		return denylist.HoldsUnknown, false
 	}
-	filter := func(grants []string) (kept []string) {
+	filter := func(grants []string, kind shield.Kind) (kept []string) {
 		for _, g := range grants {
-			if holds, ok := drop(g); ok {
+			if holds, ok := drop(g, kind); ok {
 				dropped = append(dropped, shieldGrant{Path: g, Holds: holds})
 			} else {
 				kept = append(kept, g)
@@ -62,8 +74,8 @@ func clampShieldedGrants(set shield.Set, reads, writes []string) (keptReads, kep
 		}
 		return kept
 	}
-	keptReads = filter(reads)
-	keptWrites, writeShielded = clampWriteShieldedGrants(set, filter(writes))
+	keptReads = filter(reads, shield.Read)
+	keptWrites, writeShielded = clampWriteShieldedGrants(set, filter(writes, shield.Write))
 	return keptReads, keptWrites, dropped, writeShielded
 }
 
