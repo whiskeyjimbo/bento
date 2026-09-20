@@ -387,6 +387,14 @@ func pinnedPaths(p *policy.Policy) []string {
 	if strings.HasPrefix(p.Interpreter, "~") {
 		pinned = append(pinned, fmt.Sprintf("interpreter %q", p.Interpreter))
 	}
+	// The grant rule, not the interpreter's: policy.go documents the workdir as anchored
+	// like a grant, so an absolute one pins the manifest to one checkout exactly as an
+	// absolute read grant does - the tilde half of the test is unreachable here, since
+	// policy.Validate refuses that spelling outright. An unset workdir anchors by
+	// definition, and NonAnchoring answers false for it.
+	if manifest.NonAnchoring(p.Workdir) {
+		pinned = append(pinned, fmt.Sprintf("workdir %q", p.Workdir))
+	}
 	for _, g := range p.Read {
 		if manifest.NonAnchoring(g) {
 			pinned = append(pinned, fmt.Sprintf("read grant %q", g))
@@ -449,6 +457,10 @@ type policyJSON struct {
 	// InterpreterArgs are the interpreter's own options; Args are the script's.
 	InterpreterArgs []string `json:"interpreter_args,omitempty"`
 	Args            []string `json:"args,omitempty"`
+	// Workdir is the directory the run starts in, absent when the manifest sets none and
+	// the entrypoint's own directory is used. Inside the approval fingerprint, so a gate
+	// diffing manifests across runs has to be able to see it move.
+	Workdir string `json:"workdir,omitempty"`
 	Env             []string `json:"env,omitempty"`
 	Read            []string `json:"read,omitempty"`
 	Write           []string `json:"write,omitempty"`
@@ -687,6 +699,7 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 		Interpreter:     p.Interpreter,
 		InterpreterArgs: p.InterpreterArgs,
 		Args:            p.Args,
+		Workdir:         p.Workdir,
 		Env:             p.Env,
 		Read:            p.Read,
 		Write:           p.Write,
@@ -769,6 +782,16 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		}
 	} else {
 		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is a compiled binary)\n")
+	}
+	// Only when set: an absent workdir means the entrypoint's own directory, which every
+	// manifest written before the key got, and a line saying so on every manifest would
+	// read as a field the author chose. Its resolved target is not printed beside it the
+	// way a grant's is: a relative one anchors to the manifest directory named two lines
+	// above, an absolute one already names its own target, and a ~ never reaches here
+	// (policy.Validate refuses it). But it IS inside the approval fingerprint, so a
+	// reviewer has to be able to see it, and --relocatable flags the absolute spelling.
+	if p.Workdir != "" {
+		fmt.Fprintf(w, "workdir:      %s\n", p.Workdir)
 	}
 	fmt.Fprintf(w, "read:         %s\n", orNone(p.Read))
 	writeResolvedGrants(w, p.Read, resolvedRead)

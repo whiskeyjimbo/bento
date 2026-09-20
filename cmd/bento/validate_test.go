@@ -968,6 +968,14 @@ func TestValidateRelocatable(t *testing.T) {
 		// An interpreter spelled relative anchors to the manifest like any other path,
 		// so the field is not exempt as a whole.
 		"relative interpreter": {policy: &policy.Policy{Entrypoint: "./x", Interpreter: "venv/bin/python"}},
+		// The workdir is anchored like a grant, so an absolute one ends relocatability
+		// the same way an absolute read grant does - and it decides where every relative
+		// path the script opens lands, so a fleet reusing the manifest gets one checkout.
+		"absolute workdir": {
+			policy:     &policy.Policy{Entrypoint: "./x", Workdir: "/srv/checkout"},
+			wantPinned: []string{`workdir "/srv/checkout"`},
+		},
+		"relative workdir": {policy: &policy.Policy{Entrypoint: "bin/x", Workdir: "."}},
 	}
 
 	for name, tc := range cases {
@@ -1551,5 +1559,34 @@ func TestValidateJSONCarriesTheHostNotes(t *testing.T) {
 	notListed.setHostNotes(&policy.Policy{Entrypoint: "./x"})
 	if !notListed.HomeNotPassedThrough || notListed.HomeAllowlistedUnset {
 		t.Errorf("a manifest not naming HOME = %v %v, want not passed through only", notListed.HomeNotPassedThrough, notListed.HomeAllowlistedUnset)
+	}
+}
+
+// The workdir is inside the approval fingerprint but names no path a grant covers, so a
+// reviewer who cannot see it reads the grants against the wrong directory and a gate
+// diffing --json across runs sees the fingerprint move with every field it reads
+// unchanged. Both surfaces, because the human one is what approve prints too.
+func TestValidateShowsTheWorkdir(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "bin/agent", Workdir: "checkout", Exec: policy.ExecNone}
+	path := writeManifest(t, p, manifest.Provenance{})
+
+	human, _ := runCapturingStdout(t, newValidateCmd(), path)
+	if !strings.Contains(human, "workdir:      checkout") {
+		t.Errorf("the summary must show the directory the run starts in; got:\n%s", human)
+	}
+	out, _ := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	var machine struct {
+		Workdir string `json:"workdir"`
+	}
+	if err := json.Unmarshal([]byte(out), &machine); err != nil {
+		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
+	}
+	if machine.Workdir != "checkout" {
+		t.Errorf("--json must carry the workdir; got %q from:\n%s", machine.Workdir, out)
+	}
+
+	plain, _ := runCapturingStdout(t, newValidateCmd(), writeManifest(t, &policy.Policy{Entrypoint: "bin/agent", Exec: policy.ExecNone}, manifest.Provenance{}))
+	if strings.Contains(plain, "workdir:") {
+		t.Errorf("a manifest that sets no workdir must print no workdir line; got:\n%s", plain)
 	}
 }

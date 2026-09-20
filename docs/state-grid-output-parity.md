@@ -33,7 +33,7 @@ Scope notes, decided from the code:
 
 | # | Human fact (writer) | JSON field | Verdict | Stamp |
 |---|---|---|---|---|
-| V1 | manifest ok / entrypoint / interpreter / read / write / env / network / exec / limits lines (writePolicySummary) | entrypoint, interpreter, interpreter_args, read, write, env, network, exec, limits | HANDLED, toPolicyJSON | READING |
+| V1 | manifest ok / entrypoint / interpreter / workdir / read / write / env / network / exec / limits lines (writePolicySummary) | entrypoint, interpreter, interpreter_args, workdir, read, write, env, network, exec, limits | HANDLED, toPolicyJSON | READING |
 | V2 | resolved grant "on this host" (writeResolvedGrants) | resolved_read / resolved_write | HANDLED, toGrantTargetsJSON shared by both | READING |
 | V3 | resolved interpreter "on this host" (writeResolvedInterpreter) | interpreter_on_host | HANDLED, fixed in 66c8850 (was UNHANDLED: exec.LookPath on this host's PATH; the stamp does not attest PATH) | READING |
 | V4 | broad grant notes (writeBroadGrantNotes) | broad_read_grants / broad_write_grants | HANDLED, setCallouts | READING (TestValidateJSONCarriesTheApprovalCallouts exists) |
@@ -119,7 +119,7 @@ the key run uses.
 | A1 | self-write (manifest, entrypoint) | writes_covering_* | HANDLED | READING |
 | A2 | tmp grants | tmp_grants | HANDLED | READING |
 | A3 | broad grants | broad_*_grants | HANDLED | READING |
-| A4 | interpreter_args, exec: all | raw fields | HANDLED (derivable) | READING |
+| A4 | interpreter_args, workdir, exec: all | raw fields | HANDLED (derivable) | READING |
 | A5 | shielded grant, blocked host | shielded_grants, network_blocked | HANDLED | READING |
 
 Total: 68 cells, every one with a verdict.

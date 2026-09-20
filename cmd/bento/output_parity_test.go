@@ -318,10 +318,13 @@ func parityValidate(t *testing.T) (string, map[string]any) {
 	p := &policy.Policy{
 		Entrypoint:  "./x",
 		Interpreter: "fakepython",
-		Read:        []string{"~/.ssh", "~", "/data/bento-parity-absent"},
-		Write:       []string{"out/report.json", "/"},
-		Env:         []string{"BENTO_PARITY_UNSET"},
-		Network:     []policy.NetworkRule{{Host: "127.0.0.1", Port: "8080"}, {Host: ".internal", Port: "80"}},
+		// Set so the summary's workdir line and the --json field are on the fixture
+		// grid V1 claims covers them; an unset workdir prints nothing.
+		Workdir: "work",
+		Read:    []string{"~/.ssh", "~", "/data/bento-parity-absent"},
+		Write:   []string{"out/report.json", "/"},
+		Env:     []string{"BENTO_PARITY_UNSET"},
+		Network: []policy.NetworkRule{{Host: "127.0.0.1", Port: "8080"}, {Host: ".internal", Port: "80"}},
 	}
 	path := writeManifest(t, p, manifest.Provenance{BlockedHosts: []string{"metadata.internal:80", "not-a-host-port"}})
 

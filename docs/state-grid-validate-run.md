@@ -72,6 +72,7 @@ R = run.
 | network rule covers a blocked host | beside the rule (unsplittable key reported as unreadable) | `network_blocked`, `network_blocked_unreadable` | callout (unsplittable key counted as covered) | HANDLED, wording differs by design (profile.go:785-792) | READING |
 | grants under /tmp | callout | **absent** | callout | F4 | READING |
 | interpreter_args | callout + summary line | raw `interpreter_args` | callout | HANDLED | READING |
+| workdir | callout + summary line (only when set) | raw `workdir` | callout | HANDLED | READING |
 | exec: all | callout | raw `exec` | callout | HANDLED | READING |
 | grants unresolvable ($HOME) | callout + "unknown" | resolved_read and runnable absent | callout | HANDLED | READING |
 | write covers the manifest / entrypoint | callout | **absent** | callout | **F4** | READING |
