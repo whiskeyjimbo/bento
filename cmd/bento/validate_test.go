@@ -1590,3 +1590,68 @@ func TestValidateShowsTheWorkdir(t *testing.T) {
 		t.Errorf("a manifest that sets no workdir must print no workdir line; got:\n%s", plain)
 	}
 }
+
+// The gap this closes: validate answered what the filesystem would refuse and said
+// nothing about the host's enforcement posture, so `limits:` on a host delegating no
+// controllers, or `exec: none-strict` with no seccomp, validated clean and refused at
+// `bento run`.
+func TestHostPostureNamesOnlyTheLayersTheManifestNeeds(t *testing.T) {
+	var report enforce.Report
+	report.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	report.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "no cgroup delegation")
+	report.Add(enforce.LayerExecStrict, enforce.Unavailable, "no seccomp")
+
+	limited := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll, Limits: policy.Limits{Memory: "64m"}}
+	got := hostPosture(report, limited)
+	if len(got) != 1 || !strings.Contains(got[0], "no cgroup delegation") {
+		t.Fatalf("hostPosture = %v, want the one required layer this host falls short on, with the probe's reason", got)
+	}
+
+	// The layer set is enforce's (enforce.RequiredLayers), and this is the half that
+	// keeps the note honest: the same host falls short on seccomp too, and a manifest
+	// that never asked for exec: none-strict must not be told about it - a note about a
+	// shortfall that cannot refuse this run is the invented refusal in prose form.
+	if strings.Contains(strings.Join(got, "\n"), "seccomp") {
+		t.Errorf("a manifest that does not ask for exec: none-strict must not be told about seccomp; got %v", got)
+	}
+
+	// And a manifest asking for nothing beyond the baseline on a host that meets it has
+	// nothing to report.
+	bare := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}
+	if got := hostPosture(report, bare); got != nil {
+		t.Errorf("hostPosture = %v, want nothing for a manifest this host fully enforces", got)
+	}
+}
+
+// Both surfaces carry the same notes. The parity table exempts this writer because its
+// fixture host enforces every layer and so prints nothing; this is the row instead.
+func TestValidateCarriesTheHostPostureToBothSurfaces(t *testing.T) {
+	notes := []string{"limits.memory: unavailable - no cgroup delegation"}
+
+	var b bytes.Buffer
+	writeHostPosture(&b, notes)
+	human := b.String()
+	if !strings.Contains(human, "does not fully enforce") || !strings.Contains(human, "no cgroup delegation") {
+		t.Errorf("the human output must name the shortfall and the probe's reason; got %q", human)
+	}
+	// Not a verdict: a reader who takes it as one goes and edits a manifest that is fine.
+	if !strings.Contains(human, "depends on the flags") {
+		t.Errorf("the note must say the refusal is the run's decision, not this one; got %q", human)
+	}
+
+	var o policyJSON
+	o.HostUnenforcedLayers = notes
+	data, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"host_unenforced_layers":["limits.memory: unavailable - no cgroup delegation"]`) {
+		t.Errorf("--json must carry the same notes; got %s", data)
+	}
+
+	var quiet bytes.Buffer
+	writeHostPosture(&quiet, nil)
+	if quiet.Len() != 0 {
+		t.Errorf("a host that enforces everything the manifest needs has nothing to say; got %q", quiet.String())
+	}
+}

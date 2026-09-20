@@ -12,6 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whiskeyjimbo/bento/backend"
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -70,6 +72,13 @@ func newValidateCmd() *cobra.Command {
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := gate.Check(resolved)
+			// Silent where the answer cannot be had rather than failing: validate is
+			// documented to run on a host bento cannot run anything on, and a backend
+			// that will not open is that host.
+			var posture []string
+			if e, err := backend.New(); err == nil {
+				posture = hostPosture(e.Probe(cmd.Context()), doc.Policy)
+			}
 			pinned := pinnedPaths(doc.Policy)
 			if asJSON {
 				out := toPolicyJSON(doc.Policy, resolved, doc.Provenance.BlockedHosts)
@@ -77,6 +86,7 @@ func newValidateCmd() *cobra.Command {
 				out.ApprovalNote = stampNote(mt.RealPath, doc)
 				out.StampAtRisk = toFlawsJSON(stampFlaws(doc, mt))
 				out.setRunnable(run)
+				out.HostUnenforcedLayers = posture
 				out.setHostNotes(doc.Policy)
 				out.setCallouts(mt.RealPath, leafNamePath(args[0]), resolved)
 				if relocatable {
@@ -104,6 +114,7 @@ func newValidateCmd() *cobra.Command {
 			// breadth concerns" on a manifest approve stops at.
 			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(args[0]), doc.Policy, resolved, doc.Provenance.BlockedHosts, true)
 			writeRunnability(os.Stdout, run)
+			writeHostPosture(os.Stdout, posture)
 			if relocatable {
 				writeRelocatable(os.Stdout, pinned)
 			}
@@ -336,6 +347,59 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "        relative, or at or above a home anchor), so only /run and /var/run are\n")
 		fmt.Fprintf(w, "        shielded. A grant reaching that directory hands out the sockets and\n")
 		fmt.Fprintf(w, "        tokens it holds - point it at an absolute path outside the home.\n")
+	}
+}
+
+// hostPosture names the layers this manifest needs that this host does not fully enforce
+// - the refusal a reader otherwise meets at `bento run`, where the manifest asks for
+// `limits:` on a host delegating no cgroup controllers, or `exec: none-strict` where
+// there is no seccomp. gate.Check answers what the FILESYSTEM will refuse; this is the
+// other half of the same question, and nothing asked it.
+//
+// Which layers bear on this manifest is enforce's to say (enforce.RequiredLayers), not
+// restated here: a layer a policy can newly require would otherwise be admitted by the
+// run and invisible to the validator, which is the drift one shared table exists to stop.
+//
+// A NOTE and never a verdict. It does not reach Runnability or --strict, because whether
+// a shortfall refuses the run turns on flags this command has not got: a Degraded core
+// layer refuses by default and runs under --allow-degraded, and any shortfall at all
+// refuses under --strict. Naming the fact is the honest ceiling; deciding on the
+// reader's behalf would refuse a run that works, which is the direction gate's package
+// doc rules out and this shares.
+func hostPosture(report enforce.Report, p *policy.Policy) []string {
+	var notes []string
+	for _, l := range enforce.RequiredLayers(p, enforce.Options{}) {
+		state := report.StateOf(l)
+		if state == enforce.Enforced {
+			continue
+		}
+		// The reason is the probe's own account of what is broken on this host and how to
+		// fix it; a layer the probe never mentioned has none, and StateOf has already
+		// folded that silence into Unavailable.
+		note := fmt.Sprintf("%s: %s", l, state)
+		if i := slices.IndexFunc(report.Layers, func(s enforce.LayerStatus) bool { return s.Layer == l }); i >= 0 && report.Layers[i].Reason != "" {
+			note += " - " + report.Layers[i].Reason
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
+// writeHostPosture prints what hostPosture found, under a header that says plainly it is
+// about this host rather than about the manifest - the same separation writeRunnability
+// keeps, and for the same reason: a reader who reads it as a fault in the file goes
+// looking in the wrong place.
+func writeHostPosture(w io.Writer, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "host:         this host does not fully enforce everything this manifest asks for.\n")
+	fmt.Fprintf(w, "              Whether that refuses the run depends on the flags it is given:\n")
+	fmt.Fprintf(w, "              --strict refuses any shortfall, --allow-degraded accepts some.\n")
+	for _, n := range notes {
+		for _, line := range wrapText(n, textWidth-len("              ")) {
+			fmt.Fprintf(w, "              %s\n", line)
+		}
 	}
 }
 
@@ -579,6 +643,12 @@ type policyJSON struct {
 	// LoopbackNetworkRules are the rules for a loopback host, which reach the sandbox's own
 	// loopback rather than the host's, in the network field's spelling.
 	LoopbackNetworkRules []string `json:"loopback_network_rules,omitempty"`
+
+	// HostUnenforcedLayers names the layers this manifest requires that this host does
+	// not fully enforce, each with the probe's reason. A note and not a verdict, for the
+	// reason hostPosture gives, so a gate reading it decides for itself what a shortfall
+	// is worth - `runnable` stays true and --strict does not fail on it.
+	HostUnenforcedLayers []string `json:"host_unenforced_layers,omitempty"`
 
 	// Relocatable says whether every path anchors to the manifest's own directory, with
 	// PinnedPaths naming the ones that do not. A pointer because absent is the third

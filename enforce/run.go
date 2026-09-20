@@ -437,6 +437,25 @@ func (l Layer) ReportOnly() bool {
 	}, Options{}), l)
 }
 
+// RequiredLayers is the layers a run of this policy under these options depends on: what
+// the policy declares plus what the caller's Options bring. It is the question a frontend
+// has to ask to say anything about how this HOST will meet a particular manifest - which
+// layers of a Probe report bear on it, and which are none of its business.
+//
+// Exported because a validator cannot restate the mapping without becoming a second
+// answer to it: a layer added to the policy here and not there would leave the validator
+// silently passing a manifest the run refuses, which is the drift `limitControllers` is
+// the precedent against. It answers only what the run NEEDS, never whether the run is
+// admitted - the refuse-versus-degrade decision is Run's, and it turns on Options this
+// does not see.
+//
+// opts is not optional decoration: a caller with a NetworkGate brings LayerNetwork up
+// over a manifest that declares no egress at all, because the proxy is what consults the
+// gate. A caller with no options passes the zero value.
+func RequiredLayers(p *policy.Policy, opts Options) []Layer {
+	return requiredLayers(p, opts)
+}
+
 // requiredLayers returns the layers a run actually depends on - what the policy
 // declares plus what the caller's Options bring.
 //

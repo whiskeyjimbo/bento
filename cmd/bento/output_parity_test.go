@@ -78,6 +78,8 @@ var parityRows = []parityRow{
 	{writers: []string{"writeUnsetEnvNotes"}, fixture: "validate", marker: "BENTO_PARITY_UNSET is allowed by the manifest but not set", key: "unset_env"},
 	// Field by field in TestEveryRunnabilityFieldReachesTheUser; these rows pin the command wiring.
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "runnable:", key: "runnable"},
+	{writers: []string{"writeHostPosture"},
+		exempt: "the fixture host enforces every layer, so the writer prints nothing here; the pair is pinned directly in TestValidateCarriesTheHostPostureToBothSurfaces"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "names nothing on this host", key: "missing_read_grants"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "spelled like a file", key: "fileish_write_grants"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "XDG_RUNTIME_DIR is", key: "unshieldable_runtime_dir"},
