@@ -22,8 +22,9 @@ const ReportEnd = "#bento-observe"
 // the other agreeing with itself.
 //
 // Three things hold the pair together, and none of them alone is enough. This
-// function is the only writer. The host's round-trip test drives its output through
-// the parser and asserts every field survives, so an arm dropped here fails there.
+// function is the only writer. internal/linux's
+// TestObservationReportRoundTripsEveryRecord drives its output through the parser and
+// asserts every field of Result survives, so an arm dropped here fails there.
 // And the parser refuses an unrecognized record rather than skipping it, so a verb
 // renamed here - which this function cannot propagate, the reader being a parser of
 // text and not a caller - surfaces as a parse error instead of a silently missing

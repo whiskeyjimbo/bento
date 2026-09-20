@@ -379,6 +379,17 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// (which store it holds, which env var put it there). Those produce byte-identical
 	// bwrap arguments, so keying on the rule would emit the same bind twice and let a
 	// field that exists for the report change what is enforced.
+	//
+	// The key ignores Holds and ExpandLinks, and the merge below settles only Source.
+	// Two colliding rules can genuinely differ on both - an env relocation pointing
+	// HISTFILE at a path the built-in list already shields as a credential store gives
+	// one path two rules with different Holds - so which one survives is arrival order.
+	// That is unobservable rather than merely undecided: every reader of the merged set
+	// consults Path, Deny and Dir alone (shieldNeeded, shieldMount, the exposed/
+	// underExposed pass, shieldsApplied, shieldChecks), Holds is read only off a
+	// shield.OptIn and never off a rule from here, and ExpandLinks has its one reader
+	// inside shield.Set.Mount, upstream of this loop. A reader added here for either
+	// field would have to settle the tie-break first, the way Source's is settled.
 	type shieldKey struct {
 		path string
 		deny denylist.Deny
