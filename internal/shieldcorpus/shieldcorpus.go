@@ -56,8 +56,8 @@ const (
 	// so it honors the grant, while the Landlock-only tier has no bind and takes the union
 	// of matching rules, leaving the shielded directory writable unless the run is refused.
 	//
-	// Byte-exact only: where the shield's own directory folds case the grant earns
-	// FoldedShield instead, and every tier refuses it.
+	// Byte-exact only: where the shield's own directory hands it out under a second
+	// spelling the grant earns FoldedShield instead, and every tier refuses it.
 	//
 	// The two sites outside the backend diverge from it, both in the under-refusing
 	// direction and both because neither knows which tier will run: the gate answers
@@ -72,9 +72,12 @@ const (
 	//
 	// A DenyWrite shield answers here too, and that is where the tier split above ends:
 	// AboveWriteShield's reasoning is a ro-bind landing last, and a bind covers the one
-	// spelling it names, so a second spelling of the shim directory is inside the grant's
-	// read-write bind on the full tier as well. Both tiers refuse, so the divergences
-	// AboveWriteShield carries do not apply to these cases.
+	// spelling it names, so where the mount presents the shim directory under a second
+	// entry that entry is inside the grant's read-write bind on the full tier as well -
+	// measured on such a mount, where the write reached the host. A mount that folds in
+	// the dentry layer may instead hit the bind under either spelling; the refusal covers
+	// both because the verdict cannot tell them apart. Both tiers refuse, so the
+	// divergences AboveWriteShield carries do not apply to these cases.
 	FoldedShield
 	// WorkspaceRedirected means a write grant whose checkout-derived shield is redirected
 	// by a symlinked directory component, refused by checkWorkspaceShieldNotRedirected.
@@ -299,7 +302,7 @@ var Cases = []Case{
 	},
 	{
 		Name:       "write containing a write shield on a case-folding mount",
-		Why:        "the same grant as the case above, on a folding mount: AboveWriteShield's tier split rests on the full tier's ro-bind landing after the grant and winning, and a bind covers the spelling it names - so ~/.pyenv/SHIMS is inside the grant's read-write bind there too and the refusal is no longer the degraded tier's alone",
+		Why:        "the same grant as the case above, on a folding mount: AboveWriteShield's tier split rests on the full tier's ro-bind landing after the grant and winning, and a bind covers the spelling it names - so a mount that presents ~/.pyenv/SHIMS as a second entry leaves it inside the grant's read-write bind there too and the refusal is no longer the degraded tier's alone",
 		Grant:      ".pyenv",
 		Write:      true,
 		Folding:    true,

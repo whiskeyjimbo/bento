@@ -43,8 +43,8 @@ const (
 	// while the Landlock-only tier has no binds and no way to carve a narrower right out
 	// of a granted tree - Landlock takes the UNION of every matching rule - so the
 	// shielded directory is plainly writable on the host there. Where the shield's own
-	// directory folds case the bind is walked around on both tiers, and the grant earns
-	// FoldedShield instead.
+	// directory hands it out under a second spelling the bind can be walked around on the
+	// full tier too, and the grant earns FoldedShield instead.
 	AboveWriteShield
 	// FoldedShield means a grant CONTAINS a shielded path whose directory folds case, so
 	// the byte-exact bind that shields it leaves the same file reachable under another
@@ -52,8 +52,8 @@ const (
 	// leaks is the content, not the name.
 	//
 	// Raised over a DenyWrite shield too, and there it is the write surface that leaks
-	// rather than the content: AboveWriteShield's tier split rests on a ro-bind that the
-	// second spelling walks around, so the grant has to be refused on both tiers instead.
+	// rather than the content: AboveWriteShield's tier split rests on a ro-bind a second
+	// spelling can walk around, so the grant has to be refused on both tiers instead.
 	FoldedShield
 )
 
@@ -197,14 +197,18 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		if a.Rule.Deny != denylist.DenyWrite {
 			continue
 		}
-		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
-		// The containment tests first and the fold second, though the fold is what the
-		// loop is for: foldsCase is a syscall per rule and containment is arithmetic, so
-		// the other order pays for the host's answer about every write shield on it.
-		if !s.covers(grant, a.Resolved) && !s.covers(grant, loc) && !s.covers(grant, a.Rule.Path) {
-			continue
-		}
-		if s.foldsCase(a.Resolved) {
+		// The RESOLVED spelling alone, and not the other two the loop below also asks of.
+		// What folds is the directory the shield really sits in, so the second spelling is
+		// beside the shield's target: it is reachable from the grant only where the grant
+		// contains that target. Where the grant holds the link's NAME and the target is on
+		// another disk (the relocated pyenv the loop below exists for), nothing is walked
+		// around, and answering in the folding sentence would tell an author their grant is
+		// on a case-insensitive filesystem when it is the far disk that folds.
+		//
+		// Containment tests first and the fold second, though the fold is what the loop is
+		// for: foldsCase is a syscall per rule and containment is arithmetic, so the other
+		// order pays for the host's answer about every write shield on it.
+		if s.covers(grant, a.Resolved) && s.foldsCase(a.Resolved) {
 			return a.Rule, FoldedShield
 		}
 	}
