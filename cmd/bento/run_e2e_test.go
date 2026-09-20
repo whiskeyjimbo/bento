@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,46 @@ func TestACompletedRunRendersItsVerdict(t *testing.T) {
 	}
 	if want := "a denial is the script's own error to report"; !strings.Contains(stderr, want) {
 		t.Errorf("a completed run must render its verdict (%q):\n%s", want, stderr)
+	}
+}
+
+// The stamp-at-risk note is computed in run's own RunE (run.go), not by the writer that
+// renders it, so a round-trip of a hand-built runNotesJSON through writeRunResult stays
+// green while run builds the slice wrong or stops assigning it. This is the only test
+// that drives the real command over a real manifest whose directory anyone can write and
+// reads the key back off stdout.
+func TestRunJSONCarriesStampAtRisk(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh"})
+	// The flaw itself: a stamp in a directory anyone can write attests only what whoever
+	// can write it leaves there.
+	if err := os.Chmod(filepath.Dir(m), 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _ := runCapturingStdout(t, newRunCmd(), "--json", m)
+	var carried []flawJSON
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var obj struct {
+			Event       string     `json:"event"`
+			StampAtRisk []flawJSON `json:"stamp_at_risk"`
+		}
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("run --json emitted a line that is not JSON (%v): %s", err, line)
+		}
+		if obj.Event == "verdict" {
+			carried = obj.StampAtRisk
+		}
+	}
+	if len(carried) == 0 {
+		t.Fatalf("run --json must carry the stamp's flaws on the verdict object; got:\n%s", out)
+	}
+	// The hint is what tells the reader what to do about it, and it is the half a
+	// consumer reading only the reason would lose.
+	for _, f := range carried {
+		if f.Reason == "" || f.Hint == "" {
+			t.Errorf("each stamp_at_risk entry must carry both the reason and its hint; got %+v", f)
+		}
 	}
 }
