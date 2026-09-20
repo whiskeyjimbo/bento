@@ -268,10 +268,10 @@ func gitDirShields(checkout string) []denylist.Rule {
 	return rules
 }
 
-// maxGitdirDepth is the backend's bound of the same name, and has to stay equal to it: a
-// smaller one fails closed on a subtree the run shields rule by rule, and a larger one
-// walks past where the run stopped seeing.
-const maxGitdirDepth = 64
+// maxGitdirDepth is the backend's bound of the same name, read off the constant both walks
+// share rather than repeated: a smaller one fails closed on a subtree the run shields rule
+// by rule, and a larger one walks past where the run stopped seeing.
+const maxGitdirDepth = shield.MaxWalkDepth
 
 // isDirFollowingLinks is the backend's isDir seam: a symlink to a directory is a
 // directory, which is what decides whether a .git entry is a checkout's own or a gitfile

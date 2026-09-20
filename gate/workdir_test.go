@@ -78,3 +78,36 @@ func TestCheckSaysNothingAboutAnUnsetWorkdir(t *testing.T) {
 		t.Errorf("a manifest setting no workdir has none to refuse; got %q", got)
 	}
 }
+
+// bwrap chdirs into the workdir once the sandbox is built, and into a non-directory that
+// is "Can't chdir to ...: Not a directory" (measured against bwrap 0.11 on this host, exit
+// 1) - a run that has already paid for the mount namespace, which is the class Runnability
+// reports first. Stat alone passes it: a file is a path that exists.
+//
+// Safe in the direction this package rules out, because nothing turns the host file into a
+// sandbox directory: a write grant naming it is refused as a file, and a shield over a
+// file binds an empty file.
+func TestCheckRefusesAWorkdirThatIsAFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "out")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := workdirProblem(t, gate.Check(workdirPolicy(t, file, []string{file})))
+	if got == "" {
+		t.Fatalf("a workdir that is a file fails bwrap's chdir and must be a problem; got %+v", gate.Check(workdirPolicy(t, file, nil)).Problems)
+	}
+	if !strings.Contains(got, file) {
+		t.Errorf("the problem must name the workdir so the reader can go and look; got %q", got)
+	}
+
+	// The symlink is the case a Lstat would break: it names a directory, and the run
+	// starts there.
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := workdirProblem(t, gate.Check(workdirPolicy(t, link, nil))); got != "" {
+		t.Errorf("a workdir that is a symlink to a directory is a directory to the chdir; got %q", got)
+	}
+}

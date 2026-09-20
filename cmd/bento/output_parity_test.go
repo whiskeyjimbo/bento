@@ -97,7 +97,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeDegradedSummary"}, exempt: "D6: the refused/reported/host-only split is decided by layers[] tier and layer"},
 	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
 	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
-	{writers: []string{"writeTruncatedStores"}, fixture: "doctor-deep-store", marker: "nest deeper than the shields walk", key: "truncated_stores"},
+	{writers: []string{"writeTruncatedStores"}, fixture: "doctor-deep-store", marker: "could not be walked whole", key: "truncated_stores"},
 
 	// profile. Rendered by calling the writers: reaching profile.go's calls to them means
 	// profiling a script under a real sandbox, which this table does not require. The call

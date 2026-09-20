@@ -161,26 +161,34 @@ func Check(resolved *policy.Policy) Runnability {
 // re-profile of a manifest that already sets that workdir writes back. Refusing that
 // would refuse a run that works, the one direction this package rules out.
 //
-// One absent workdir the run still starts in is missed the other way, and knowingly: a
-// shield materializes a tmpfs at an absent shielded directory when a READ grant reaches
-// it, so `workdir: ~/.aws` beside `read: [~]` starts. Only the write grants are consulted
-// here, because deciding it properly means asking the shield set which absent paths it
-// will materialize - the enumeration the paragraph below refuses for the same reason.
-// That leaves a refusal this package should not make; it is narrow enough to carry rather
-// than to buy an enumeration with.
+// The write grants are the whole of what materializes an absent path, which is why they
+// are the whole of what is consulted. A shield at an absent directory is mounted only
+// where a write grant reaches it too - the backend's shieldNeeded takes `exists ||
+// writable`, and for an absent path that is `writable` alone - so `workdir: ~/.aws`
+// beside `read: [~]` gets no tmpfs and does not start. Measured against the backend's
+// shield emission, not reasoned from the mount shapes.
 //
-// It says nothing about a workdir that EXISTS on the host but has nothing granted
-// beneath it, which the enforced run also refuses, nor about one that exists as a FILE,
-// which stats clean here and fails bwrap's chdir. Answering either needs the sandbox's
-// whole bind set - the runtime scratch, the system trees, the shield mounts - and a gate
-// that enumerates them refuses a run the moment one moves. `bento profile` names the
-// first case instead, where the proposal is being written.
+// It says nothing about a workdir that EXISTS as a directory on the host but has nothing
+// granted beneath it, which the enforced run also refuses. Answering that needs the
+// sandbox's whole bind set - the runtime scratch, the system trees, the shield mounts -
+// and a gate that enumerates them refuses a run the moment one moves. `bento profile`
+// names that case instead, where the proposal is being written.
+//
+// A workdir that exists as something other than a directory is answered, and safely in
+// the direction this package rules out: bwrap's chdir into one fails with ENOTDIR
+// (measured), and nothing the sandbox binds turns a host file into a directory there - a
+// write grant naming it is refused as a file before the sandbox exists, and a shield over
+// a file is an empty read-only bind, still a file. Stat rather than Lstat, so a symlink
+// to a directory stays the directory it names.
 func workdirProblems(resolved *policy.Policy) []string {
 	if resolved.Workdir == "" {
 		return nil
 	}
-	if _, err := os.Stat(resolved.Workdir); err == nil {
-		return nil
+	if fi, err := os.Stat(resolved.Workdir); err == nil {
+		if fi.IsDir() {
+			return nil
+		}
+		return []string{fmt.Sprintf("workdir %q exists on this host but is not a directory, so the run cannot start there", resolved.Workdir)}
 	}
 	lands, _ := pathresolve.Existing(resolved.Workdir)
 	for _, g := range resolved.Write {

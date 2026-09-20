@@ -2043,30 +2043,36 @@ func relocatedShields() map[string][]string {
 	return paths
 }
 
-// writeTruncatedStores names the credential stores whose symlink expansion stopped at the
-// walk bound, so a store that is shielded but only expanded partway says so instead of
-// under-covering its farm targets silently. A link below the bound leaves its target
-// unshielded, and a read grant on that target is Honored.
+// writeTruncatedStores names the credential stores whose symlink expansion did not reach
+// the whole store, so one that is shielded but only expanded partway says so instead of
+// under-covering its farm targets silently. A link the walk never reached leaves its
+// target unshielded, and a read grant on that target is Honored.
+//
+// Two causes on one channel, which is why the sentence names neither: the store nests real
+// directories deeper than shield.MaxWalkDepth, or a directory read inside it did not
+// complete. Flattening the store is the remedy for the first alone - the second is a
+// permission or a mount that is not answering - so the line an operator is given is the
+// one that holds for both, narrowing the grants that reach what the store links out to.
 //
 // The bound stays where it is, and raising it is not a local change: the backend's
-// git-directory scan reads the same shield.MaxWalkDepth, so moving it moves how deep that
-// scan descends too, and TestGitDirShieldsFailsClosedAtTheDepthCutoff is what holds those
-// two together. The profiler's clamp walk still repeats the number (clamp.go's
-// maxGitdirDepth) and nothing pins it, so it does not follow. Flattening the store is the
-// remedy an operator has.
+// git-directory scan and the profiler's clamp walk both read the same shield.MaxWalkDepth,
+// so moving it moves how deep all three descend, and
+// TestGitDirShieldsFailsClosedAtTheDepthCutoff and its clamp counterpart are what hold
+// them together.
 func writeTruncatedStores(w io.Writer) {
 	stores := truncatedStores()
 	if len(stores) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "  %d credential store(s) nest deeper than the shields walk:\n", len(stores))
+	fmt.Fprintf(w, "  %d credential store(s) could not be walked whole:\n", len(stores))
 	for _, s := range stores {
 		// Quoted for the reason the anchors are: the path is the host's, so a newline in
 		// one would forge a line of this report.
 		fmt.Fprintf(w, "    %s\n", strconv.Quote(s))
 	}
-	fmt.Fprintf(w, "  Each is shielded whole, but a symlink below that depth keeps its target exposed.\n")
-	fmt.Fprintf(w, "  Flatten the store, or grant nothing that reaches where it links out to.\n")
+	fmt.Fprintf(w, "  Each is shielded whole, but a symlink the walk never reached keeps its target exposed.\n")
+	fmt.Fprintf(w, "  Either it nests deeper than the shields walk, which flattening it undoes, or a\n")
+	fmt.Fprintf(w, "  directory inside it could not be read. Grant nothing that reaches where it links out to.\n")
 }
 
 // truncatedStores is the stores the expansion walked only as far as the bound. A shield
