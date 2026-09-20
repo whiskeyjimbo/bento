@@ -116,6 +116,12 @@ func TestARelocatedStoreDeclaresWhatItsDefaultDeclares(t *testing.T) {
 		if !r.ExpandLinks {
 			t.Errorf("%s/%s: default %s does not expand links, but the relocation emits ExpandLinks", table, env, def)
 		}
+		// The third literal field. A row whose default is one of the fileGroups stores
+		// would pass the two above and still have the relocation bind a whole tree where
+		// the default binds one file.
+		if !r.Dir {
+			t.Errorf("%s/%s: default %s is a file rule, but the relocation emits a directory", table, env, def)
+		}
 	}
 	for _, d := range dirEnvs {
 		check("dirEnvs", d.env, d.def)

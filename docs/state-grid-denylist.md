@@ -64,8 +64,8 @@ will read?
 | 3 | `Home` writeOnly / writeOnlyDirs (`denylist.go:1279,1282`) | HANDLED - `DenyWrite` | HANDLED - set on the dir list only | HANDLED - left `HoldsUnknown` deliberately: `Holds` is "set on DenyAll rules only" because a write shield cannot be lifted by a grant (`denylist.go:104`) | IMPOSSIBLE - not `DenyAll` | IMPOSSIBLE - as row 1 |
 | 4 | `Relocated` XDG restatement (`denylist.go:1370-1373`) | HANDLED - copies the default rule whole (`r := d`), so every field rides along | HANDLED - same copy | HANDLED - same copy; this is the one relocation path that cannot disagree with its default | HANDLED - same copy. A farm-managed store moved by `XDG_CONFIG_HOME` still expands | HANDLED - overwritten with `b.env` |
 | 5 | `Relocated` dirEnvs (`denylist.go:1389`) and dirSubEnvs (`denylist.go:1625`) | HANDLED - `DenyAll` | HANDLED - `true` | **HANDLED, newly pinned** - `HoldsCredentials` is written out literally rather than read off the default rule. Correct today only because every `dirEnvs.def` and every `dirSubEnvs` `def+sub` happens to sit in `credentialAnchorDirs`. Nothing joined the two tables; `TestARelocatedStoreDeclaresWhatItsDefaultDeclares` now does | **HANDLED, same pin** - `ExpandLinks: true` is literal for the same reason, and a row defaulting into `bulkStoreDirs` would have flipped a deliberately-unexpanded store into a per-launch recursive walk | HANDLED - `de.env` |
-| 6 | `Relocated` single-file DenyAll blocks - dirFileEnvs, fileEnvs, fileDenyAllEnvs, HGRCPATH, CARGO_HOME's credential half (`denylist.go:1400,1456,1483,1506,1601`) | HANDLED - `DenyAll` | HANDLED - absent; these name one file | HANDLED - `HoldsCredentials`, except fileDenyAllEnvs which carries `fe.holds` per row, the history/credential split | IMPOSSIBLE - not `Dir` | HANDLED - the variable, per block |
-| 7 | `Relocated` write-shield blocks - `addWriteShield`, GOPATH, writeOnlyDirEnvs (`denylist.go:1523,1657,1682`) | HANDLED - `DenyWrite` | HANDLED - `true` on the two directory emitters, absent on `addWriteShield` (which the GOPATH comment at `denylist.go:1678` calls out as the reason it is not used there) | HANDLED - `HoldsUnknown`, as row 3 | IMPOSSIBLE - not `DenyAll` | HANDLED - the variable |
+| 6 | `Relocated` single-file DenyAll blocks - dirFileEnvs, fileEnvs, fileDenyAllEnvs, HGRCPATH, CARGO_HOME's credential half (`denylist.go:1400,1456,1483,1503,1601`) | HANDLED - `DenyAll` | HANDLED - absent; these name one file | HANDLED - `HoldsCredentials`, except fileDenyAllEnvs which carries `fe.holds` per row, the history/credential split | IMPOSSIBLE - not `Dir` | HANDLED - the variable, per block |
+| 7 | `Relocated` write-shield blocks - `addWriteShield`, GOPATH, writeOnlyDirEnvs (`denylist.go:1523,1650,1658`) | HANDLED - `DenyWrite` | HANDLED - `true` on the two directory emitters, absent on `addWriteShield` (the comment at `denylist.go:1654-1657` calls out that `addWriteShield` is the wrong emitter for the writeOnlyDirEnvs block, since it produces a file rule) | HANDLED - `HoldsUnknown`, as row 3 | IMPOSSIBLE - not `DenyAll` | HANDLED - the variable |
 | 8 | `Runtime` (`denylist.go:1750-1765`) | HANDLED - `DenyAll` | HANDLED - `true` | HANDLED - `HoldsServices` | HANDLED - off, consistent with `serviceDirs` in row 1; a /run tree is not farm-managed | HANDLED - `XDG_RUNTIME_DIR` on the relocated rule only |
 | 9 | `Workspace` / `WorkspaceGitfile` (`denylist.go:1846,1886`) | HANDLED - `DenyWrite` on every rule | HANDLED - set on `.git/hooks`, `.vscode`, `.idea` | HANDLED - `HoldsUnknown`, as row 3 | IMPOSSIBLE - not `DenyAll` | IMPOSSIBLE - not a relocation |
 | 10 | `shield.linksUnder`'s expansion (`rules.go:325`) | HANDLED - `DenyAll` | HANDLED - `s.fs.IsDir(rp)`; see the dismissals for why an absent target getting `false` is the allowed direction | HANDLED - inherited from the store being walked | HANDLED - deliberately off, argued in place (`rules.go:323`): a target is shielded at its own path and never re-walked | **WRONG, rejected** - inherited from the store, so a farm target is reported under the variable that moved the store. Rejected as a finding; see the dismissals |
@@ -75,7 +75,7 @@ will read?
 
 | Consumer | Verdict |
 |---|---|
-| `Assemble`'s anchor pass (`rules.go:79-107`) | HANDLED - reads `Path` only, and records provenance by the deny-list's own spelling. `nestedAnchor` (`rules.go:245`) is keyed on where the rule CAME FROM, not on any field |
+| `Assemble`'s anchor pass (`rules.go:79-107`) | HANDLED - reads `Path` only, and records provenance by the deny-list's own spelling. `nestedAnchor` (`rules.go:239`) is keyed on where the rule CAME FROM, not on any field |
 | `credentialLinks` (`rules.go:267`) | HANDLED - reads exactly `Deny`, `Dir`, `ExpandLinks`, and nothing else; pinned by `TestExpansionFollowsTheFlagNotTheBucket`. This is the cell `bv2-5y7c0` created, and it is clean |
 | `Mount`/`target` (`rules.go:188,223`) | HANDLED - reads `Path` only. Note the ordering: `credentialLinks` runs over `base` BEFORE `Mount`, so a store whose own rule `target` drops still contributes its link rules. Allowed direction (more shielding, not less) |
 | `Contains`, DenyAll arms (`verdict.go:111,113,129,172`) | HANDLED - reads `Deny` and the resolved path; `Rule.Path` and the `loc` spelling are asked alongside for the symlinked-home and farm shapes |
@@ -92,7 +92,7 @@ comments. The fourth's silence is F1.
 
 | | grant AT or UNDER the shield | grant ABOVE the shield |
 |---|---|---|
-| **DenyAll** | HANDLED - `InsideShield` via `covers`, which settles each differing component by asking the host (`verdict.go:195-245`). The comment at `verdict.go:99-104` argues the `~/.SSH/id_rsa` case explicitly | HANDLED - `FoldedShield` (`verdict.go:129`), refused on both tiers (`internal/linux/grants.go:103`, `gate/gate.go:436`) |
+| **DenyAll** | HANDLED - `InsideShield` via `covers`, which settles each differing component by asking the host (`verdict.go:195-245`). The comment at `verdict.go:99-104` argues the `~/.SSH/id_rsa` case explicitly | HANDLED - `FoldedShield` (`verdict.go:129`), refused on both tiers (`internal/linux/grants.go:101`, `gate/gate.go:437`) |
 | **DenyWrite** | HANDLED - `UnderWriteShield` via the same `covers` (`verdict.go:144`). The comment at `verdict.go:136-141` names `~/.pyenv/SHIMS` against a shield at `~/.pyenv/shims` | **WRONG - F1.** `AboveWriteShield` (`verdict.go:189`) is fold-blind, and it is the one verdict the full tier does not refuse |
 
 ## Findings, forbidden direction first
@@ -118,6 +118,18 @@ rest on, and it is the exposure the `UnderWriteShield` comment at `verdict.go:13
 already names with the same `.pyenv/SHIMS` example - reached by a grant that spells the
 shim directory, where this is reached by a grant that merely contains it. Disputing this
 cell means disputing three shipped ones.
+
+**Severity caveat, raised in review and worth carrying.** Whether the bind is really
+defeated is filesystem-dependent in a way nothing here can settle. ext4's casefold and vfat
+fold in the dentry layer, so both spellings resolve to ONE dentry and a bind on it is hit
+under either name; a FUSE overlay such as ciopfs presents two, and there the ro-bind covers
+one of them. So "the plant lands on the host" is stated more confidently above than
+`UNSPIKEABLE HERE` supports, and the honest form is: on at least the ciopfs shape it lands,
+and on the dentry-folding shapes it may not. That does not weaken the cell, because the
+finding is safe under either answer - if the model holds, `AboveWriteShield` needs the fold
+check; if it does not, the three shipped fold cells beside it are over-refusing, which is
+the larger finding. It does mean the fix must measure before it chooses, rather than
+inheriting this paragraph's confidence.
 
 Spike (deleted): `Assemble` over a home with `.pyenv/shims`, `shieldcorpus.FS{Folding:
 true}` and `{Folding: false}`, asking `Contains(home+"/.pyenv", shield.Write, nil, nil)`.
@@ -183,14 +195,24 @@ saying so is three lines away, and the operator is told the store is expanded.
 Spike (deleted): `Assemble` over a fake whose `~/.ssh` `ListDir` returns `ok=false`, once
 with an entry and once empty. Both gave `TruncatedStores() == []`. Filed as **bv2-a4165**.
 
-### F5 - `Covers`'s contract enumerates four of the five fields
-`VERIFIED BY READING`
+### F5 - `Covers`'s contract argues three of the five fields individually, and `ExpandLinks` is not one of them
+`VERIFIED BY READING`. **Narrowed in review; the first draft of this finding overstated it,
+and the overstatement is recorded rather than edited away because it is the same mistake the
+grid exists to catch - a cell called UNHANDLED without opening the file twice.**
 
-`denylist.go:1803`'s doc specifies `Deny` and `Dir` on the returned rule and declares
-`Source` and `Holds` unspecified, with an argument for each. `ExpandLinks` landed later
-(`bv2-5y7c0`) and is not mentioned, so it is undefined by omission rather than by decision -
-and `stricter` (`denylist.go:1825`) tie-breaks on `Deny` and `Dir` only, so which rule's
-flag comes back is slice order. Nothing reads it off a `Covers` or `Index.Covers` result
+The first draft said `ExpandLinks` "is not mentioned" and is "undefined by omission", and
+that `Index.Covers` inherits the same silence. Both are false. `denylist.go:1800` does
+mention it - "nothing about how a rule is enforced reads Holds, which is why ExpandLinks is
+declared per rule rather than derived from it" - and `index.go:63` says "only the returned
+Deny and Dir are specified", which covers every other field at once.
+
+What survives is narrower and still worth a line. `denylist.go:1803`'s doc specifies `Deny`
+and `Dir` on the returned rule, then argues `Source` unspecified and `Holds` unspecified,
+each in its own paragraph. `ExpandLinks` gets no such paragraph, and the sentence that does
+name it is about why the field exists rather than about what the returned rule says - which
+a reader arriving at that paragraph can take for the same kind of statement. `stricter`
+(`denylist.go:1825`) tie-breaks on `Deny` and `Dir` only, so which rule's flag comes back is
+slice order, exactly as for `Holds`. Nothing reads it off a `Covers` or `Index.Covers` result
 today (grep over the tree), so this is the contract, not the behaviour. The reason to close
 it rather than leave it: `Covers` is the shared answer the parity audit and the credential
 hunt both use, and the next consumer that wants to know whether a store expands will read it
@@ -258,6 +280,23 @@ dirEnvs/FAKE_MAIL_DIR: default .thunderbird does not expand links, but the reloc
 
 Reverted; green with the table restored. A `historyDirs` row trips the `Holds` arm alone -
 that group expands - which is why the bulk-store row is the one recorded here.
+
+The `Dir` arm was added in review, after the observation that the two assertions above both
+pass for a row whose default is one of the `fileGroups` stores while the relocation binds a
+whole tree where the default binds one file. Proved red on its own terms with
+`{"FAKE_FILE_DIR", ".netrc"}`, which is `HoldsCredentials` and so leaves the `Holds` arm
+silent:
+
+```
+dirEnvs/FAKE_FILE_DIR: default .netrc does not expand links, but the relocation emits ExpandLinks
+dirEnvs/FAKE_FILE_DIR: default .netrc is a file rule, but the relocation emits a directory
+```
+
+Between the two mutations all three literal fields are shown load-bearing. Note what the
+test cannot fail on today: with `credentialAnchorDirs` the only `HoldsCredentials` group and
+that group expanding, `ExpandLinks` never fails alone. It is not decoration - it pins the
+second literal independently, so a future `HoldsCredentials` group with `expand: false`
+trips it by itself - but its red is currently only ever observed alongside another arm's.
 
 ## Spikes (deleted; Phase 4)
 
