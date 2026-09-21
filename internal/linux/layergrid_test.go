@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/enforce"
@@ -159,5 +160,51 @@ func TestWorsenNetworkRecordsOntoAnAbsentLayer(t *testing.T) {
 	}
 	if len(r.Layers) != 1 || r.Layers[0].Reason == "" {
 		t.Errorf("the note's reason must survive; layers were %+v", r.Layers)
+	}
+}
+
+// Unsampled asserts nothing either way, so every bar that admits Degraded admits it too.
+// That ranking is safe only because the limits layers are its sole subject: a core or exec
+// layer reading Unsampled would pass --allow-degraded and the exec >= Unavailable bars as
+// good enough. So the one writer is pinned to limitControllers, limitControllers to the
+// limits layers, and no other file in this backend may name the state at all.
+func TestOnlyLimitsLayersAreEverSetUnsampled(t *testing.T) {
+	limits := map[enforce.Layer]bool{
+		enforce.LayerLimitsMemory: true,
+		enforce.LayerLimitsPIDs:   true,
+		enforce.LayerLimitsCPU:    true,
+	}
+	for _, c := range limitControllers {
+		if !limits[c.layer] {
+			t.Errorf("limitControllers carries %s, which is not a limits layer, and noteScopeLimits would set it Unsampled", c.layer)
+		}
+	}
+
+	var r enforce.Report
+	for _, l := range declaredLayers(t) {
+		r.Set(l, enforce.Enforced, "")
+	}
+	noteScopeLimits(&r, policy.Limits{Memory: "128M", PIDs: 32, CPU: "50%"}, scopeLimits{})
+	for _, ls := range r.Layers {
+		if ls.State == enforce.Unsampled && !limits[ls.Layer] {
+			t.Errorf("an unsampled scope set %s Unsampled; only a limits layer may be", ls.Layer)
+		}
+	}
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || f == "scopeattest.go" {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "enforce.Unsampled") {
+			t.Errorf("%s names enforce.Unsampled; noteScopeLimits in scopeattest.go is meant to be its only writer", f)
+		}
 	}
 }
