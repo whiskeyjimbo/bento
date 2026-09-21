@@ -66,7 +66,10 @@ bento run broad-home.manifest.yaml --allow-unapproved
 ```
 
 `read.home-listing` should report a count close to `ls -A ~ | wc -l`, proving
-home really is mounted, while all four `read.shield-*` probes stay DENIED. The
+home really is mounted, while every `read.shield-*` probe stays DENIED. The
+directory probes (`.ssh`, `.aws`, `.gnupg`) report how many entries they can see,
+so compare each against `ls -A` of it on the host: a directory that is empty or
+missing there proves nothing here. The
 closing line names how many paths were shielded; it should be dozens, not a
 handful - the exact number is host-dependent. If the count is small, the
 grant reached nothing and the DENIEDs mean nothing - see below.
@@ -134,8 +137,8 @@ The two environment variables:
 ## Two things that will mislead you
 
 **A DENIED shield probe usually proves nothing.** If home was never mounted,
-`~/.ssh/id_rsa` is missing because nothing is there, not because a shield held -
-and the four `read.shield-*` lines look reassuring under every manifest,
+`~/.ssh` is missing because nothing is there, not because a shield held -
+and the `read.shield-*` lines look reassuring under every manifest,
 including `deny-all`. That is what `read.home-listing` is for: it reports how
 many entries of the home directory the sandbox can see. Compare it against
 `ls -A ~ | wc -l` on the host. Under `broad-home` it should roughly match; under

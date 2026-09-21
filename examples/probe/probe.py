@@ -41,9 +41,16 @@ WRITE_GRANTED = "./out"
 
 # Shielded even under a broad `read: "~"` grant. Entries starting with ~/ are
 # resolved against BENTO_PROBE_HOME, not against the sandbox's rewritten HOME.
+#
+# The credential stores are probed as directories, not by guessed filenames: a key
+# name the host lacks (id_rsa next to an ed25519 key) is DENIED for the boring reason
+# that it is absent, and reads exactly like a shield holding.
+SHIELDED_DIRS = [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+]
 SHIELDED_READS = [
-    "~/.ssh/id_rsa",
-    "~/.aws/credentials",
     "~/.bashrc",
     "/run/docker.sock",
 ]
@@ -104,6 +111,24 @@ def probe_read():
         attempt("read", "home-listing", lambda: f"{len(os.listdir(home))} entries")
     else:
         report("read", "home-listing", None, NO_HOST_HOME)
+
+    # A shielded directory lists as empty rather than failing, so an empty listing is
+    # the DENIED verdict. Compare against `ls -A` of the same directory on the host:
+    # empty there too means this line proves nothing.
+    def list_dir(path):
+        try:
+            n = len(os.listdir(path))
+        except OSError as err:
+            return False, f"{type(err).__name__}: {err.strerror or err}"
+        return n > 0, f"{n} entries visible"
+
+    for path in SHIELDED_DIRS:
+        name = "shield" + path.replace("~", "").replace("/", "-")
+        resolved = host_path(path)
+        if resolved is None:
+            report("read", name, None, NO_HOST_HOME)
+            continue
+        report("read", name, *list_dir(resolved))
 
     for path in SHIELDED_READS:
         name = "shield" + path.replace("~", "").replace("/", "-")
