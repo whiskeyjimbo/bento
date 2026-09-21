@@ -1,9 +1,10 @@
 package main
 
 import (
-	"go/ast"
-	"go/parser"
+	"go/constant"
+	"go/importer"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,25 +65,25 @@ func TestExampleBinariesIgnored(t *testing.T) {
 // from enforce's declarations rather than listed here, so a new one fails this until the
 // matrix names it.
 func TestEnforcementMatrixNamesEveryDoctorLayer(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "../../enforce/report.go", nil, 0)
+	pkg, err := importer.ForCompiler(token.NewFileSet(), "source", nil).Import("github.com/whiskeyjimbo/bento/enforce")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Discovery goes by the constant's value, not how its declaration is spelled: an
+	// untyped string or a Layer("...") conversion is as usable as a Layer as a typed one.
 	var layers []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		spec, ok := n.(*ast.ValueSpec)
-		if !ok || len(spec.Values) != 1 {
-			return true
+	scope := pkg.Scope()
+	for _, name := range scope.Names() {
+		c, ok := scope.Lookup(name).(*types.Const)
+		if !ok || c.Val().Kind() != constant.String {
+			continue
 		}
-		if id, ok := spec.Type.(*ast.Ident); ok && id.Name == "Layer" {
-			if lit, ok := spec.Values[0].(*ast.BasicLit); ok {
-				layers = append(layers, strings.Trim(lit.Value, `"`))
-			}
+		if named, ok := c.Type().(*types.Named); (ok && named.Obj().Name() == "Layer") || strings.HasPrefix(name, "Layer") {
+			layers = append(layers, constant.StringVal(c.Val()))
 		}
-		return true
-	})
+	}
 	if len(layers) == 0 {
-		t.Fatal("found no Layer constants in enforce/report.go")
+		t.Fatal("found no Layer constants in enforce")
 	}
 
 	readme, err := os.ReadFile("../../README.md")
