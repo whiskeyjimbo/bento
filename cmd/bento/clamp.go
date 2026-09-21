@@ -513,8 +513,9 @@ func redirectedWorkspaceProblem(w string) string {
 // skipped for the same reason. CarveUnknown says a refusal was not looked for rather than
 // not found, and withholding a grant on that would drop grants the run honors - the one
 // direction the gate rules out - while the reviewer-facing channel that could say it out
-// loud is the caller's, not this function's. bv2-rj5ow tracks answering it here instead,
-// which this package can: it already derives the workspace shields (workspaceShields).
+// loud is the caller's, not this function's. Answering it here instead is the better
+// shape and is open work: this package already derives the workspace shields
+// (workspaceShields), so it can settle the carve half rather than inherit an unknown.
 func withholdGateRefused(p *policy.Policy) []refusedGrant {
 	// The whole proposal first, so the ordinary clean case pays for one walk of the
 	// credential stores rather than one per grant; the per-grant probes below are only for

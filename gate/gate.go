@@ -259,7 +259,7 @@ const (
 // directory at that path under either shield shape, and its file-shaped ones
 // (.git/config, .cargo/config.toml) name paths that are host FILES, which this already
 // answers as WorkdirNotDirectory. A derived rule that shielded a host DIRECTORY as a file
-// would end that, and nothing executable pins it: see bv2-kxv8p.
+// would end that, and nothing executable pins it.
 func WorkdirCheck(resolved *policy.Policy) WorkdirState {
 	if resolved == nil || resolved.Workdir == "" {
 		return WorkdirStartable

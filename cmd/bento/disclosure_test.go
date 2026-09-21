@@ -95,7 +95,7 @@ type hostFactRow struct {
 	exempt   string
 }
 
-// The host facts as of the fifth one landing. bv2-tpcnb's finding was not any single row
+// The host facts as of the fifth one landing. The finding behind this was not any single row
 // but the trend: doctor learns a host fact outside the layer model, validate does not, and
 // nothing notices - five times over, each in its own commit. This is what notices. A new
 // field on doctor's envelope fails the test until it is classified here, which is the

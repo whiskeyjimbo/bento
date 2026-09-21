@@ -47,11 +47,11 @@ import (
 // forbidden direction - a refusal WIDER than the backend's - lives in the two cells this
 // sandbox cannot reach, and both are covered by name rather than left as a silence:
 //
-//   - The above-direction fold on a checkout-derived shield is an open defect, not an
-//     uncovered case. Varying testSandbox.resolve toward a folding filesystem here would
-//     go red on it rather than on a regression, and the honest verdict it would need is
-//     the refuse-or-disclose decision bv2-k2g1h is held for. Reaching it before that
-//     decision lands would pin whichever answer the code happens to give today.
+//   - The above-direction fold on a checkout-derived shield is answered elsewhere, not
+//     left uncovered. Its verdict was settled as disclose rather than refuse, so a grant
+//     there stays honored and the run says so instead; varying testSandbox.resolve toward
+//     a folding filesystem here would assert a refusal that deliberately does not happen.
+//     The disclosure itself is exercised by the corpus case named below.
 //   - The workspace argument is what would carry the derived rules in, and the differential
 //     that exercises them from both deriving sites already exists: shieldcorpus' "write to a
 //     folded spelling of an enclosing checkout's hooks dir" case, which runs against this
