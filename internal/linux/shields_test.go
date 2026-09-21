@@ -1841,3 +1841,96 @@ func TestReclaimRunsBeforeTheAnchorItWouldMove(t *testing.T) {
 		t.Errorf("after the reclaim no .git/ stands, so the workspace shields must not anchor on %s - the run would shield a repository that never existed", checkout)
 	}
 }
+
+// onlyRecord returns the one record strandedRun staged.
+func onlyRecord(t *testing.T) string {
+	t.Helper()
+	recs, err := filepath.Glob(filepath.Join(runDirBase, "bento-run-*", shieldRecordName))
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("expected one staged record; got %v (%v)", recs, err)
+	}
+	return recs[0]
+}
+
+// A relative entry would be removed against the reclaiming run's cwd, which is wherever the
+// user happened to start bento, not anywhere the killed run made a mount point.
+func TestReclaimStrandedShieldsRefusesARelativePath(t *testing.T) {
+	strandedRun(t, false)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.Mkdir(filepath.Join(cwd, "rel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(onlyRecord(t), []byte("drel\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	if _, err := os.Lstat(filepath.Join(cwd, "rel")); err != nil {
+		t.Errorf("a relative record entry must not be removed against the cwd: %v", err)
+	}
+}
+
+// rmdir and unlink follow symlinks in every component but the last, so a recorded .git/
+// since replaced by a symlink would aim the reclaim at the tree it names.
+func TestReclaimStrandedShieldsStaysInsideASymlinkedParent(t *testing.T) {
+	checkout := strandedRun(t, false)
+	elsewhere := t.TempDir()
+	if err := os.Mkdir(filepath.Join(elsewhere, "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, "config"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(checkout, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(checkout, ".git")); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	for _, p := range []string{filepath.Join(elsewhere, "hooks"), filepath.Join(elsewhere, "config")} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("reclaim followed a symlinked parent out of the checkout and removed %s: %v", p, err)
+		}
+	}
+}
+
+// A recorded path now holding the user's own content is kept, and no later run can change
+// that, so the record goes after one warning instead of repeating it on every start.
+// A symlinked last component is the same: left alone, and its target untouched.
+func TestReclaimStrandedShieldsWarnsOnceOverUserContent(t *testing.T) {
+	checkout := strandedRun(t, false)
+	cfg := filepath.Join(checkout, ".git", "config")
+	if err := os.WriteFile(cfg, []byte("[core]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	hooks := filepath.Join(checkout, ".git", "hooks")
+	if err := os.Remove(hooks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, hooks); err != nil {
+		t.Fatal(err)
+	}
+
+	var first, second strings.Builder
+	reclaimStrandedShields(&first)
+	reclaimStrandedShields(&second)
+
+	if !strings.Contains(first.String(), cfg) {
+		t.Errorf("the first reclaim should name the kept path; got %q", first.String())
+	}
+	if second.Len() != 0 {
+		t.Errorf("a path holding user content should be reported once, not on every run; got %q", second.String())
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("a symlinked last component's target must be left alone: %v", err)
+	}
+	if fi, err := os.Lstat(hooks); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("a symlinked last component must be left alone: %v", err)
+	}
+}

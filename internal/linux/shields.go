@@ -4,6 +4,7 @@ package linux
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -676,16 +677,37 @@ func insideAWriteGrant(path string, writes []string) bool {
 // be read back without racing it: every input path is reported instead, which is the
 // honest answer when the reclaim's progress is unknown.
 func removeCreatedShields(dirs, files []string) []string {
-	left, err := bounded("the cleanup of the shield mount points", func() ([]string, error) {
-		var left []string
+	left, _ := reclaimShieldPaths(dirs, files)
+	return left
+}
+
+// reclaimShieldPaths is removeCreatedShields, also returning kept: the subset of left that
+// holds something bento did not make there (content, a symlink, a parent that resolves
+// elsewhere). Those are left for good rather than for a retry, which is what lets a stale
+// record be dropped once only they remain.
+//
+// A path whose parent does not resolve to itself is never touched: remove and rmdir follow
+// symlinks in every component but the last, so a parent swapped for a symlink would aim
+// them at whatever it names, outside the checkout.
+func reclaimShieldPaths(dirs, files []string) (left, kept []string) {
+	type result struct{ left, kept []string }
+	r, err := bounded("the cleanup of the shield mount points", func() (result, error) {
+		var left, kept []string
 		for _, f := range files {
+			if !parentResolved(f) {
+				left, kept = append(left, f), append(kept, f)
+				continue
+			}
 			// An absent path is a clean outcome, not a residue: bwrap never created it,
 			// which is what a setup failure before the launch leaves. Only a path that is
 			// still there, or one the host could not answer for, is unaccounted.
 			if fi, err := shieldLstat(f); os.IsNotExist(err) {
 				continue
-			} else if err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+			} else if err != nil {
 				left = append(left, f)
+				continue
+			} else if !fi.Mode().IsRegular() || fi.Size() != 0 {
+				left, kept = append(left, f), append(kept, f)
 				continue
 			}
 			if err := os.Remove(f); err != nil {
@@ -695,16 +717,34 @@ func removeCreatedShields(dirs, files []string) []string {
 		// dirs is deepest first, so the mount points inside an intermediate directory are
 		// gone by the time it is tried.
 		for _, d := range dirs {
-			if err := syscall.Rmdir(d); err != nil && !os.IsNotExist(err) {
+			if !parentResolved(d) {
+				left, kept = append(left, d), append(kept, d)
+				continue
+			}
+			err := syscall.Rmdir(d)
+			switch {
+			case err == nil || os.IsNotExist(err):
+			case errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.ENOTDIR):
+				left, kept = append(left, d), append(kept, d)
+			default:
 				left = append(left, d)
 			}
 		}
-		return left, nil
+		return result{left, kept}, nil
 	})
 	if err != nil {
-		return slices.Concat(files, dirs)
+		return slices.Concat(files, dirs), nil
 	}
-	return left
+	return r.left, r.kept
+}
+
+// parentResolved reports whether p's parent directory is the path it names, with no
+// symlink anywhere in it. A parent that does not exist counts: nothing under it can be
+// removed either.
+func parentResolved(p string) bool {
+	d := filepath.Dir(p)
+	r, err := filepath.EvalSymlinks(d)
+	return os.IsNotExist(err) || (err == nil && r == d)
 }
 
 // shieldLstat is behind a var for autoExecStat's reason: the mount the bound above exists
@@ -978,9 +1018,11 @@ func recordCreatedShields(runDir string, dirs, files []string) (*os.File, error)
 // concatenated directories are re-sorted deepest first, since each record is only ordered
 // within itself.
 //
-// A record is deleted, with its run directory, only when its paths all came back reclaimed.
-// One that did not is left for the next run to retry and report again, which also makes this
-// self-limiting: the record cannot accumulate for a checkout that is already clean.
+// A record is deleted, with its run directory, once none of its paths is left for a reason a
+// retry could change. One that still is (a dead mount, an unreadable path) is left for the
+// next run to retry and report again. A path now holding the user's own content is reported
+// once and not again: no later run can reclaim it, so keeping the record would only repeat a
+// warning blaming a run long gone.
 //
 // Errors are swallowed by design, not by omission - every one of them (a run directory that
 // vanished mid-sweep, a record another sweeper took first, an unreadable one) means only that
@@ -1031,9 +1073,9 @@ func reclaimStrandedShields(w io.Writer) {
 		return
 	}
 	slices.SortStableFunc(dirs, func(a, b string) int { return len(b) - len(a) })
-	left := removeCreatedShields(dirs, files)
+	left, kept := reclaimShieldPaths(dirs, files)
 	for _, s := range found {
-		if !slices.ContainsFunc(s.paths, func(p string) bool { return slices.Contains(left, p) }) {
+		if !slices.ContainsFunc(s.paths, func(p string) bool { return slices.Contains(left, p) && !slices.Contains(kept, p) }) {
 			os.RemoveAll(s.runDir)
 		}
 		s.rec.Close()
@@ -1060,6 +1102,9 @@ type shieldRecordEntries struct {
 // the paths it did carry are reclaimed by a later run only if a later run can read them
 // whole, which is the safe direction.
 //
+// A relative or unclean path is refused too: bento records only absolute clean paths, and
+// a relative one would be removed against whatever directory the reclaiming run started in.
+//
 // An unrecognised kind byte is the same refusal rather than a guess. Nothing writes one
 // today; a future format change should fail cleanly here instead of landing in whichever
 // branch the else happened to be.
@@ -1074,7 +1119,7 @@ func parseShieldRecord(runDir string, rec *os.File, body string) (shieldRecordEn
 			return shieldRecordEntries{}, false
 		}
 		kind, path := entry[0], entry[1:]
-		if kind != 'd' && kind != 'f' {
+		if kind != 'd' && kind != 'f' || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			return shieldRecordEntries{}, false
 		}
 		out.paths = append(out.paths, path)
