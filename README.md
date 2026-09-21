@@ -428,16 +428,20 @@ manifest's `env:` list so the real value is passed through. `bento validate` pri
 
 Bento organizes enforcement capabilities into **Core** and **Hardening** tiers:
 
-| Guarantee | Tier | Linux Mechanism |
-|---|---|---|
-| Read only granted paths | Core | Bubblewrap read-only bind mounts, deny-by-default root |
-| Write only granted directories | Core | Bubblewrap read-write bind mounts; root remounted read-only |
-| Shield credentials & dotfiles | Core | Mandatory denylist bind mounts (covers uncreated paths) |
-| Deny network egress by default | Core | Empty network namespace (`--unshare-net`) |
-| Per-host:port network egress | Core | Host-side HTTP CONNECT proxy over isolated unix socket |
-| Block `execve` subprocesses | Hardening | Seccomp syscall filter (`none-strict` blocks fork/clone on amd64) |
-| Memory / CPU / PID limits | Hardening | Systemd transient scope with cgroup v2 controllers |
-| Filesystem backstop | Hardening | Landlock LSM rules (best-effort secondary layer) |
+| Guarantee | Tier | Linux Mechanism | `doctor` row |
+|---|---|---|---|
+| Read only granted paths | Core | Bubblewrap read-only bind mounts, deny-by-default root | `filesystem` |
+| Write only granted directories | Core | Bubblewrap read-write bind mounts; root remounted read-only | `filesystem` |
+| Shield credentials & dotfiles | Core | Mandatory denylist bind mounts (covers uncreated paths) | `filesystem` |
+| Deny network egress by default | Core | Empty network namespace (`--unshare-net`) | `network` |
+| Per-host:port network egress | Core | Host-side HTTP CONNECT proxy over isolated unix socket | `network` |
+| Block `execve` subprocesses | Hardening | Seccomp syscall filter | `exec-block` |
+| Block fork/clone too (`exec: none-strict`) | Hardening | Seccomp syscall filter (amd64) | `exec-strict` |
+| Memory / CPU / PID limits | Hardening | Systemd transient scope with cgroup v2 controllers | `limits-memory`, `limits-cpu`, `limits-pids` |
+| Filesystem backstop | Hardening | Landlock LSM rules (best-effort secondary layer) | none of its own; named in the `filesystem` row's detail |
+| Report auto-executing files under write grants | Hardening | `git`, to find where a checkout runs its hooks | `auto-exec-report` |
+
+The last row confines nothing: it is the list of hooks and task files a run wrote that the host may later execute, and no manifest requires it, so it never refuses a run or fails `doctor`.
 
 If a hardening layer is missing on the host, `bento doctor` flags the shortfall. When `--strict` is passed, `bento run` refuses to execute under degraded enforcement.
 

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +55,45 @@ func TestExampleBinariesIgnored(t *testing.T) {
 		cmd.Dir = "../.."
 		if err := cmd.Run(); err != nil {
 			t.Errorf("%s is not ignored, so a build following the docs leaves it untracked: %v", path, err)
+		}
+	}
+}
+
+// A reviewer checks the Enforcement Matrix against doctor's report, so every layer doctor
+// can print has to appear in the matrix under the name doctor prints. The layers are read
+// from enforce's declarations rather than listed here, so a new one fails this until the
+// matrix names it.
+func TestEnforcementMatrixNamesEveryDoctorLayer(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "../../enforce/report.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var layers []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok || len(spec.Values) != 1 {
+			return true
+		}
+		if id, ok := spec.Type.(*ast.Ident); ok && id.Name == "Layer" {
+			if lit, ok := spec.Values[0].(*ast.BasicLit); ok {
+				layers = append(layers, strings.Trim(lit.Value, `"`))
+			}
+		}
+		return true
+	})
+	if len(layers) == 0 {
+		t.Fatal("found no Layer constants in enforce/report.go")
+	}
+
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, matrix, _ := strings.Cut(string(readme), "## Enforcement Matrix")
+	matrix, _, _ = strings.Cut(matrix, "\n\n---")
+	for _, layer := range layers {
+		if !strings.Contains(matrix, "`"+layer+"`") {
+			t.Errorf("the README's Enforcement Matrix has no row whose doctor column is `%s`", layer)
 		}
 	}
 }
