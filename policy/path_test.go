@@ -1,6 +1,11 @@
 package policy
 
-import "testing"
+import (
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
 
 // The predicate every consumer of a grant now shares, so its edges are pinned once.
 // The prefix-string trap is the one that matters: a grant of /home/u must not reach
@@ -74,3 +79,53 @@ func BenchmarkCoversResolved(b *testing.B) {
 }
 
 var sink bool
+
+// FuzzCoversResolvedMatchesComponents holds CoversResolved to its doc restated over path
+// components rather than byte offsets: a grant covers a path when the grant's cleaned
+// components are a prefix of the path's. The index comparison it actually runs is where a
+// one-off lets /a reach /ab, and three consumers answer a security question with it.
+func FuzzCoversResolvedMatchesComponents(f *testing.F) {
+	f.Add("/home/u", "/home/u/.ssh")
+	f.Add("/home/u", "/home/user2")
+	f.Add("/a", "/ab")
+	f.Add("/", "/anything")
+	f.Add("/", "rel")
+	f.Add("/home/u/", "/home/u//.ssh//id_rsa")
+	f.Add("/home/u", "/home/u/../u2")
+
+	f.Fuzz(func(t *testing.T, grant, path string) {
+		// A relative grant is outside the precondition, and what the lexical test says
+		// there does not match what the doc says about relative paths.
+		if !filepath.IsAbs(grant) {
+			t.Skip("relative grant")
+		}
+		got := CoversResolved(grant, path)
+		if want := referenceCoversResolved(grant, path); got != want {
+			t.Fatalf("CoversResolved(%q, %q) = %v; the component restatement says %v", grant, path, got, want)
+		}
+		// Empty and "." segments are spelling, not reach, on either side.
+		if filepath.IsAbs(grant) && filepath.IsAbs(path) {
+			noisy := func(s string) string { return strings.ReplaceAll(s, "/", "//./") }
+			if again := CoversResolved(noisy(grant), noisy(path)); again != got {
+				t.Fatalf("CoversResolved(%q, %q) = %v but %v once the same paths are spelled with // and /./", grant, path, got, again)
+			}
+		}
+	})
+}
+
+// referenceCoversResolved takes an absolute grant: the path is the grant itself, or an
+// absolute path whose components extend the grant's. A relative path is under nothing.
+func referenceCoversResolved(grant, path string) bool {
+	grant, path = filepath.Clean(grant), filepath.Clean(path)
+	if grant == path {
+		return true
+	}
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	split := func(s string) []string {
+		return slices.DeleteFunc(strings.Split(s, "/"), func(c string) bool { return c == "" })
+	}
+	g, p := split(grant), split(path)
+	return len(g) < len(p) && slices.Equal(g, p[:len(g)])
+}
