@@ -124,92 +124,11 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	wanted := requiredLayers(p, opts)
 	probed := e.Probe(ctx)
 	required := probed.forLayers(wanted)
-	if err := opts.admit(required); err != nil {
-		return Result{}, screenRemedies(err, p, opts, required)
+	if err := composedAdmission(p, opts, probed, required); err != nil {
+		return Result{}, screenRemedies(err, p, opts, probed, required)
 	}
-	if err := admitRunID(p, opts, required); err != nil {
-		return Result{}, err
-	}
-	// A Degraded filesystem layer that reached here was admitted under
-	// --allow-degraded (default and strict both refuse it); the backend cannot run
-	// its full mechanism, so tell it to take its reduced-confinement tier. Selecting
-	// on the probed state, not on the flag, keeps the decision tied to what the host
-	// can actually do. It reads only the filesystem layer because that flag selects a
-	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
-	// degradation travels to the caller in the Report, not here.
+	// Selected on the probed state, as admitTier judged it; see there.
 	degraded := required.StateOf(LayerFilesystem) == Degraded
-	// requiredLayers leaves LayerNetwork out of a zero-rule gateless manifest because
-	// denying all egress is what namespace isolation already provides. That rests on there
-	// BEING a namespace, and a probe reporting the layer Unavailable says there is not -
-	// so the layer is filtered out of `required` and nothing sees it, on the reasoning that
-	// the run had no egress concern.
-	//
-	// The unfiltered probe is read here for that reason. The two ways a run gets an egress
-	// fence are the netns and the degraded tier's seccomp block, which is why a degraded
-	// run is exempt: the backend is told to install one. A run that has neither has no
-	// fence at all, and nothing downstream can supply one - Run passes no other signal that
-	// would make a backend fence egress in this shape.
-	//
-	// The Linux backend never reaches this: its probe ties LayerNetwork Unavailable to the
-	// same missing namespace that degrades the filesystem layer, so `degraded` is already
-	// true. But that is an invariant of one backend's probe, and Run takes any Enforcer -
-	// the same reason the gate and network-rule refusals above do not rest on it either.
-	//
-	// Read with StateOf, so a probe that never mentions the layer refuses alongside one
-	// that reports it Unavailable. The two say the same thing about the run - there is no
-	// netns and nothing else will fence egress - and telling them apart here would make
-	// the guarantee rest on an Enforcer remembering to declare a layer. See Enforcer for
-	// the obligation that follows from it.
-	if !degraded && probed.StateOf(LayerNetwork) == Unavailable {
-		return Result{}, &Refusal{
-			Report: required,
-			Reason: "this host has no network namespace to fence egress into, and only the degraded tier substitutes a seccomp egress block for one",
-		}
-	}
-	// The degraded tier has no mount namespace and applies no shields, so it cannot
-	// honor a caller deny. The backend refuses on this too, and keeps its copy because
-	// it is reachable without Run - but a backend refusal is a plain error, and a
-	// frontend that sorts the two apart files it under the runs that failed for reasons
-	// out of the caller's hands. It is decidable here, where the tier and the options
-	// are both in hand, and it is a mistake in what the caller asked for: the category
-	// ValidateRunID describes, which a supervisor must not retry.
-	//
-	// A gate gets the same treatment. On the Linux backend admit has already refused it
-	// - a gate requires LayerNetwork, and the userns-blocked host this tier is for
-	// probes that Unavailable, which no posture admits - but that is an invariant of one
-	// backend's probe, and Run takes any Enforcer. An enforcer whose probe pairs a
-	// degraded filesystem with a usable network reopens exactly this bug.
-	//
-	// And network RULES with it, on the same predicate requiredLayers uses: the two are
-	// one class there (either brings LayerNetwork up) and splitting them here is what let
-	// a network manifest through. On the Linux backend it fails the other way from the
-	// gate - the target gets strictly LESS network than declared, since runDegraded never
-	// listens on the proxy socket newSandbox sets and the launcher blocks egress outright
-	// - so what breaks is the attestation: Result.Report would assert LayerNetwork
-	// Enforced for a run in which no proxy listened and no allowlist was consulted. The
-	// Linux backend does now correct that layer itself, but the refusal cannot rest on a
-	// backend doing so: Run takes any Enforcer, and the overlay here only ever worsens,
-	// so a backend that claims Enforced is believed.
-	if degraded {
-		if len(opts.DenyPaths) > 0 {
-			return Result{}, &Refusal{
-				Report: required,
-				Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
-			}
-		}
-		if opts.NetworkGate != nil {
-			return Result{}, &Refusal{
-				Report: required,
-				Reason: "a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
-			}
-		}
-		if len(p.Network) > 0 {
-			return Result{}, &Refusal{
-				Report: required,
-				Reason: "network rules cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
-			}
-		}
-	}
 	res, err := e.Run(ctx, p, proc, RunOptions{
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,
@@ -332,6 +251,9 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 				"Usually the stage died during setup and the target never ran; an embedder that hosts the backend " +
 				"and called backend.DispatchReexec() somewhere other than the first statement in main() looks the same",
 			Short: judgedDegradations(res.Report),
+			// Short names what the stage's absence left unattested, not what refused the
+			// run, so neither the waiver nor the `limits:` edit is a way past it.
+			NoRemedy: true,
 		}
 	}
 	// Admission judged the pre-run probe, but the overlay above can have worsened a
@@ -643,8 +565,7 @@ func admitEnv(p *policy.Policy, proc Process) error {
 // screenRemedies withdraws the way past a refusal that admission would refuse anyway.
 //
 // Waivable says --allow-degraded admits THIS run, and admit sets it knowing only its own
-// half of admission: the effective bar for a posture is the composition admit ||
-// admitRunID (see limitsBar), so a refusal admit marked waivable can still meet a hard
+// part of admission: the effective bar for a posture is composedAdmission, so a refusal admit marked waivable can still meet a hard
 // refusal further along when the operator takes the flag. That is worse than a refusal
 // naming nothing - the operator learns it by trying - and it is generic, not the run id's
 // alone: any check Run composes after admit inherits the same gap.
@@ -657,7 +578,7 @@ func admitEnv(p *policy.Policy, proc Process) error {
 // avoid. NoRemedy says so; the reason the composition gave is appended, so the operator
 // reads what the remedy would have run into rather than being left with a refusal that
 // names no next step at all.
-func screenRemedies(err error, p *policy.Policy, opts Options, required Report) error {
+func screenRemedies(err error, p *policy.Policy, opts Options, probed, required Report) error {
 	var r *Refusal
 	if !errors.As(err, &r) {
 		return err
@@ -665,7 +586,7 @@ func screenRemedies(err error, p *policy.Policy, opts Options, required Report) 
 	if r.Waivable {
 		waived := opts
 		waived.Strict, waived.AllowDegraded = false, true
-		if blocker := composedAdmission(p, waived, required); blocker != nil {
+		if blocker := composedAdmission(p, waived, probed, required); blocker != nil {
 			r.Waivable = false
 			r.NoRemedy = true
 			r.Reason += "; --allow-degraded does not admit it either: " + refusalReason(blocker)
@@ -693,11 +614,102 @@ func screenRemedies(err error, p *policy.Policy, opts Options, required Report) 
 }
 
 // composedAdmission is the whole of admission for a posture, in the order Run applies it.
-func composedAdmission(p *policy.Policy, opts Options, required Report) error {
+func composedAdmission(p *policy.Policy, opts Options, probed, required Report) error {
 	if err := opts.admit(required); err != nil {
 		return err
 	}
-	return admitRunID(p, opts, required)
+	if err := admitRunID(p, opts, required); err != nil {
+		return err
+	}
+	return admitTier(p, opts, probed, required)
+}
+
+// admitTier refuses a run the tier Run would select cannot honor. It is part of
+// composedAdmission, not a step after it, so that screenRemedies judges a waived posture
+// against these refusals too: a refusal that offers --allow-degraded over a run one of
+// these then refuses sends the operator back to a refusal.
+func admitTier(p *policy.Policy, opts Options, probed, required Report) error {
+	// A Degraded filesystem layer that reached here was admitted under
+	// --allow-degraded (default and strict both refuse it); the backend cannot run
+	// its full mechanism, so tell it to take its reduced-confinement tier. Selecting
+	// on the probed state, not on the flag, keeps the decision tied to what the host
+	// can actually do. It reads only the filesystem layer because that flag selects a
+	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
+	// degradation travels to the caller in the Report, not here.
+	degraded := required.StateOf(LayerFilesystem) == Degraded
+	// requiredLayers leaves LayerNetwork out of a zero-rule gateless manifest because
+	// denying all egress is what namespace isolation already provides. That rests on there
+	// BEING a namespace, and a probe reporting the layer Unavailable says there is not -
+	// so the layer is filtered out of `required` and nothing sees it, on the reasoning that
+	// the run had no egress concern.
+	//
+	// The unfiltered probe is read here for that reason. The two ways a run gets an egress
+	// fence are the netns and the degraded tier's seccomp block, which is why a degraded
+	// run is exempt: the backend is told to install one. A run that has neither has no
+	// fence at all, and nothing downstream can supply one - Run passes no other signal that
+	// would make a backend fence egress in this shape.
+	//
+	// The Linux backend never reaches this: its probe ties LayerNetwork Unavailable to the
+	// same missing namespace that degrades the filesystem layer, so `degraded` is already
+	// true. But that is an invariant of one backend's probe, and Run takes any Enforcer -
+	// the same reason the gate and network-rule refusals above do not rest on it either.
+	//
+	// Read with StateOf, so a probe that never mentions the layer refuses alongside one
+	// that reports it Unavailable. The two say the same thing about the run - there is no
+	// netns and nothing else will fence egress - and telling them apart here would make
+	// the guarantee rest on an Enforcer remembering to declare a layer. See Enforcer for
+	// the obligation that follows from it.
+	if !degraded && probed.StateOf(LayerNetwork) == Unavailable {
+		return &Refusal{
+			Report: required,
+			Reason: "this host has no network namespace to fence egress into, and only the degraded tier substitutes a seccomp egress block for one",
+		}
+	}
+	// The degraded tier has no mount namespace and applies no shields, so it cannot
+	// honor a caller deny. The backend refuses on this too, and keeps its copy because
+	// it is reachable without Run - but a backend refusal is a plain error, and a
+	// frontend that sorts the two apart files it under the runs that failed for reasons
+	// out of the caller's hands. It is decidable here, where the tier and the options
+	// are both in hand, and it is a mistake in what the caller asked for: the category
+	// ValidateRunID describes, which a supervisor must not retry.
+	//
+	// A gate gets the same treatment. On the Linux backend admit has already refused it
+	// - a gate requires LayerNetwork, and the userns-blocked host this tier is for
+	// probes that Unavailable, which no posture admits - but that is an invariant of one
+	// backend's probe, and Run takes any Enforcer. An enforcer whose probe pairs a
+	// degraded filesystem with a usable network reopens exactly this bug.
+	//
+	// And network RULES with it, on the same predicate requiredLayers uses: the two are
+	// one class there (either brings LayerNetwork up) and splitting them here is what let
+	// a network manifest through. On the Linux backend it fails the other way from the
+	// gate - the target gets strictly LESS network than declared, since runDegraded never
+	// listens on the proxy socket newSandbox sets and the launcher blocks egress outright
+	// - so what breaks is the attestation: Result.Report would assert LayerNetwork
+	// Enforced for a run in which no proxy listened and no allowlist was consulted. The
+	// Linux backend does now correct that layer itself, but the refusal cannot rest on a
+	// backend doing so: Run takes any Enforcer, and the overlay here only ever worsens,
+	// so a backend that claims Enforced is believed.
+	if degraded {
+		if len(opts.DenyPaths) > 0 {
+			return &Refusal{
+				Report: required,
+				Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
+			}
+		}
+		if opts.NetworkGate != nil {
+			return &Refusal{
+				Report: required,
+				Reason: "a network gate cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
+			}
+		}
+		if len(p.Network) > 0 {
+			return &Refusal{
+				Report: required,
+				Reason: "network rules cannot be honored by the degraded tier: it has no network namespace to run the egress proxy in",
+			}
+		}
+	}
+	return nil
 }
 
 // refusalReason is a refusal's own sentence where there is one, so a reason quoted inside
@@ -817,7 +829,8 @@ type Refusal struct {
 	// flag, or the manifest edit that drops what fell short - is itself refused further
 	// along admission, so naming any of them would send the reader back to a refusal.
 	// The Reason carries what the composition refused for instead. A frontend prints no
-	// remedy when it is set.
+	// remedy when it is set. The silent-stage refusal sets it too: no posture or manifest
+	// edit is what refused that run.
 	NoRemedy bool
 }
 

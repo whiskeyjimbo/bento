@@ -1707,3 +1707,100 @@ func TestAWithdrawnManifestEditNamesTheLiveLever(t *testing.T) {
 		t.Errorf("the withdrawn edit quotes advice to set a limit and never says which lever is live:\n%s", refusal.Reason)
 	}
 }
+
+// admitRunID's limits refusal names dropping the run id as the way past it, and a
+// frontend offers dropping `limits:` for any limits-only shortfall no one marked
+// withdrawn - which lands on admitRunID's other arm, a run id with no limit to scope.
+// Both roads to that refusal: an unread scope under the default posture, and a degraded
+// one the waiver would otherwise have taken.
+func TestARunIDLimitsRefusalWithdrawsTheManifestEdit(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	for _, tc := range []struct {
+		name  string
+		state State
+		opts  Options
+	}{
+		{"default posture, unread scope", Unsampled, Options{RunID: "job"}},
+		{"allow-degraded, degraded scope", Degraded, Options{RunID: "job", AllowDegraded: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := fullyEnforced()
+			probe.SetStatus(LayerStatus{Layer: LayerLimitsMemory, State: tc.state, Reason: "the layer under test"})
+			_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, tc.opts)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("want a refusal of the run id; got %v", err)
+			}
+			if !refusal.NoRemedy {
+				t.Errorf("the refusal leaves the `limits:` edit on offer, which admitRunID refuses in turn: %q", refusal.Reason)
+			}
+		})
+	}
+}
+
+// A silent stage names every layer the run did not attest, and under --allow-degraded
+// that can be a limits layer alone - the exact shape a frontend answers with "drop
+// `limits:`", under a reason about a stage that died. No remedy reaches that cause.
+func TestASilentStageRefusalOffersNoRemedy(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	probe := fullyEnforced()
+	probe.SetStatus(LayerStatus{Layer: LayerLimitsMemory, State: Degraded, Reason: "memory not delegated"})
+	f := &fakeEnforcer{probe: probe, silentStage: true}
+	_, err := Run(context.Background(), f, limited, Process{}, Options{AllowDegraded: true})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("a silent stage must refuse; got %v", err)
+	}
+	if !refusal.NoRemedy {
+		t.Errorf("a silent-stage refusal offers a remedy; Short = %v", refusal.Short)
+	}
+}
+
+// Remedy screening judges the waived run against the whole of admission, the tier checks
+// Run makes after the posture's included: the missing-netns refusal, and the degraded
+// tier's refusals of a caller deny, a gate, and network rules. Two layers vary at once,
+// because each of these cells takes one layer to make the refusal waivable and another
+// to make the waived run refuse.
+//
+// The degraded-tier half is unreachable today only because the default posture's core
+// bar refuses a Degraded filesystem before any waivable refusal is made - a line nothing
+// ties to the screening. The test holds whichever way that bar moves, since screening
+// sees the same refusals Run does.
+func TestNoWaivableRefusalMeetsARefusalOfTheTier(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	networked := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"},
+		Network: []policy.NetworkRule{{Host: "example.com", Port: "443"}}}
+	variants := []struct {
+		name string
+		p    *policy.Policy
+		opts Options
+	}{
+		{"plain", limited, Options{}},
+		{"deny paths", limited, Options{DenyPaths: []string{"/secret"}}},
+		{"gate", limited, Options{NetworkGate: func(context.Context, string, string) bool { return true }}},
+		{"network rules", networked, Options{}},
+	}
+	states := []State{Enforced, Unsampled, Degraded, Unavailable}
+	for _, v := range variants {
+		for _, fs := range states {
+			for _, net := range states {
+				for _, mem := range states {
+					probe := fullyEnforced()
+					probe.SetStatus(LayerStatus{Layer: LayerFilesystem, State: fs})
+					probe.SetStatus(LayerStatus{Layer: LayerNetwork, State: net})
+					probe.SetStatus(LayerStatus{Layer: LayerLimitsMemory, State: mem})
+					_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, v.p, Process{}, v.opts)
+					var refusal *Refusal
+					if !errors.As(err, &refusal) || !refusal.Waivable {
+						continue
+					}
+					waived := v.opts
+					waived.AllowDegraded = true
+					if _, err := Run(context.Background(), &fakeEnforcer{probe: probe}, v.p, Process{}, waived); err != nil {
+						t.Errorf("%s, fs %s net %s mem %s: the refusal offers --allow-degraded and the waived run refuses: %v", v.name, fs, net, mem, err)
+					}
+				}
+			}
+		}
+	}
+}
