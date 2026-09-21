@@ -1023,43 +1023,69 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 	}
 }
 
-// writeLimitsRemedy names the ways past a refusal over resource limits this host cannot
-// enforce. Every other refusal states a shortfall the reader can go fix - install
-// bubblewrap, permit a user namespace - but a missing systemd-run on a container image is
-// not something the caller of `bento run` can install, so the diagnosis alone leaves them
-// stuck: the manifest asked for a cap, the host has no way to apply one, and neither end
-// of that is theirs to change from here.
+// writeRefusalRemedy names the ways past a refusal the reader would otherwise be stuck
+// in front of. Most refusals state a shortfall they can go fix - install bubblewrap,
+// permit a user namespace - but the two hardening-tier refusals the default posture
+// raises are not like that: a missing systemd-run on a container image and an exec
+// filter that has never existed off amd64 are neither of them the caller's to install,
+// so the diagnosis alone leaves them with a manifest that asks for something and a host
+// that cannot give it.
 //
 // It lives beside run's call to writeRefusal rather than inside it because the remedies
 // are run's own vocabulary - profile refuses through the same printer and offers none
 // (see preflightHost).
 //
-// Waivable is what says --allow-degraded would actually admit THIS run, and under --strict
-// it never would: run rejects the two flags together, so naming the flag there would hand
-// the reader a way past that hard-errors when they take it. Strict is offered the manifest
-// edit alone, and only when the limits are the WHOLE shortfall - strict refuses over every
-// layer that fell short, so telling a reader whose filesystem tier is also degraded to drop
-// `limits:` would send them back to the same refusal, which is the failure the flag is
-// withheld to avoid. Neither branch names a host-side fix: the layer's own Reason prints
-// directly above and is the only line that knows which of the three causes this is, and an
-// uninstalled systemd-run and an undelegated controller do not have the same answer.
-func writeLimitsRemedy(w io.Writer, r *enforce.Refusal) {
+// Keyed on Waivable, not on which layer fell short: Waivable is precisely the statement
+// that --allow-degraded would admit THIS run, and enforce sets it for every refusal
+// where that holds. A hint wired to one layer is what left the exec refusal - which
+// refuses the default manifest on every arm64 host - printing no way out at all, so an
+// unrecognized layer still gets the flag named rather than silence.
+//
+// Under --strict the flag is never named: run rejects the two flags together, so it
+// would hand the reader a way past that hard-errors when they take it. Strict is offered
+// the manifest edit alone, and only when the limits are the WHOLE shortfall - strict
+// refuses over every layer that fell short, so telling a reader whose filesystem tier is
+// also degraded to drop `limits:` would send them back to the same refusal, which is the
+// failure the edit is withheld to avoid. Neither branch names a host-side fix: the
+// layer's own Reason prints directly above and is the only line that knows which cause
+// this is, and an uninstalled systemd-run and an undelegated controller do not have the
+// same answer.
+func writeRefusalRemedy(w io.Writer, r *enforce.Refusal) {
 	isLimits := func(l enforce.LayerStatus) bool {
 		return l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU
 	}
-	if !slices.ContainsFunc(r.Short, isLimits) {
-		return
+	isExec := func(l enforce.LayerStatus) bool {
+		return l.Layer == enforce.LayerExec || l.Layer == enforce.LayerExecStrict
 	}
+	limits := slices.ContainsFunc(r.Short, isLimits)
 	if !r.Waivable {
-		if slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool { return !isLimits(l) }) {
+		if !limits || slices.ContainsFunc(r.Short, func(l enforce.LayerStatus) bool { return !isLimits(l) }) {
 			return
 		}
 		fmt.Fprintln(w, "  to proceed anyway, drop `limits:` from the manifest so it no longer asks for a cap")
 		fmt.Fprintln(w, "  this host cannot apply.")
 		return
 	}
-	fmt.Fprintln(w, "  to proceed anyway, pass --allow-degraded and the script runs unbounded, or drop")
-	fmt.Fprintln(w, "  `limits:` from the manifest so it no longer asks for a cap this host cannot apply.")
+	// What the waiver costs, per layer, so the flag is not offered as if it were free.
+	// The default is deliberately vague rather than absent: a third Waivable producer
+	// inheriting an unspecific consequence is recoverable, one inheriting no hint is the
+	// defect this writer exists to prevent.
+	cost := "the run proceeds with the enforcement above reduced"
+	switch {
+	case limits && slices.ContainsFunc(r.Short, isExec):
+		cost = "the script runs unbounded and without the subprocess block it asked for"
+	case limits:
+		cost = "the script runs unbounded"
+	case slices.ContainsFunc(r.Short, isExec):
+		cost = "the script runs without the subprocess block it asked for"
+	}
+	remedy := "to proceed anyway, pass --allow-degraded and " + cost
+	if limits {
+		remedy += ", or drop `limits:` from the manifest so it no longer asks for a cap this host cannot apply"
+	}
+	for _, line := range wrapText(remedy+".", textWidth-2) {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
 }
 
 // writeTargetUnreached says what an exit code alone cannot: the sandbox came up and the

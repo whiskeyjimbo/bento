@@ -118,17 +118,21 @@ func TestConsequencesAreRelocatedNotDropped(t *testing.T) {
 	}
 }
 
-// A refusal over a limit this host cannot apply is the one shortfall whose reader has
-// nothing to go fix: the manifest asked for a cap and the host has no way to apply one,
-// and on a container image without systemd neither end is theirs to change. So this
-// refusal alone carries its ways out, and only where each really applies - the manifest
-// edit wherever the shortfall is a limit, the flag only where it would admit the run.
-// Under --strict it would not, since run refuses that flag alongside it, so strict is
-// offered the edit without it rather than left with a diagnosis and no way past.
-func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
+// A waivable refusal is one the reader can get past only by knowing the flag exists, so
+// every one of them names it - keyed on Waivable rather than on which layer fell short,
+// because enforce.Refusal has two producers of it (a requested limit, an undeliverable
+// exec block) and a hint wired to one leaves the other refusing with no way out printed.
+// The manifest edit is narrower: it applies only where the shortfall is a limit, and
+// under --strict, where run refuses --allow-degraded alongside it, it is all that is
+// offered rather than leaving the reader a diagnosis and no way past.
+func TestAWaivableRefusalNamesTheWayPast(t *testing.T) {
 	limits := enforce.LayerStatus{
 		Layer: enforce.LayerLimitsMemory, State: enforce.Unavailable,
 		Reason: "systemd-run is not installed, so resource limits cannot be enforced unprivileged",
+	}
+	exec := enforce.LayerStatus{
+		Layer: enforce.LayerExec, State: enforce.Unavailable,
+		Reason: "the foreign-architecture guard the filter rests on is amd64-only",
 	}
 	filesystem := enforce.LayerStatus{
 		Layer: enforce.LayerFilesystem, State: enforce.Degraded,
@@ -139,16 +143,23 @@ func TestLimitsRefusalNamesTheWayPast(t *testing.T) {
 		wantFlag bool
 		wantEdit bool
 	}{
-		"waivable limits":     {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true, true},
-		"strict limits":       {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false, true},
-		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, false, false},
+		"waivable limits": {&enforce.Refusal{Short: []enforce.LayerStatus{limits}, Waivable: true}, true, true},
+		"strict limits":   {&enforce.Refusal{Short: []enforce.LayerStatus{limits}}, false, true},
+		// The exec block off amd64: the second Waivable producer, and the one that
+		// refuses the DEFAULT manifest on every arm64 host. It gets the flag and not the
+		// `limits:` edit, which would send it to change a setting it never asked for.
+		"waivable exec block": {&enforce.Refusal{Short: []enforce.LayerStatus{exec}, Waivable: true}, true, false},
+		// A Waivable refusal over a layer this writer knows nothing about still names the
+		// flag: Waivable is what says the flag admits this exact run, so a third producer
+		// cannot inherit silence the way the exec one did.
+		"waivable filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}, Waivable: true}, true, false},
 		"strict filesystem":   {&enforce.Refusal{Short: []enforce.LayerStatus{filesystem}}, false, false},
 		// Strict refuses over every layer that fell short, so a reader told to drop
 		// `limits:` here would be refused again by the filesystem tier they still have.
 		"strict limits and filesystem": {&enforce.Refusal{Short: []enforce.LayerStatus{limits, filesystem}}, false, false},
 	} {
 		var b bytes.Buffer
-		writeLimitsRemedy(&b, tc.refusal)
+		writeRefusalRemedy(&b, tc.refusal)
 		flat := strings.Join(strings.Fields(b.String()), " ")
 		if got := strings.Contains(flat, "--allow-degraded"); got != tc.wantFlag {
 			t.Errorf("%s: offered the flag = %v, want %v; got:\n%s", name, got, tc.wantFlag, b.String())

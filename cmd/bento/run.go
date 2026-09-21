@@ -488,7 +488,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// reasons include the degraded filesystem tier's thousand-character disclosure,
 		// which that printer would put on one unreadable line.
 		writeRefusal(stderr, "refusing to run", refusal)
-		writeLimitsRemedy(stderr, refusal)
+		writeRefusalRemedy(stderr, refusal)
 		return &exitError{code: bentoFailed}
 	case errors.As(runErr, &shortfall) && shortfall.Err == nil:
 		// The target ran, so its output and report are reported exactly as a clean run's

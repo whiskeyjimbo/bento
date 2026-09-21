@@ -53,7 +53,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeExecRecord"}, fixture: "verdict", marker: "executed nothing beyond the target", key: "exec_record"},
 	{writers: []string{"writeTargetUnreached"}, fixture: "unreached", marker: "never ran", key: "target_never_ran"},
 	{writers: []string{"writeRefusal"}, fixture: "refusal", marker: "refusing to run", key: "reason"},
-	{writers: []string{"writeLimitsRemedy"}, fixture: "refusal", marker: "pass --allow-degraded", key: "allow_degraded_would_admit"},
+	{writers: []string{"writeRefusalRemedy"}, fixture: "refusal", marker: "pass --allow-degraded", key: "allow_degraded_would_admit"},
 	{writers: []string{"writeSignalNotice"}, exempt: "R16: the hedged 128+n reading is withheld from signal on purpose; see the Signal field in writeRunResult"},
 	{writers: []string{"writeEgressHint", "writeExecHint", "writeProfileHint", "writeSandboxHomeMiss", "writeSandboxPathMiss", "writeDenialLegend"},
 		exempt: "R17/R18: remedies computed from exit_code, the policy and fields the verdict already carries"},

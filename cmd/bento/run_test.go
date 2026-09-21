@@ -109,6 +109,31 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 	}
 }
 
+// The refusal an arm64 host meets on the DEFAULT manifest: exec's zero value asks for
+// the subprocess block, and the foreign-architecture guard the filter rests on is
+// amd64-only, so admission refuses and --allow-degraded is the only way past. Pinned
+// through writeRunResult rather than the remedy writer alone because what was broken was
+// the wiring - the human path called a writer that returned early on anything but a
+// limits layer, so the operator was refused with no flag named while --json carried
+// allow_degraded_would_admit the whole time.
+func TestWriteRunResultExecRefusalNamesAllowDegraded(t *testing.T) {
+	refusal := &enforce.Refusal{
+		Reason: "the manifest asks to block subprocess execution and this platform cannot install the filter that does it",
+		Short: []enforce.LayerStatus{{
+			Layer:  enforce.LayerExec,
+			State:  enforce.Unavailable,
+			Reason: "the foreign-architecture guard the filter rests on is amd64-only",
+		}},
+		Waivable: true,
+	}
+	var stderr bytes.Buffer
+	_ = writeRunResult(&stderr, false, validPolicy(), nil,
+		enforce.Result{}, nil, nil, refusal)
+	if !strings.Contains(stderr.String(), "--allow-degraded") {
+		t.Errorf("a waivable exec refusal named no way past; got:\n%s", stderr.String())
+	}
+}
+
 // The shadowed-PATH note has to reach the run it is about, and that run exits 0 - the
 // whole complaint is a lane that finished cleanly on the wrong binary. It rides a failed
 // run out too, in the same relative place, so two runs read side by side do not put it
