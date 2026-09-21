@@ -523,10 +523,18 @@ func TestRequiredLayerBlocksRun(t *testing.T) {
 	}
 }
 
-// A hardening layer that is only WEAKER than asked is reported loudly but does not
-// refuse the run by default - that is the macOS reality. The fence that cannot be
-// installed at all is the exception, and TestAnUndeliverableExecBlockRefusesByDefault
-// pins it: an absent fence is not a weaker one, so the two are not the same case.
+// A hardening fence that is only WEAKER than asked is reported loudly but does not refuse
+// the run by default; one that cannot be installed AT ALL does refuse
+// (TestAnUndeliverableExecBlockRefusesByDefaultAndIsWaivable). This is the test that
+// holds those apart, so it is what goes red if undeliverableExecBlock's bar is ever
+// widened from >= Unavailable to != Enforced - the whole justification for the weaker bar
+// is that a Degraded exec-strict still blocks execve.
+//
+// The Degraded exec-strict state is written by hand because no PROBE emits it: execLayers
+// reports that layer Enforced or Unavailable only, and Degraded arises post-run, from the
+// applied report when the launcher fell back to the execve-only filter. Run takes any
+// Enforcer, so admission has to answer for it either way, and this is the posture half of
+// that answer.
 func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	newProbe := func() Report {
 		r := confinedHost()
@@ -773,7 +781,9 @@ func TestReportDegradation(t *testing.T) {
 }
 
 func TestStateString(t *testing.T) {
-	for state, want := range map[State]string{Enforced: "enforced", Degraded: "degraded", Unavailable: "unavailable"} {
+	// Every constant, so dropping an arm renders "unknown" in doctor and --json with
+	// nothing red. State.String has a default arm, which is what makes that silent.
+	for state, want := range map[State]string{Enforced: "enforced", Unsampled: "unsampled", Degraded: "degraded", Unavailable: "unavailable"} {
 		if got := state.String(); got != want {
 			t.Errorf("State(%d).String() = %q, want %q", state, got, want)
 		}
@@ -1601,5 +1611,33 @@ func TestAnUndeliverableExecBlockRefusesByDefaultAndIsWaivable(t *testing.T) {
 	execAll := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}
 	if _, err := Run(context.Background(), f, execAll, Process{}, Options{}); err != nil {
 		t.Fatalf("an exec: all manifest was refused for an exec block it never asked for; got %v", err)
+	}
+}
+
+// The exemption Unsampled buys is for the hardening tier only. A CORE guarantee nobody
+// could read must refuse, because the default posture refuses a core layer that is
+// anything less than enforced and "nobody could tell" is less than enforced - the exact
+// fail-open that inserting a constant below Degraded would otherwise have opened, since
+// the core bars were written as Degraded when Degraded was the least severe shortfall.
+// No producer emits a core Unsampled today; State is exported and Run takes any
+// Enforcer, so admission answers for it rather than resting on that.
+func TestAnUnsampledCoreLayerStillRefuses(t *testing.T) {
+	unreadable := func() Report {
+		var r Report
+		r.Add(LayerFilesystem, Unsampled, "the confinement this run got was never read back")
+		r.Add(LayerNetwork, Enforced, "")
+		r.Add(LayerExec, Enforced, "")
+		return r
+	}
+
+	f := &fakeEnforcer{probe: unreadable()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); !errors.As(err, new(*Refusal)) {
+		t.Errorf("the default posture admitted a run whose core filesystem layer nobody read; got %v", err)
+	}
+	if f.ran {
+		t.Error("a run with an unread core guarantee reached the enforcer")
+	}
+	if short := postRunShortfall(Options{}, unreadable()); len(short) == 0 {
+		t.Error("the post-run bar passed an unread core layer, so admission and it disagree")
 	}
 }

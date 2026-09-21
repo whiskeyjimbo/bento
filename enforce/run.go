@@ -376,12 +376,14 @@ func judgedDegradations(r Report) []LayerStatus {
 // caller's posture admitted the run on. It mirrors admit's branches: strict requires
 // every layer fully enforced, --allow-degraded waives a degraded core layer but not one
 // that enforces nothing, and the default posture refuses a core layer that is anything
-// less than enforced.
+// less than enforced - Unsampled included, which is why the core bar here is Unsampled
+// and not Degraded. A core guarantee nobody could read is not a core guarantee.
 //
 // Only core layers outside strict, because that is what admission gates on: a
 // hardening layer the backend downgraded mid-run was never grounds to refuse the run,
-// so it is not grounds to fault the completed one either. The requested-limits check is
-// the one exception, and it rides along with the default branch (and with --allow-degraded
+// so it is not grounds to fault the completed one either. Two hardening checks are the
+// exceptions - a requested limit and an undeliverable exec block - and they ride along
+// with the default branch (and with --allow-degraded
 // when a run id is set, as admitRunID refuses it) for the same reason it
 // refuses at admission: a limit the manifest asked for protects the *host*, and a
 // controller found undelegated only once the scope exists is the same unbounded target
@@ -404,11 +406,11 @@ func postRunShortfall(opts Options, r Report) []LayerStatus {
 		// supervisor's ability to reap the target through its scope.
 		short := r.shortfall(TierCore, Unavailable)
 		if opts.RunID != "" {
-			short = append(short, unenforcedRequestedLimits(r, Unsampled)...)
+			short = append(short, unenforcedRequestedLimits(r, limitsBar(opts))...)
 		}
 		return short
 	default:
-		short := append(r.shortfall(TierCore, Degraded), undeliverableExecBlock(r)...)
+		short := append(r.shortfall(TierCore, Unsampled), undeliverableExecBlock(r)...)
 		// A run id widens the limits bar to Unsampled, as admitRunID does: an unread
 		// scope is not a cap measured missing, but it is exactly the supervisor having
 		// nothing to reap through, which is the question the run id asks.
@@ -416,9 +418,18 @@ func postRunShortfall(opts Options, r Report) []LayerStatus {
 	}
 }
 
-// limitsBar is how far a requested-limits layer has to fall before the posture faults
-// it. One function so admission and postRunShortfall cannot pick different bars for the
-// same posture, which is the disagreement TestAdmissionAndPostRunShortfallAgree pins.
+// limitsBar is how far a requested-limits layer has to fall before a posture that has a
+// run id faults it: Unsampled rather than Degraded, because a scope nobody could read is
+// the supervisor having nothing to reap through even though it is not a cap measured
+// missing.
+//
+// It is read by the two run-id paths and by postRunShortfall's default branch. Admission's
+// default branch deliberately does NOT read it and keeps the literal Degraded: with a run
+// id set, the widened bar is admitRunID's to apply, so that the refusal an operator sees
+// is the one about reaping rather than about the cap. Admission's effective bar for a
+// posture is therefore the composition admit || admitRunID, which equals this function
+// posture for posture - but by agreement, not by construction, and what holds the two
+// sides together is TestAdmissionAndPostRunShortfallAgree rather than this signature.
 func limitsBar(opts Options) State {
 	if opts.RunID != "" {
 		return Unsampled
@@ -537,7 +548,7 @@ func (o Options) admit(r Report) error {
 		// Core guarantees hold on every supported platform, so falling short of
 		// one means silently substituting a weaker sandbox. Refuse instead, and
 		// let --allow-degraded be an explicit, informed choice.
-		if short := r.shortfall(TierCore, Degraded); len(short) > 0 {
+		if short := r.shortfall(TierCore, Unsampled); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be fully enforced on this host", Short: short}
 		}
 		// The exec block is hardening-tier, so a host without it used to run the
@@ -553,7 +564,7 @@ func (o Options) admit(r Report) error {
 		if short := undeliverableExecBlock(r); len(short) > 0 {
 			return &Refusal{
 				Report:   r,
-				Reason:   "the manifest asks to block subprocess execution and this platform cannot install the filter that does it, so the target would run able to spawn subprocesses",
+				Reason:   "the manifest asks to block subprocess execution and this platform cannot install the filter that does it, so the target would run without the block it asked for",
 				Short:    short,
 				Waivable: true,
 			}
@@ -652,7 +663,7 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 	// alone: a cpu-only manifest requires neither of the others, and StateOf reports a
 	// missing layer as Unavailable, so keying on one refused a reapable cpu-only run on a
 	// host that could deliver the scope perfectly well.
-	if short := unenforcedRequestedLimits(required, Unsampled); len(short) > 0 {
+	if short := unenforcedRequestedLimits(required, limitsBar(opts)); len(short) > 0 {
 		return &Refusal{
 			Report: required,
 			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through",
@@ -713,9 +724,14 @@ type Refusal struct {
 	Short []LayerStatus
 	// Waivable says that reduced enforcement would have admitted this exact run, so a
 	// frontend can name the escape hatch it offers. It is set only where that is
-	// unconditionally true: the requested-limits refusal, which AllowDegraded skips
-	// outright. A core shortfall is not marked, because AllowDegraded still refuses the
-	// half of it that enforces nothing at all.
+	// unconditionally true - the two hardening-tier refusals AllowDegraded skips
+	// outright, for a requested limit and for an undeliverable exec block. A core
+	// shortfall is not marked, because AllowDegraded still refuses the half of it that
+	// enforces nothing at all.
+	//
+	// A frontend that renders a Waivable refusal must name the flag for ALL of them: a
+	// hint wired to the limits refusal alone leaves the exec one refusing an entire
+	// architecture with no way past it printed.
 	Waivable bool
 }
 

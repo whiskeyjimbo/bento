@@ -17,8 +17,9 @@ renders it) and `docs/state-grid-admission.md` (posture x layer state at admissi
   only WORSEN. That is the one-sided invariant, already written down by the authors and
   nowhere enforced in one place.
 - **An enum times its call sites.** 8 `enforce.Layer` constants against ~8 correction
-  sites, plus a `State` order (`Enforced < Degraded < Unavailable`) that makes each cell a
-  numeric comparison rather than a taste argument.
+  sites, plus a `State` order (`Enforced < Unsampled < Degraded < Unavailable`) that makes
+  each cell a numeric comparison rather than a taste argument. (`Unsampled` was added after
+  this grid was taken, by bv2-dnda5; the cells below were walked on the three-state order.)
 
 Invariant used per cell, stated mechanically:
 

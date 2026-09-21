@@ -86,11 +86,19 @@ const (
 	// severe. The two are different questions: those fold the silence of a probe that
 	// was never asked, where reading it as enforced would admit a run on a guarantee
 	// nothing evaluated, and they stay fail-safe. Unsampled is set by a reader that DID
-	// ask and got no answer, after the target has already run - and the bars above it
-	// exist to refuse a guarantee measured short, not one nobody could measure. So every
-	// ordered bar (the two at admission, the two in postRunShortfall) passes it, and only
-	// strict, which scans != Enforced and demands positive proof of every layer, refuses
-	// it. Never Enforced: that would report a fence as held that nothing observed.
+	// ask and got no answer, after the target has already run.
+	//
+	// The placement decides only how the HARDENING bars read it, and it is a deliberate
+	// exemption for exactly one of them: a requested limit nobody could measure no longer
+	// faults a run that completed, because that is a could-not-tell and not a cap
+	// measured missing. It buys no such exemption on the core tier - the default posture
+	// refuses a core layer that is anything less than enforced, so its bar is Unsampled
+	// rather than Degraded (run.go, admit and postRunShortfall). Placing the constant low
+	// and leaving those bars at Degraded would have made "nobody could read the
+	// filesystem fence" admit a run, which is the fail-open this whole enum exists to
+	// prevent. Strict refuses it everywhere, scanning != Enforced and demanding positive
+	// proof of every layer. Never Enforced: that would report a fence as held that
+	// nothing observed.
 	Unsampled
 	// Degraded: partially enforced, with a weaker guarantee than intended.
 	Degraded
