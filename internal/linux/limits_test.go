@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -418,6 +420,51 @@ func TestCacheProbeMemoizesOnlyAnsweredMeasurements(t *testing.T) {
 	// The capability, once proven, is stable: every later caller is free.
 	if v, ok := probe(t.Context()); !ok || v != 2 || calls != 3 {
 		t.Errorf("fourth call: v=%d ok=%v calls=%d, want the cached answer with no re-measure", v, ok, calls)
+	}
+}
+
+// Probe, screenRunID, Run and Profile all reach the same memoized probe, and an embedder
+// runs targets concurrently, so callers overlap. A caller whose context is already
+// cancelled gets no answer and must not cache one; the callers behind it must then share
+// ONE definitive measurement rather than each paying for a real systemd scope.
+func TestCacheProbeConcurrentCallersShareOneAnswer(t *testing.T) {
+	var answeredMeasures atomic.Int32
+	probe := cacheProbe(func(ctx context.Context) (int, bool) {
+		if ctx.Err() != nil {
+			return 0, false
+		}
+		// Long enough that unserialized callers overlap inside measure.
+		time.Sleep(20 * time.Millisecond)
+		return int(answeredMeasures.Add(1)), true
+	})
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, ok := probe(cancelled); ok {
+		t.Fatal("a cancelled caller got an answer; it must report none")
+	}
+
+	const callers = 16
+	start := make(chan struct{})
+	vals := make([]int, callers)
+	oks := make([]bool, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() {
+			<-start
+			vals[i], oks[i] = probe(t.Context())
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	if n := answeredMeasures.Load(); n != 1 {
+		t.Errorf("measure answered %d times, want 1: concurrent callers must share the cached answer", n)
+	}
+	for i := range callers {
+		if !oks[i] || vals[i] != 1 {
+			t.Errorf("caller %d got (%d, %v), want the one cached answer (1, true)", i, vals[i], oks[i])
+		}
 	}
 }
 
