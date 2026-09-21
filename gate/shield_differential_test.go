@@ -74,8 +74,10 @@ func TestShieldCorpusGateVerdicts(t *testing.T) {
 			// gate.writeShieldProblem.
 			if c.WorkspaceDerived || c.Verdict == shieldcorpus.WorkspaceRedirected || c.Verdict == shieldcorpus.AboveWriteShield {
 				// Asserted as a divergence rather than switched off: a case marked as
-				// diverging that the run also honors states nothing, and would go on
-				// stating nothing after the corpus verdict moved under it.
+				// diverging whose verdict is literally Honored states nothing, and would
+				// go on stating nothing after the corpus verdict moved under it. A
+				// disclosure-only verdict is not that case - the run honors the grant AND
+				// says something the gate cannot, which is the divergence.
 				if c.Verdict == shieldcorpus.Honored {
 					t.Fatalf("%s is marked as diverging from the gate but the run honors it too, so there is no divergence to state", c.Path(home))
 				}
