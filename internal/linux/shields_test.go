@@ -1726,3 +1726,89 @@ func TestReclaimStrandedShieldsLeavesALiveRunAlone(t *testing.T) {
 		}
 	}
 }
+
+// A record cut short still parses into a path, but a SHORTER one: the fragment left when
+// the final NUL never landed is a prefix of what was written, and rmdir against it reaches
+// a directory of the user's own. The whole record is refused rather than its last entry,
+// so a later run that can read it whole is the one that reclaims it.
+func TestReclaimStrandedShieldsRefusesATruncatedRecord(t *testing.T) {
+	checkout := strandedRun(t, false)
+	recs, err := filepath.Glob(filepath.Join(runDirBase, "bento-run-*", shieldRecordName))
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("expected one staged record; got %v (%v)", recs, err)
+	}
+	body, err := os.ReadFile(recs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop the trailing NUL, which is what a write that did not reach the disk leaves.
+	if err := os.WriteFile(recs[0], body[:len(body)-1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	if _, err := os.Lstat(filepath.Join(checkout, ".git", "hooks")); err != nil {
+		t.Errorf("a truncated record must reclaim nothing at all: %v", err)
+	}
+}
+
+// The run directory sits in world-writable /tmp, so the flock proves only that nobody
+// holds the record - not that bento wrote it. Without the ownership check any local user
+// could name this user's paths in a record of their own and have this user's next run
+// delete them.
+func TestReclaimStrandedShieldsRefusesAForeignRunDirectory(t *testing.T) {
+	checkout := strandedRun(t, false)
+	dirs, err := filepath.Glob(filepath.Join(runDirBase, "bento-run-*"))
+	if err != nil || len(dirs) != 1 {
+		t.Fatalf("expected one staged run directory; got %v (%v)", dirs, err)
+	}
+	// A directory this uid does not exclusively own is the observable half of "another
+	// user made this"; the uid itself cannot be faked in a test without root.
+	if err := os.Chmod(dirs[0], 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	if _, err := os.Lstat(filepath.Join(checkout, ".git", "hooks")); err != nil {
+		t.Errorf("a record in a run directory others can write must reclaim nothing: %v", err)
+	}
+}
+
+// Each record is ordered deepest-first only within itself, so two killed runs whose paths
+// interleave must be re-sorted together or a parent is rmdir'd while a child from the other
+// record is still inside it.
+func TestReclaimStrandedShieldsOrdersAcrossRecords(t *testing.T) {
+	host := runDirBase
+	t.Cleanup(func() { runDirBase = host })
+	runDirBase = t.TempDir()
+	checkout := t.TempDir()
+
+	deep := filepath.Join(checkout, ".git", "hooks", "nested")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The shallow run recorded the parents; the deep one recorded what sits inside them.
+	// Reclaiming the shallow record's paths first would leave every one of them standing.
+	for _, rec := range [][]string{
+		{filepath.Join(checkout, ".git"), filepath.Join(checkout, ".git", "hooks")},
+		{deep},
+	} {
+		runDir, err := os.MkdirTemp(runDirBase, "bento-run-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := recordCreatedShields(runDir, rec, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	if _, err := os.Lstat(filepath.Join(checkout, ".git")); !os.IsNotExist(err) {
+		t.Errorf("paths from two records must be reclaimed deepest-first together: %v", err)
+	}
+}

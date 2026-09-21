@@ -102,14 +102,16 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 		}
 	}
 
+	// As Run does, and before any shield is computed: profiling applies the same shields, so
+	// it strands and inherits the same artifacts. It removes only paths a prior run recorded
+	// as its own creations, under removeCreatedShields' rules, so nothing a user wrote can go
+	// - this verb reads as observational but already creates the grant directories below.
+	reclaimStrandedShields(proc.Stderr)
+
 	// Profiling never consults a gate (the proxy runs in refuse mode), so no gate
 	// presence is signalled here. denyPaths shield caller-owned state (e.g. a
 	// supervising wrapper's permission store) even behind a grant that would cover it;
 	// they are set on the sandbox before the shield-cleanup defer below reads it.
-	// As Run does, and before any shield is computed: profiling applies the same shields,
-	// so it inherits the same stranded artifacts.
-	reclaimStrandedShields(proc.Stderr)
-
 	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths)
 	if err != nil {
 		return profile.Observation{}, err

@@ -957,11 +957,20 @@ func recordCreatedShields(runDir string, dirs, files []string) (*os.File, error)
 // Called before this run computes its own shields, so a stale empty .git/ is gone before
 // checkoutRoot anchors this run's workspace shields on the name it left.
 //
-// Staleness is decided by the record's own flock and nothing else: a run holds it from
+// Staleness is decided by the record's own flock, over a record openOwnRecord has already
+// shown to be this uid's own: a run holds the lock from
 // before its launch until it exits, and the kernel releases it however the process ends,
-// so a lock that can be taken means no process owns that record. A run directory with no
-// record at all is skipped rather than swept - a live run between MkdirTemp and the record
-// has not launched bwrap yet, so it has created nothing to reclaim.
+// so a lock that can be taken means no process owns that record. Every way the lock can fail
+// for a reason other than a live holder - an unreadable directory, a filesystem with no
+// flock - declines to reclaim, which is the safe direction. A run directory with no record
+// at all is skipped rather than swept: a live run between MkdirTemp and the record has not
+// launched bwrap yet, so it has created nothing to reclaim.
+//
+// One race this accepts: a run starting in the same checkout while this reclaim is in
+// flight sees the stale path standing, so createdShields excludes it and bwrap binds over
+// it, and the rmdir here then detaches it under that run. The window is one
+// removeCreatedShields long, it needs two bento starts inside it, and the host is left
+// correct either way.
 //
 // One removeCreatedShields call for every record together, not one each: it carries a single
 // bound for the whole cleanup precisely because a bound per path would still block for hours
@@ -991,8 +1000,8 @@ func reclaimStrandedShields(w io.Writer) {
 	var found []stale
 	var dirs, files []string
 	for _, rd := range runDirs {
-		rec, err := os.Open(filepath.Join(rd, shieldRecordName))
-		if err != nil {
+		rec := openOwnRecord(rd)
+		if rec == nil {
 			continue
 		}
 		if err := syscall.Flock(int(rec.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -1004,20 +1013,19 @@ func reclaimStrandedShields(w io.Writer) {
 			rec.Close()
 			continue
 		}
-		s := stale{runDir: rd, rec: rec}
-		for _, entry := range strings.Split(string(body), "\x00") {
-			if len(entry) < 2 {
-				continue
-			}
-			kind, path := entry[0], entry[1:]
-			if kind == 'd' {
-				dirs = append(dirs, path)
-			} else {
-				files = append(files, path)
-			}
-			s.paths = append(s.paths, path)
+		s, ok := parseShieldRecord(rd, rec, string(body))
+		if !ok {
+			rec.Close()
+			continue
 		}
-		found = append(found, s)
+		for _, p := range s.paths {
+			if s.isDir[p] {
+				dirs = append(dirs, p)
+			} else {
+				files = append(files, p)
+			}
+		}
+		found = append(found, stale{runDir: rd, rec: rec, paths: s.paths})
 	}
 	if len(found) == 0 {
 		return
@@ -1031,4 +1039,84 @@ func reclaimStrandedShields(w io.Writer) {
 		s.rec.Close()
 	}
 	warnResidue(w, "shield mount points an earlier run was killed before it could reclaim, and this one could not either", left)
+}
+
+// shieldRecordEntries is one parsed record: the paths in the order they were written,
+// and which of them were directories.
+type shieldRecordEntries struct {
+	paths []string
+	isDir map[string]bool
+}
+
+// parseShieldRecord reads a record back, and refuses anything it cannot read as one this
+// bento wrote whole.
+//
+// A complete record ends in a NUL, so splitting it always yields a trailing empty element.
+// A record whose last element is not empty was truncated, and the fragment is a PREFIX of a
+// real path - "/home/u/proj/foo" where "/home/u/proj/foo/.git" was written - which rmdir
+// would then try against a directory of the user's own. The rename makes a kill mid-write
+// impossible to observe (the temp name is never globbed), but the write is not fsynced, so
+// a power loss on a persistent /tmp can still publish a short one. Refuse the whole record:
+// the paths it did carry are reclaimed by a later run only if a later run can read them
+// whole, which is the safe direction.
+//
+// An unrecognised kind byte is the same refusal rather than a guess. Nothing writes one
+// today; a future format change should fail cleanly here instead of landing in whichever
+// branch the else happened to be.
+func parseShieldRecord(runDir string, rec *os.File, body string) (shieldRecordEntries, bool) {
+	entries := strings.Split(body, "\x00")
+	if len(entries) == 0 || entries[len(entries)-1] != "" {
+		return shieldRecordEntries{}, false
+	}
+	out := shieldRecordEntries{isDir: map[string]bool{}}
+	for _, entry := range entries[:len(entries)-1] {
+		if len(entry) < 2 {
+			return shieldRecordEntries{}, false
+		}
+		kind, path := entry[0], entry[1:]
+		if kind != 'd' && kind != 'f' {
+			return shieldRecordEntries{}, false
+		}
+		out.paths = append(out.paths, path)
+		out.isDir[path] = kind == 'd'
+	}
+	return out, true
+}
+
+// openOwnRecord opens a stale run's record only if both it and the directory holding it
+// are this uid's own, and returns nil for anything else.
+//
+// The run directory lives in /tmp, which is world-writable: without this, any local user
+// could mkdir a bento-run-* of their own, drop a world-readable record naming paths in this
+// user's tree, and have this user's next bento delete them. The flock proves nobody holds
+// the record, not that bento wrote it, so ownership is the half the lock cannot supply.
+//
+// 0700 and this uid, matching exactly what MkdirTemp and recordCreatedShields make: a run
+// directory another user can write into is not one whose record can be trusted either.
+// O_NOFOLLOW so a symlink planted under that name cannot redirect the read, O_NONBLOCK so a
+// planted FIFO returns instead of hanging every bento start on the host, and the mode is
+// checked on the descriptor rather than the path so the answer cannot change between them.
+func openOwnRecord(runDir string) *os.File {
+	uid := uint32(os.Getuid())
+	di, err := os.Lstat(runDir)
+	if err != nil || !di.IsDir() || di.Mode().Perm() != 0o700 {
+		return nil
+	}
+	if st, ok := di.Sys().(*syscall.Stat_t); !ok || st.Uid != uid {
+		return nil
+	}
+	rec, err := os.OpenFile(filepath.Join(runDir, shieldRecordName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil
+	}
+	fi, err := rec.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		rec.Close()
+		return nil
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != uid {
+		rec.Close()
+		return nil
+	}
+	return rec
 }
