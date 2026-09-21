@@ -64,7 +64,7 @@ Either way what decides the outcome is what stands there at reclaim.
 | B9 | parent swapped for a symlink or a non-dir | f/d | HANDLED | shields.go:698 / :726 via parentResolved :748 |
 | B10 | parent errs (EACCES, dead mount) | f/d | HANDLED | parentResolved default arm -> left, not kept; record retried, shields.go:1092 |
 | B11 | Lstat errs other than ENOENT | f | HANDLED | shields.go:710 -> left |
-| B12 | whole cleanup exceeds the bound | f/d | HANDLED | shields.go:743 all left, kept nil -> record kept for retry |
+| B12 | whole cleanup exceeds the bound | f/d | HANDLED | shields.go:743 all left, kept nil -> record kept for retry (on the reclaim path only: the owner's own clean-exit teardown reports the residue and cleanup then deletes the record, so nothing retries) |
 | B13 | **user's own EMPTY node, made after bento's was gone or never made** | f/d | **WRONG** | shields.go:712/:734 cannot tell it from B1/B2; removed, and not reported (not in left) |
 
 Counts: HANDLED 20 (incl. A10 allowed-direction), IMPOSSIBLE 1 (A4), UNHANDLED 1 (A9),
