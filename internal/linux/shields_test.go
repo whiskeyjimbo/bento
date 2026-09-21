@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1646,4 +1647,82 @@ func recordFor(list []enforce.ShieldApplied, path string) *enforce.ShieldApplied
 		}
 	}
 	return nil
+}
+
+// strandedRun stages what a SIGKILLed run leaves: the mount points standing in the
+// checkout, and the record in a run directory nothing released the lock on because the
+// process that held it is gone.
+func strandedRun(t *testing.T, alive bool) (checkout string) {
+	t.Helper()
+	host := runDirBase
+	t.Cleanup(func() { runDirBase = host })
+	runDirBase = t.TempDir()
+	checkout = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkout, ".git", "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(checkout, ".git", "config")
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDir, err := os.MkdirTemp(runDirBase, "bento-run-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := []string{filepath.Join(checkout, ".git", "hooks"), filepath.Join(checkout, ".git")}
+	rec, err := recordCreatedShields(runDir, dirs, []string{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Closing the descriptor releases the flock, which is exactly what the kernel does
+	// for a process that took a SIGKILL. Keeping it open is what a live run looks like.
+	if alive {
+		t.Cleanup(func() { rec.Close() })
+	} else {
+		rec.Close()
+	}
+	return checkout
+}
+
+// The cell this exists for: a run killed with SIGKILL runs no teardown, so the mount
+// points bwrap made stay in the user's checkout. Nothing derived from createdShields can
+// find them afterwards - it returns the complement - so the next run reclaims them from
+// the record the killed run wrote before it launched.
+func TestReclaimStrandedShieldsClearsAKilledRunsArtifacts(t *testing.T) {
+	checkout := strandedRun(t, false)
+
+	reclaimStrandedShields(io.Discard)
+
+	for _, p := range []string{
+		filepath.Join(checkout, ".git", "hooks"),
+		filepath.Join(checkout, ".git", "config"),
+		filepath.Join(checkout, ".git"),
+	} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("a killed run's shield mount point %s is still in the checkout", p)
+		}
+	}
+	left, _ := filepath.Glob(filepath.Join(runDirBase, "bento-run-*"))
+	if len(left) != 0 {
+		t.Errorf("a fully reclaimed run's record should go with it; got %v", left)
+	}
+}
+
+// The flock is the whole liveness test, so removing it would have a starting run's
+// artifacts swept out from under it by any other run on the host.
+func TestReclaimStrandedShieldsLeavesALiveRunAlone(t *testing.T) {
+	checkout := strandedRun(t, true)
+
+	// The record written by strandedRun is still held open and locked, which is what a
+	// run that has launched looks like.
+	reclaimStrandedShields(io.Discard)
+
+	for _, p := range []string{
+		filepath.Join(checkout, ".git", "hooks"),
+		filepath.Join(checkout, ".git", "config"),
+	} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("a live run's own mount point %s must not be reclaimed under it: %v", p, err)
+		}
+	}
 }

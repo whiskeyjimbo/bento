@@ -4,6 +4,8 @@ package linux
 
 import (
 	"cmp"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -644,16 +646,18 @@ func insideAWriteGrant(path string, writes []string) bool {
 // loses its later writes to an unlinked inode. And the zero-length check is not atomic
 // with the unlink: a write landing between the two is removed with the file.
 //
-// Best effort throughout: a kill before this runs leaves the artifact, as before. A
-// SIGKILL is the case that matters, since nothing deferred runs at all: the mount points
-// stay in the checkout - including a .git/ in a directory that was never a repository -
-// and a supervisor that escalates to SIGKILL on a cap has to remove them by hand. There
-// is no way to enumerate them afterwards, and that is not a reporting gap that can be
-// closed from here: once a path is standing, sb.exists is true for it, so every later run
-// reports it read-only or hidden, CORRECTLY and indistinguishably from a file the user
-// wrote. The window in which anything can say bento made it closes with the run that
-// stranded it, which is why a start-of-run reclaim needs a durable record of its own and
-// cannot be derived from createdShields - that function returns the complement.
+// Best effort throughout: a kill before this runs leaves the artifact. A SIGKILL is the
+// case that matters, since nothing deferred runs at all - no in-process teardown of any
+// shape closes it - and the mount points stay in the checkout, including a .git/ in a
+// directory that was never a repository. Nothing here can enumerate them afterwards:
+// once a path is standing, sb.exists is true for it, so every later run reports it
+// read-only or hidden, CORRECTLY and indistinguishably from a file the user wrote. The
+// window in which anything can say bento made it closes with the run that stranded it.
+//
+// That is why the paths are also written down before the launch, by recordCreatedShields,
+// and reclaimed by the NEXT run rather than by this defer - the record is the only thing
+// that survives a kill, and a start-of-run reclaim cannot be derived from createdShields,
+// which returns the complement.
 //
 // The whole cleanup under one bound rather than each Lstat, because the paths are many
 // and a bound per call would still block for hours. It runs on a defer on both bwrap entry
@@ -887,4 +891,144 @@ func grantedDevNames(reads, writes []string) []string {
 		}
 	}
 	return names
+}
+
+// shieldRecordName is the file inside a run directory naming the shield mount points
+// that run was about to have bwrap create. It is both the durable record a later run
+// reclaims from and the liveness token that says whose record it is: written and flocked
+// before the launch, released by the kernel whichever way the process ends.
+const shieldRecordName = "shields.record"
+
+// recordCreatedShields writes the run's about-to-be-created mount points into its own run
+// directory, so a run that is SIGKILLed - where nothing deferred runs and removeCreatedShields
+// never gets the chance - leaves behind proof of what it put in the user's checkout.
+//
+// This is the piece a start-of-run reclaim cannot derive from createdShields, which returns
+// the complement: it filters on !sb.exists, so once a killed run has stranded a path, every
+// later run sees it standing and skips it. Inverting that filter is forbidden for a good
+// reason - it would reclaim a user's own empty .git/hooks. A record written by the run that
+// created the path is the only thing that tells the two apart, and it has to be written
+// before the launch because after a SIGKILL there is no later moment.
+//
+// Both sections keep the order createdShields returned them in: dirs arrive deepest first,
+// and that ordering is what lets the rmdir loop empty a mount point's parent. NUL-delimited
+// with a kind byte per entry, because a checkout path may contain a newline.
+//
+// The flock is taken on the descriptor before the rename, not after, so the record is never
+// visible under its final name without the lock already held - a sweeper that can open it can
+// never win the race to call it stale. Failing to write it fails the run, as the run
+// directory's other pre-launch file does: a run directory that cannot be written to is a host
+// problem, and continuing would launch with the checkout unprotected against a kill.
+func recordCreatedShields(runDir string, dirs, files []string) (*os.File, error) {
+	if len(dirs) == 0 && len(files) == 0 {
+		return nil, nil
+	}
+	var buf strings.Builder
+	for _, d := range dirs {
+		buf.WriteString("d" + d + "\x00")
+	}
+	for _, f := range files {
+		buf.WriteString("f" + f + "\x00")
+	}
+	tmp := filepath.Join(runDir, shieldRecordName+".tmp")
+	rec, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("linux: creating the shield record: %w", err)
+	}
+	if _, err := rec.WriteString(buf.String()); err != nil {
+		rec.Close()
+		return nil, fmt.Errorf("linux: writing the shield record: %w", err)
+	}
+	if err := syscall.Flock(int(rec.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		rec.Close()
+		return nil, fmt.Errorf("linux: locking the shield record: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(runDir, shieldRecordName)); err != nil {
+		rec.Close()
+		return nil, fmt.Errorf("linux: publishing the shield record: %w", err)
+	}
+	return rec, nil
+}
+
+// reclaimStrandedShields removes the shield mount points left standing in the user's
+// checkout by an earlier run that died without running its teardown - a SIGKILL, a power
+// loss - and names on stderr any it could not remove.
+//
+// Called before this run computes its own shields, so a stale empty .git/ is gone before
+// checkoutRoot anchors this run's workspace shields on the name it left.
+//
+// Staleness is decided by the record's own flock and nothing else: a run holds it from
+// before its launch until it exits, and the kernel releases it however the process ends,
+// so a lock that can be taken means no process owns that record. A run directory with no
+// record at all is skipped rather than swept - a live run between MkdirTemp and the record
+// has not launched bwrap yet, so it has created nothing to reclaim.
+//
+// One removeCreatedShields call for every record together, not one each: it carries a single
+// bound for the whole cleanup precisely because a bound per path would still block for hours
+// on a dead mount, and N stale records would otherwise multiply that at startup. The
+// concatenated directories are re-sorted deepest first, since each record is only ordered
+// within itself.
+//
+// A record is deleted, with its run directory, only when its paths all came back reclaimed.
+// One that did not is left for the next run to retry and report again, which also makes this
+// self-limiting: the record cannot accumulate for a checkout that is already clean.
+//
+// Errors are swallowed by design, not by omission - every one of them (a run directory that
+// vanished mid-sweep, a record another sweeper took first, an unreadable one) means only that
+// this run reclaims nothing, which is where it started. What must not be swallowed is a path
+// left standing, and that is what warnResidue carries.
+//
+// The residual this does not close: the record lives in the run directory under /tmp, so a
+// reboot or a tmpfiles sweep between the kill and the next run takes it, and the artifact
+// reverts to what it was before - indistinguishable from a file the user wrote.
+func reclaimStrandedShields(w io.Writer) {
+	runDirs, _ := filepath.Glob(filepath.Join(runDirBase, "bento-run-*"))
+	type stale struct {
+		runDir string
+		rec    *os.File
+		paths  []string
+	}
+	var found []stale
+	var dirs, files []string
+	for _, rd := range runDirs {
+		rec, err := os.Open(filepath.Join(rd, shieldRecordName))
+		if err != nil {
+			continue
+		}
+		if err := syscall.Flock(int(rec.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			rec.Close()
+			continue
+		}
+		body, err := io.ReadAll(rec)
+		if err != nil {
+			rec.Close()
+			continue
+		}
+		s := stale{runDir: rd, rec: rec}
+		for _, entry := range strings.Split(string(body), "\x00") {
+			if len(entry) < 2 {
+				continue
+			}
+			kind, path := entry[0], entry[1:]
+			if kind == 'd' {
+				dirs = append(dirs, path)
+			} else {
+				files = append(files, path)
+			}
+			s.paths = append(s.paths, path)
+		}
+		found = append(found, s)
+	}
+	if len(found) == 0 {
+		return
+	}
+	slices.SortStableFunc(dirs, func(a, b string) int { return len(b) - len(a) })
+	left := removeCreatedShields(dirs, files)
+	for _, s := range found {
+		if !slices.ContainsFunc(s.paths, func(p string) bool { return slices.Contains(left, p) }) {
+			os.RemoveAll(s.runDir)
+		}
+		s.rec.Close()
+	}
+	warnResidue(w, "shield mount points an earlier run was killed before it could reclaim, and this one could not either", left)
 }

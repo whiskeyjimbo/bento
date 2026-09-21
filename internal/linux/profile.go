@@ -106,6 +106,10 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// presence is signalled here. denyPaths shield caller-owned state (e.g. a
 	// supervising wrapper's permission store) even behind a grant that would cover it;
 	// they are set on the sandbox before the shield-cleanup defer below reads it.
+	// As Run does, and before any shield is computed: profiling applies the same shields,
+	// so it inherits the same stranded artifacts.
+	reclaimStrandedShields(proc.Stderr)
+
 	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths)
 	if err != nil {
 		return profile.Observation{}, err
@@ -145,8 +149,15 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// and name the ones it could not reclaim, which is the whole point of the reclaim
 	// reporting what it left.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
+	shieldRecord, err := recordCreatedShields(sb.runDir, shieldDirs, shieldFiles)
+	if err != nil {
+		return profile.Observation{}, err
+	}
 	defer func() {
 		recordResidue(proc.Stderr, &obs.Residue, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+		if shieldRecord != nil {
+			shieldRecord.Close()
+		}
 	}()
 
 	// Inside the run's own 0700 directory rather than shared /tmp, and read back below

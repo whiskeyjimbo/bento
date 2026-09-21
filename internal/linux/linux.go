@@ -97,6 +97,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		return e.runDegraded(ctx, p, proc, opts)
 	}
 
+	// Before any shield is computed: a stranded empty .git/ from a killed run otherwise
+	// anchors this run's workspace shields on a repository that never existed.
+	reclaimStrandedShields(proc.Stderr)
+
 	report := e.Probe(ctx)
 
 	bwrap, _, err := resolveBwrap()
@@ -141,8 +145,17 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// .git/hooks). Remove those after the run so the sandbox leaves no artifact; see
 	// removeCreatedShields for why this is safe and best-effort.
 	shieldDirs, shieldFiles := preflight.createdShields(sb)
+	// The durable half of the same account: the defer below cannot run on a SIGKILL, so
+	// the paths go on disk first and a later run reclaims them from there.
+	shieldRecord, err := recordCreatedShields(sb.runDir, shieldDirs, shieldFiles)
+	if err != nil {
+		return enforce.Result{}, err
+	}
 	defer func() {
 		recordResidue(proc.Stderr, &res.Residue, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+		if shieldRecord != nil {
+			shieldRecord.Close()
+		}
 	}()
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
@@ -853,7 +866,9 @@ func prepareWriteDirs(p *policy.Policy, sb sandbox) (created []string, err error
 
 // runDirBase is where bento's own per-run directory goes on both bwrap tiers and the
 // degraded one. Fixed rather than $TMPDIR-derived; see the run directory below.
-const runDirBase = "/tmp"
+// A var only so a test can point the stranded-artifact sweep at a directory of its own
+// instead of the host's real /tmp.
+var runDirBase = "/tmp"
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
