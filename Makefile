@@ -72,7 +72,7 @@ GREEN   := \033[32m
 YELLOW  := \033[33m
 RESET   := \033[0m
 
-.PHONY: all build test cover race fuzz vet crossbuild lint audit examples vuln repro check install clean help
+.PHONY: all build test cover race fuzz vet crossbuild bentoprobe lint audit examples vuln repro check install clean help
 
 all: build
 
@@ -273,6 +273,14 @@ crossbuild: ## Check the tree still compiles for darwin and linux/arm64
 	@GOWORK=off go test -tags landlocktsync ./internal/landlock/...
 	@printf "$(GREEN)$(BOLD)✓ Cross-compile clean!$(RESET)\n"
 
+# SetTierPreset and SetScopedIPCPreset build only under the bentoprobe tag, so the
+# assertions that a preset leaves the ABI Available and the degraded floor read alone
+# compile nowhere else. Without this target they would be prose with a test attached.
+bentoprobe: ## Test the landlock preset hooks under the bentoprobe build tag
+	@printf "$(CYAN)$(BOLD)==> Testing under -tags bentoprobe...$(RESET)\n"
+	@GOWORK=off go test -tags bentoprobe -count=1 ./internal/landlock/...
+	@printf "$(GREEN)$(BOLD)✓ bentoprobe clean!$(RESET)\n"
+
 lint: ## Run golangci-lint (pinned; part of check)
 	@printf "$(CYAN)$(BOLD)==> Linting ($(GOLANGCI_LINT_VERSION))...$(RESET)\n"
 	@GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
@@ -310,7 +318,7 @@ examples: ## Build, vet and test every example module against the public API
 # dependency should stop the merge that introduces it, not be reported the next
 # morning. It is the one gate that needs network: the tool is pinned but the
 # vulnerability database is fetched at run time and is expected to move.
-check: vet crossbuild lint test race layering audit examples vuln ## Run all quality gates (vet, crossbuild, lint, test, race, layering, audit, examples, vuln)
+check: vet crossbuild bentoprobe lint test race layering audit examples vuln ## Run all quality gates (vet, crossbuild, bentoprobe, lint, test, race, layering, audit, examples, vuln)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
