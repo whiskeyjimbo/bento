@@ -379,7 +379,7 @@ func newProfileCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&interpreter, "interpreter", "", "interpreter to run the script with (guessed from the shebang, else the extension, if omitted)")
 	cmd.Flags().StringVar(&out, "out", "", "manifest path to write (default: <script>.manifest.yaml)")
-	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under a host tree (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
+	cmd.Flags().StringArrayVar(&acceptAliases, "accept-alias", nil, "acknowledge the credential aliases under the host tree at `path` (a snapshot or deduplicated backup) instead of refusing; repeatable; same meaning as on `bento run`")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the result as a JSON envelope on stdout: what was written, whether it can be vouched for, and every proposal decision. Everything else - the target's own output, the prose, any grant prompts - stays on stderr, so the envelope is the only thing on stdout. A refusal - including a mistake in this command line - is an envelope too, so stdout is never empty")
 	cmd.Flags().BoolVar(&allowNetwork, "allow-network", false, "let the script's network traffic reach the host during profiling (default: record destinations but do not forward them)")
 	return cmd

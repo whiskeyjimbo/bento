@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // A mistake in the command line is the one error class where bento knows the right
@@ -245,4 +246,22 @@ func TestNoCommandRefusesOnPlatformBeforeItsRunE(t *testing.T) {
 			t.Errorf("%s: a hook before the RunE answers --json with an empty stdout", cmd.Name())
 		}
 	}
+}
+
+// pflag takes the first backquoted span of a flag's usage as the placeholder in the
+// synopsis, so a backquoted command in the prose becomes the argument the flag appears
+// to take. A placeholder is one word; one with a space in it is prose that leaked.
+func TestFlagPlaceholdersAreOneWord(t *testing.T) {
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			if name, _ := pflag.UnquoteUsage(f); strings.ContainsAny(name, " \t") {
+				t.Errorf("%s --%s renders its placeholder as %q", c.CommandPath(), f.Name, name)
+			}
+		})
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(newRootCmd())
 }
