@@ -1812,3 +1812,32 @@ func TestReclaimStrandedShieldsOrdersAcrossRecords(t *testing.T) {
 		t.Errorf("paths from two records must be reclaimed deepest-first together: %v", err)
 	}
 }
+
+// The reclaim runs before any shield is computed, and the Run call site says why: a
+// stranded empty .git/ from a killed run would otherwise anchor this run's workspace
+// shields on a repository that never existed. That claim rests on checkoutRoot's
+// sb.exists(filepath.Join(d, ".git")) in another function, and deleting or reordering
+// the reclaim call would still compile - so this is the test the claim is named for.
+//
+// It pins the coupling, not the call site: driving Run itself needs bwrap and a real
+// SIGKILL. What it holds is that the two are a pair - reclaim first, then anchor.
+func TestReclaimRunsBeforeTheAnchorItWouldMove(t *testing.T) {
+	checkout := strandedRun(t, false)
+	work := filepath.Join(checkout, "src")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sb := sandbox{exists: hostExists}
+
+	// The stranded artifact is indistinguishable from a real checkout to checkoutRoot,
+	// which is the whole hazard.
+	if got := checkoutRoot(sb, work); got != checkout {
+		t.Fatalf("a stranded .git/ must anchor the checkout root while it stands; got %s, want %s", got, checkout)
+	}
+
+	reclaimStrandedShields(io.Discard)
+
+	if got := checkoutRoot(sb, work); got == checkout {
+		t.Errorf("after the reclaim no .git/ stands, so the workspace shields must not anchor on %s - the run would shield a repository that never existed", checkout)
+	}
+}
