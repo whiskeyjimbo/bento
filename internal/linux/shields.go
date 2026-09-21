@@ -694,8 +694,11 @@ func reclaimShieldPaths(dirs, files []string) (left, kept []string) {
 	r, err := bounded("the cleanup of the shield mount points", func() (result, error) {
 		var left, kept []string
 		for _, f := range files {
-			if !parentResolved(f) {
-				left, kept = append(left, f), append(kept, f)
+			if ok, elsewhere := parentResolved(f); !ok {
+				left = append(left, f)
+				if elsewhere {
+					kept = append(kept, f)
+				}
 				continue
 			}
 			// An absent path is a clean outcome, not a residue: bwrap never created it,
@@ -717,14 +720,17 @@ func reclaimShieldPaths(dirs, files []string) (left, kept []string) {
 		// dirs is deepest first, so the mount points inside an intermediate directory are
 		// gone by the time it is tried.
 		for _, d := range dirs {
-			if !parentResolved(d) {
-				left, kept = append(left, d), append(kept, d)
+			if ok, elsewhere := parentResolved(d); !ok {
+				left = append(left, d)
+				if elsewhere {
+					kept = append(kept, d)
+				}
 				continue
 			}
 			err := syscall.Rmdir(d)
 			switch {
 			case err == nil || os.IsNotExist(err):
-			case errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.ENOTDIR):
+			case errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) || errors.Is(err, syscall.ENOTDIR):
 				left, kept = append(left, d), append(kept, d)
 			default:
 				left = append(left, d)
@@ -740,11 +746,19 @@ func reclaimShieldPaths(dirs, files []string) (left, kept []string) {
 
 // parentResolved reports whether p's parent directory is the path it names, with no
 // symlink anywhere in it. A parent that does not exist counts: nothing under it can be
-// removed either.
-func parentResolved(p string) bool {
+// removed either. elsewhere is set only when the answer is a settled no (the parent
+// resolves somewhere else, or a component is not a directory); any other error is a host
+// that could not answer, which a later run may retry.
+func parentResolved(p string) (ok, elsewhere bool) {
 	d := filepath.Dir(p)
 	r, err := filepath.EvalSymlinks(d)
-	return os.IsNotExist(err) || (err == nil && r == d)
+	switch {
+	case os.IsNotExist(err) || (err == nil && r == d):
+		return true, false
+	case err == nil || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP):
+		return false, true
+	}
+	return false, false
 }
 
 // shieldLstat is behind a var for autoExecStat's reason: the mount the bound above exists
@@ -1009,10 +1023,10 @@ func recordCreatedShields(runDir string, dirs, files []string) (*os.File, error)
 // One race this accepts: a run starting in the same checkout while this reclaim is in
 // flight sees the stale path standing, so createdShields excludes it and bwrap binds over
 // it, and the rmdir here then detaches it under that run. The window is one
-// removeCreatedShields long, it needs two bento starts inside it, and the host is left
+// reclaimShieldPaths long, it needs two bento starts inside it, and the host is left
 // correct either way.
 //
-// One removeCreatedShields call for every record together, not one each: it carries a single
+// One reclaimShieldPaths call for every record together, not one each: it carries a single
 // bound for the whole cleanup precisely because a bound per path would still block for hours
 // on a dead mount, and N stale records would otherwise multiply that at startup. The
 // concatenated directories are re-sorted deepest first, since each record is only ordered
