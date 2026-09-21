@@ -97,10 +97,12 @@ func fullyEnforced() Report {
 }
 
 // none-strict requires the exec-strict layer (fork/clone blocking). Where the host
-// provides it, --strict admits and the report shows it enforced. Where it does not
-// (e.g. a non-amd64 build that blocks only execve), the default refuses rather than
-// running without the fence the manifest asked for, and --allow-degraded is the
-// explicit choice to run anyway.
+// provides it, --strict admits and the report shows it enforced. Where it cannot be
+// installed at all (a kernel with no seccomp BPF support), the default refuses rather
+// than running without the fence the manifest asked for, and --allow-degraded is the
+// explicit choice to run anyway. A host whose seccomp works but whose architecture has
+// no strict filter is the DEGRADED arm, not this one - the execve block lands there, so
+// it is a weaker fence rather than an absent one.
 func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	noneStrict := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
 
@@ -117,7 +119,7 @@ func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	// Host lacks exec-strict: the default refuses, --allow-degraded runs and the report
 	// names the gap.
 	degraded := fullyEnforced()
-	degraded.Set(LayerExecStrict, Unavailable, "not implemented for this architecture")
+	degraded.Set(LayerExecStrict, Unavailable, "the kernel has no seccomp BPF support")
 	f = &fakeEnforcer{probe: degraded}
 	if _, err := Run(context.Background(), f, noneStrict, Process{}, Options{}); !errors.As(err, new(*Refusal)) {
 		t.Fatalf("default should refuse none-strict where exec-strict cannot be installed; got %v", err)
@@ -530,11 +532,11 @@ func TestRequiredLayerBlocksRun(t *testing.T) {
 // widened from >= Unavailable to != Enforced - the whole justification for the weaker bar
 // is that a Degraded exec-strict still blocks execve.
 //
-// The Degraded exec-strict state is written by hand because no PROBE emits it: execLayers
-// reports that layer Enforced or Unavailable only, and Degraded arises post-run, from the
-// applied report when the launcher fell back to the execve-only filter. Run takes any
-// Enforcer, so admission has to answer for it either way, and this is the posture half of
-// that answer.
+// The Degraded exec-strict state is written by hand rather than probed, but it is not a
+// state only the applied report can reach: the Linux probe reports it pre-run for a host
+// whose seccomp works and whose architecture has no strict filter, and reconcile answers
+// the same after the run. Run takes any Enforcer, so admission has to answer for it
+// whatever produced it, and this is the posture half of that answer.
 func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	newProbe := func() Report {
 		r := confinedHost()
