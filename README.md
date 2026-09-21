@@ -189,7 +189,7 @@ jobs:
 
 `bento doctor` is a gate too: it exits 3 on a host that would refuse a run with
 the default manifest, so the job stops there rather than at `run`, and 125 if
-doctor itself could not run. `validate --strict` is the manifest's gate: it fails the job if the manifest is unapproved
+doctor itself could not run or was invoked wrongly. `validate --strict` is the manifest's gate: it fails the job if the manifest is unapproved
 or was edited since approval, which is what stops permission creep landing in a
 pipeline nobody re-reviewed. `run` needs no approval flags once the stamp is in
 the repo - if it did, the gate would not mean anything. The `--env` above supplies
@@ -435,7 +435,7 @@ Bento organizes enforcement capabilities into **Core** and **Hardening** tiers:
 | Shield credentials & dotfiles | Core | Mandatory denylist bind mounts (covers uncreated paths) | `filesystem` |
 | Deny network egress by default | Core | Empty network namespace (`--unshare-net`) | `network` |
 | Per-host:port network egress | Core | Host-side HTTP CONNECT proxy over isolated unix socket | `network` |
-| Block `execve` subprocesses | Hardening | Seccomp syscall filter | `exec-block` |
+| Block `execve` subprocesses | Hardening | Seccomp syscall filter (amd64) | `exec-block` |
 | Block fork/clone too (`exec: none-strict`) | Hardening | Seccomp syscall filter (amd64) | `exec-strict` |
 | Memory / CPU / PID limits | Hardening | Systemd transient scope with cgroup v2 controllers | `limits-memory`, `limits-cpu`, `limits-pids` |
 | Filesystem backstop | Hardening | Landlock LSM rules (best-effort secondary layer) | none of its own; named in the `filesystem` row's detail |

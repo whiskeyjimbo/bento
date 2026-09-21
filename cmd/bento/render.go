@@ -1044,9 +1044,11 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 //
 // Under --strict the flag is never named: run rejects the two flags together, so it
 // would hand the reader a way past that hard-errors when they take it. The edit branch
-// below is strict's in practice rather than by a check here: the only other refusals whose
-// shortfall is limits alone are the default posture's, which admit marks Waivable, and one
-// screenRemedies demotes from Waivable carries NoRemedy and returns above. Strict is
+// below is strict's in practice rather than by a check here: the other refusals whose
+// shortfall is limits alone are admit's default-posture one, marked Waivable, and
+// admitRunID's, which is not but whose edit screenRemedies finds still refused (the run id
+// stays set), so it carries NoRemedy and returns above - as does a Waivable one the screen
+// demotes. Strict is
 // offered the manifest edit alone, and only when the limits are the WHOLE shortfall - strict
 // refuses over every layer that fell short, so telling a reader whose filesystem tier is
 // also degraded to drop `limits:` would send them back to the same refusal, which is the
