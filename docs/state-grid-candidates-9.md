@@ -40,7 +40,7 @@ in `state-grid-gate-unknowns.md` (12 new, 6 re-verdicted).
 
 Filed: bv2-xjwnp, bv2-zlqjy, bv2-l1dtz, bv2-vrnur (shield record: P6, P3, R10, P4);
 bv2-szx4c, bv2-68uqa, bv2-0686z (remedies: C15/C16, C20, C18); bv2-ujyy2 (Unsampled
-U-GAP). Noted on bv2-rj5ow (gate E6).
+U-GAP); bv2-09ej5 (remedies C19 coupling test). Noted on bv2-rj5ow (gate E6).
 
 **The same shape again.** Every forbidden-direction finding is a fix that covered one
 cell and stopped. The remedy screen was applied to admit's refusal and not to
