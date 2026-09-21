@@ -37,7 +37,7 @@ grid B decides WHAT happens to one path once they are.
 | A1 | no record (died before the :1000 rename, or a run with no shields) | HANDLED | shields.go:1167 open fails -> skip; the temp name is never globbed (:987 vs :1050) |
 | A2 | own record, holder alive (lock held) | HANDLED | shields.go:1063 LOCK_NB fails -> skip |
 | A3 | own record, holder dead (killed after the record) | HANDLED | proceeds to grid B, shields.go:1072-1090 |
-| A4 | own record, clean exit | IMPOSSIBLE | run dir RemoveAll'd by cleanup (linux.go:943), deferred before the shield defer (linux.go:113 vs :154) so it runs last. Coupling gap: only defer order enforces it |
+| A4 | own record, clean exit | IMPOSSIBLE | run dir, record included, RemoveAll'd by cleanup (linux.go:943) on every return once newSandbox succeeded. Defer order does not matter: both defers run on a clean exit whichever registers first, and neither order leaves the record |
 | A5 | run dir of another uid, not 0700, or not a dir | HANDLED | shields.go:1160-1166 |
 | A6 | record is a symlink, FIFO, or another uid's file in an own dir | HANDLED | shields.go:1167 O_NOFOLLOW/O_NONBLOCK, :1171-1178 |
 | A7 | truncated (no trailing NUL) | HANDLED | shields.go:1127 |
@@ -75,7 +75,7 @@ WRONG 1 (B13). No cells left unwalked.
 - B7: rmdir(2) does not follow a trailing symlink (ENOTDIR). Spike kept the link and
   its empty target dir.
 - B9: parent check and remove are not atomic; an interleaving, routed.
-- A4: holds only by defer order in linux.go and profile.go; no test named for it found.
+- A4: holds because cleanup RemoveAlls the run dir, not by defer order; no ordering test is needed.
   Coupling gap, not a defect.
 - B12: `bounded` abandons rather than cancels the closure, so after an expiry it can
   still remove paths while the record is kept; the retry then finds them absent (B3).

@@ -1045,7 +1045,9 @@ func recordCreatedShields(runDir string, dirs, files []string) (*os.File, error)
 //
 // The residual this does not close: the record lives in the run directory under /tmp, so a
 // reboot or a tmpfiles sweep between the kill and the next run takes it, and the artifact
-// reverts to what it was before - indistinguishable from a file the user wrote.
+// reverts to what it was before - indistinguishable from a file the user wrote. Every later
+// run then sees it standing and reports it as a shield, which is correct, just permanent.
+// Accepted: the common case is a rerun in the same session, which the record covers.
 func reclaimStrandedShields(w io.Writer) {
 	runDirs, _ := filepath.Glob(filepath.Join(runDirBase, "bento-run-*"))
 	type stale struct {
