@@ -86,7 +86,7 @@ the key run uses.
 | # | Human fact (writer) | JSON field | Verdict | Stamp |
 |---|---|---|---|---|
 | R1 | refusal reason + short layers (writeRefusal) | refusal.reason, refusal.report | HANDLED | READING |
-| R2 | limits remedy: --allow-degraded would admit this run, or drop limits (writeLimitsRemedy on Refusal.Waivable) | allow_degraded_would_admit | HANDLED, fixed in 0eacfd5 (was UNHANDLED: Waivable was not in streamRefusalJSON and is not derivable) | TEST |
+| R2 | limits remedy: --allow-degraded would admit this run, or drop limits (writeRefusalRemedy on Refusal.Waivable) | allow_degraded_would_admit | HANDLED, fixed in 0eacfd5 (was UNHANDLED: Waivable was not in streamRefusalJSON and is not derivable) | TEST |
 | R3 | "run bento doctor" consequences pointer | report.layers[].consequences | HANDLED | READING |
 | R4 | shield summary counts by kind (writeShieldSummary) | shields[] | HANDLED | READING |
 | R5 | shields that followed an env var | shields[].source | HANDLED | READING |

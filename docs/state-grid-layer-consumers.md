@@ -55,15 +55,17 @@ running all 8 x 3 cells through each consumer.
 
 Stamp: all texts VERIFIED BY SPIKE (rendered every cell); reachability VERIFIED BY READING.
 
-### 2b writeLimitsRemedy (render.go:1027, run refusal)
+### 2b writeRefusalRemedy (render.go:1055, run refusal)
 
 | Short contains | verdict |
 |---|---|
-| no limits layer | HANDLED: silent |
+| no limits layer, strict | HANDLED: silent |
 | limits only, Waivable | HANDLED: offers --allow-degraded or dropping `limits:` |
 | limits only, strict | HANDLED: offers dropping `limits:` only |
 | limits + other layer, strict | HANDLED: silent, so it doesn't send the reader back to the same refusal |
-| limits + other, Waivable | IMPOSSIBLE: a Waivable refusal comes only from the limits branch (run.go admit default), and that branch runs only when there is no core shortfall |
+| undeliverable exec block, Waivable | HANDLED: offers --allow-degraded, naming what running without the block costs |
+| any other layer, Waivable | HANDLED: offers --allow-degraded with an unspecific consequence, so a third Waivable producer inherits a hint rather than silence |
+| limits + exec, Waivable | UNREACHABLE today: admit returns one refusal at a time (exec before limits), but the writer names both rather than resting on that |
 
 VERIFIED BY READING.
 

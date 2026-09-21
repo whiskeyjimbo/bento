@@ -647,8 +647,9 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 // It reports whether it said anything, so no second explanation stacks on top.
 func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	// The declared mode is not enough, which is why this asks blockedExecMode rather than
-	// p.Exec: exec-block is a hardening layer, so a run whose filter never landed proceeds
-	// anyway - and writeDegradations has just said so a few lines above. Blaming the
+	// p.Exec: a run whose filter never landed at all is refused by default and only got
+	// here under --allow-degraded - and writeDegradations has just said so a few lines
+	// above. Blaming the
 	// manifest there both contradicts that line and sends the reader to change a setting
 	// that had no part in the failure.
 	mode := blockedExecMode(p, res)

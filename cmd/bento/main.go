@@ -19,10 +19,11 @@ import (
 // docker use for "the command could not be executed".
 const bentoFailed = 125
 
-// doctorCoreShortfall is doctor's exit code when a core guarantee is not fully
-// enforced on this host (runs that need it are refused by default). Distinct from
-// bentoFailed and from a target's own code so a CI wrapper can gate on host
-// readiness. A hardening-only gap, where runs still proceed, stays exit 0.
+// doctorCoreShortfall is doctor's exit code when this host refuses a run nobody had to
+// ask for: a core guarantee not fully enforced, or an exec block the platform cannot
+// install at all, which refuses the default manifest. Distinct from bentoFailed and from
+// a target's own code so a CI wrapper can gate on host readiness. A hardening gap a
+// manifest has to name, where runs still proceed, stays exit 0.
 const doctorCoreShortfall = 3
 
 // profileIncomplete is `bento profile`'s exit code when it wrote a manifest it cannot

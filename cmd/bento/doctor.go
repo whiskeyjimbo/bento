@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -21,7 +23,9 @@ func newDoctorCmd() *cobra.Command {
 			"Each layer is reported as enforced, degraded, or unavailable, with the reason.\n" +
 			"Core layers are the guarantees bento makes everywhere; a core layer that falls\n" +
 			"short refuses a run by default. Hardening layers have no equivalent on every\n" +
-			"platform - when one is unavailable, runs proceed and say so.",
+			"platform - a run that needs one proceeds and says so, except where the platform\n" +
+			"cannot install it at all: a manifest that asked to block subprocess execution is\n" +
+			"refused there rather than run without the fence, and --allow-degraded waives it.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// A host with no backend has no layers to report, which is doctor's own
@@ -56,10 +60,14 @@ func newDoctorCmd() *cobra.Command {
 			// output on the same invocation already does.
 			anchors, anchorErr := denylist.HomeAnchors()
 
-			// doctor exits non-zero only for a shortfall in a guarantee EVERY run needs,
-			// so a CI wrapper can gate on baseline host readiness without parsing output.
-			// A conditionally-required core layer (network egress control) and the
-			// hardening layers let runs proceed, so they are reported but stay exit 0.
+			// doctor exits non-zero for a shortfall that refuses a run nobody had to ask
+			// for: a guarantee EVERY run needs, or the exec block the DEFAULT manifest
+			// asks for by saying nothing (policy's Exec zero value is ExecNone). So a CI
+			// wrapper can gate on host readiness without parsing output and without the
+			// verdict disagreeing with what the next `bento run` does. A
+			// conditionally-required core layer (network egress control) and a hardening
+			// layer a manifest has to name still let runs proceed, so they are reported
+			// but stay exit 0.
 			//
 			// Not because a run needing one is refused at run time: enforce.Run refuses a
 			// non-degraded run on an Unavailable network layer whether or not the manifest
@@ -72,12 +80,13 @@ func newDoctorCmd() *cobra.Command {
 			// compiling if it moved, so it is pinned where it lives - internal/linux's
 			// TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced.
 			shortfall := len(gatedShortfall(report)) > 0
+			refusedByDefault := undeliverableDefaultExecBlock(report)
 
 			if asJSON {
 				if err := writeJSON(os.Stdout, toDoctorJSON(report, anchors, anchorErr)); err != nil {
 					return err
 				}
-				if shortfall || anchorErr != nil {
+				if shortfall || len(refusedByDefault) > 0 || anchorErr != nil {
 					return &exitError{code: doctorCoreShortfall}
 				}
 				return nil
@@ -97,6 +106,12 @@ func newDoctorCmd() *cobra.Command {
 			if shortfall {
 				fmt.Println("A core guarantee every run needs is not fully enforced here. Runs are refused")
 				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")
+				return &exitError{code: doctorCoreShortfall}
+			}
+			if len(refusedByDefault) > 0 {
+				fmt.Println("This platform cannot install the subprocess exec block at all, so the default")
+				fmt.Println("manifest - which asks for it by saying nothing about exec - is refused here.")
+				fmt.Println("Pass --allow-degraded to run without the block, knowingly.")
 				return &exitError{code: doctorCoreShortfall}
 			}
 			if short := report.Degradations(); len(short) > 0 {
@@ -124,6 +139,30 @@ func newDoctorCmd() *cobra.Command {
 // egress into and only the degraded tier substitutes anything for one. This gate stays in
 // sync with it through the Linux probe's coupling rather than through the predicate - see
 // the exit-code comment in newDoctorCmd.
+// undeliverableDefaultExecBlock returns the layers the DEFAULT manifest asks for and
+// this host cannot provide at all. It is the other half of doctor's gate: BaselineLayers
+// is derived over an `exec: all` policy, so the exec layers are never in it, and a host
+// that has never had the filter - every arm64 one, since the foreign-arch guard it rests
+// on is amd64-only - would otherwise report ready while admission refuses the manifest a
+// caller gets by writing no exec: line at all.
+//
+// The set comes from enforce.RequiredLayers over the zero policy rather than from naming
+// exec here, so it stays what the default manifest really needs. The bar is Unavailable,
+// matching enforce's undeliverableExecBlock: a Degraded exec-strict layer still blocks
+// execve, which is a weaker fence rather than no fence, and admission does not refuse it.
+// That agreement is one fact in another package and nothing here stops compiling if it
+// moves, so it is pinned by TestDoctorGatesOnTheSameExecBarAdmissionRefusesOn.
+func undeliverableDefaultExecBlock(r enforce.Report) []enforce.LayerStatus {
+	needed := enforce.RequiredLayers(&policy.Policy{}, enforce.Options{})
+	var out []enforce.LayerStatus
+	for _, l := range r.Layers {
+		if l.State >= enforce.Unavailable && l.Layer.Tier() == enforce.TierHardening && slices.Contains(needed, l.Layer) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 	gate := make(map[enforce.Layer]bool)
 	for _, l := range enforce.BaselineLayers() {
@@ -163,14 +202,14 @@ type doctorOutputJSON struct {
 	TruncatedStores []string `json:"truncated_stores,omitempty"`
 }
 
-// toDoctorJSON builds the doctor JSON output. Ready derives from the same
-// gatedShortfall and anchor error as the exit code, so the field a JSON consumer reads
-// and the process status a shell caller reads can never disagree.
+// toDoctorJSON builds the doctor JSON output. Ready derives from the same two gates and
+// anchor error as the exit code, so the field a JSON consumer reads and the process
+// status a shell caller reads can never disagree.
 func toDoctorJSON(r enforce.Report, anchors []string, anchorErr error) doctorOutputJSON {
 	out := doctorOutputJSON{
 		doctorJSON: doctorJSON{
 			reportJSON:       toReportJSON(r),
-			Ready:            len(gatedShortfall(r)) == 0 && anchorErr == nil,
+			Ready:            len(gatedShortfall(r)) == 0 && len(undeliverableDefaultExecBlock(r)) == 0 && anchorErr == nil,
 			Platform:         platformName(),
 			PlatformVerified: platformVerified(),
 		},

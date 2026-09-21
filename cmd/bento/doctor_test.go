@@ -193,12 +193,47 @@ func TestGatedShortfallExcludesConditionalNetwork(t *testing.T) {
 		t.Errorf("a filesystem shortfall must gate; got %+v", got)
 	}
 
-	// A hardening-only gap never gates (it is not core tier).
+	// A hardening gap is not in this gate (it is not core tier). doctor still exits
+	// non-zero on an exec block this platform cannot install at all - that is the second
+	// gate, undeliverableDefaultExecBlock, not this one.
 	var hardening enforce.Report
 	hardening.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 	hardening.Add(enforce.LayerExec, enforce.Unavailable, "no seccomp")
 	if got := gatedShortfall(hardening); len(got) != 0 {
 		t.Errorf("a hardening gap must not gate; got %+v", got)
+	}
+}
+
+// The default manifest asks for the exec block by saying nothing - policy's Exec zero
+// value is ExecNone - so a platform that cannot install the filter refuses it. doctor has
+// to say so: BaselineLayers is derived over an `exec: all` policy, so the exec layers are
+// not in the readiness gate, and every arm64 host would otherwise report ready while the
+// very next `bento run` of an ordinary manifest is refused.
+//
+// The bar is the one admission uses (enforce's undeliverableExecBlock): Unavailable, not
+// every non-Enforced state. A Degraded exec-strict layer still blocks execve, which is a
+// weaker fence rather than no fence, and admission admits it - so gating on it here would
+// fail a host that runs everything. That agreement lives in enforce and nothing in this
+// package stops compiling if it moves, which is why both directions are asserted.
+func TestDoctorGatesOnTheSameExecBarAdmissionRefusesOn(t *testing.T) {
+	var absent enforce.Report
+	absent.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	absent.Add(enforce.LayerExec, enforce.Unavailable, "the foreign-architecture guard is amd64-only")
+	if got := undeliverableDefaultExecBlock(absent); len(got) != 1 || got[0].Layer != enforce.LayerExec {
+		t.Errorf("an exec block this platform cannot install must gate; got %+v", got)
+	}
+	if toDoctorJSON(absent, nil, nil).Ready {
+		t.Error("a host that refuses the default manifest must not report ready")
+	}
+
+	var weaker enforce.Report
+	weaker.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	weaker.Add(enforce.LayerExecStrict, enforce.Degraded, "fork blocking unavailable; execve still blocked")
+	if got := undeliverableDefaultExecBlock(weaker); len(got) != 0 {
+		t.Errorf("a weaker fence is not an absent one and admission admits it; got %+v", got)
+	}
+	if !toDoctorJSON(weaker, nil, nil).Ready {
+		t.Error("a degraded exec-strict layer must stay ready (exit 0)")
 	}
 }
 
