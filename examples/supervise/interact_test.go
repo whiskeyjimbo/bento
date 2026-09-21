@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -99,7 +100,15 @@ func TestGateAsksOnceWhenTwoConnectionsRaceTheSameDest(t *testing.T) {
 	// One "y" for the two racing connections: the loser must not consume an answer.
 	waitFor(t, "the first prompt", func() bool { return strings.Contains(out.String(), "example.com") })
 	io.WriteString(pw, "y\n")
-	wg.Wait()
+	// A second prompt blocks on the pipe for an answer that never comes, so a broken
+	// re-check would hang here until go test's own timeout rather than fail by name.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("a connection is still waiting after the single y - it prompted a second time:\n%s", out.String())
+	}
 
 	for i, admitted := range verdicts {
 		if !admitted {
@@ -179,6 +188,41 @@ func TestGateSerializesPromptsForDifferentHosts(t *testing.T) {
 		if !<-verdicts {
 			t.Error("both hosts were answered y and must be admitted")
 		}
+	}
+}
+
+// A stored allow is answered without the prompt lock, so connections to known hosts run
+// the whole gate - session recall, store lookup, session record - at once, one goroutine
+// per proxy connection. The prompt pipe orders the other gate tests; nothing orders
+// these, which is what gives the race detector in make race something to see.
+func TestGateAdmitsStoredAllowsConcurrently(t *testing.T) {
+	const conns = 64
+	s := newTestStore()
+	for i := range conns {
+		s.rememberNetwork("k", fmt.Sprintf("h%d.example", i), "443", allow, false)
+	}
+	sup := &supervisor{p: newPrompter(strings.NewReader(""), &syncWriter{}), s: s, key: "k", name: "agent",
+		session: make(map[string]bool)}
+
+	start := make(chan struct{})
+	verdicts := make([]bool, conns)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Go(func() {
+			<-start
+			verdicts[i] = sup.gate(t.Context(), fmt.Sprintf("h%d.example", i), "443")
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	for i, admitted := range verdicts {
+		if !admitted {
+			t.Errorf("h%d.example was denied; its stored allow must admit it", i)
+		}
+	}
+	if len(sup.session) != conns {
+		t.Errorf("session holds %d dests, want %d: every admitted connection is recorded", len(sup.session), conns)
 	}
 }
 

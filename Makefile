@@ -125,7 +125,7 @@ test: ## Run unit and integration tests (requires bwrap, userns, firejail and ap
 # sharing one is covered by the one entry - but a name is spelled out in full when its
 # family has serial members, since the prefix would then still match after the concurrent
 # one was deleted and leave this leg running only the serial siblings.
-RACE_LINUX_TESTS := TestEgressCollectorKeepsVerdictsApartUnderConcurrency TestRecordedEgressKeepsVerdictsApartUnderConcurrency TestEnforcerReuseIsConcurrencySafe
+RACE_LINUX_TESTS := TestEgressCollectorKeepsVerdictsApartUnderConcurrency TestRecordedEgressKeepsVerdictsApartUnderConcurrency TestEnforcerReuseIsConcurrencySafe TestCacheProbeConcurrentCallersShareOneAnswer
 
 # internal/observe runs whole rather than by name: it is one tier, its concurrency tests
 # already fail under plain `go test` when the traceCalls mutex is wrong, and 24s buys the
@@ -137,6 +137,11 @@ RACE_LINUX_TESTS := TestEgressCollectorKeepsVerdictsApartUnderConcurrency TestRe
 # exits 0 exactly as a missing pattern does. It is set on both legs for the same reason:
 # observe's two concurrency tests need a real `sh` and skip without one, so the leg that
 # runs them whole is as skippable as the one that names them.
+#
+# examples/supervise is its own module, so neither leg above reaches it and `make examples`
+# runs it without the detector. Its gate is called from a goroutine per proxy connection
+# and shares the session cache, the prompt lock and the permission store across them. It
+# runs whole, like observe: the module is one tier and -race over it costs seconds.
 race: ## Run the concurrency tests under the race detector
 	@printf "$(CYAN)$(BOLD)==> Running concurrency tests under -race...$(RESET)\n"
 	@GOWORK=off CGO_ENABLED=1 BENTO_REQUIRE_TEST_DEPS=1 go test -race -count=1 ./internal/proxy/... ./internal/observe/
@@ -147,6 +152,7 @@ race: ## Run the concurrency tests under the race detector
 		pattern="$$pattern|$$t"; \
 	done; \
 	GOWORK=off CGO_ENABLED=1 BENTO_REQUIRE_TEST_DEPS=1 go test -race -count=1 -run "$${pattern#|}" ./internal/linux/
+	@cd examples/supervise && GOWORK=off CGO_ENABLED=1 BENTO_REQUIRE_TEST_DEPS=1 go test -race -count=1 ./...
 	@printf "$(GREEN)$(BOLD)✓ No data races!$(RESET)\n"
 
 # A plain `go test` only replays each Fuzz target's seed corpus, so the targets read as
