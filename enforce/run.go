@@ -127,8 +127,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := composedAdmission(p, opts, probed, required); err != nil {
 		return Result{}, screenRemedies(err, p, opts, probed, required)
 	}
-	// Selected on the probed state, as admitTier judged it; see there.
-	degraded := required.StateOf(LayerFilesystem) == Degraded
+	degraded := degradedTier(required)
 	res, err := e.Run(ctx, p, proc, RunOptions{
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,
@@ -565,8 +564,9 @@ func admitEnv(p *policy.Policy, proc Process) error {
 // screenRemedies withdraws the way past a refusal that admission would refuse anyway.
 //
 // Waivable says --allow-degraded admits THIS run, and admit sets it knowing only its own
-// part of admission: the effective bar for a posture is composedAdmission, so a refusal admit marked waivable can still meet a hard
-// refusal further along when the operator takes the flag. That is worse than a refusal
+// part of admission: the effective bar for a posture is composedAdmission, so a refusal
+// admit marked waivable can still meet a hard refusal further along when the operator
+// takes the flag. That is worse than a refusal
 // naming nothing - the operator learns it by trying - and it is generic, not the run id's
 // alone: any check Run composes after admit inherits the same gap.
 //
@@ -613,6 +613,12 @@ func screenRemedies(err error, p *policy.Policy, opts Options, probed, required 
 	return r
 }
 
+// degradedTier is the one answer to whether a run takes the degraded tier, read by
+// admitTier's refusals and by the RunOptions Run hands the backend, which must agree.
+func degradedTier(required Report) bool {
+	return required.StateOf(LayerFilesystem) == Degraded
+}
+
 // composedAdmission is the whole of admission for a posture, in the order Run applies it.
 func composedAdmission(p *policy.Policy, opts Options, probed, required Report) error {
 	if err := opts.admit(required); err != nil {
@@ -636,7 +642,7 @@ func admitTier(p *policy.Policy, opts Options, probed, required Report) error {
 	// can actually do. It reads only the filesystem layer because that flag selects a
 	// filesystem mechanism (see RunOptions.Degraded) - another core layer's
 	// degradation travels to the caller in the Report, not here.
-	degraded := required.StateOf(LayerFilesystem) == Degraded
+	degraded := degradedTier(required)
 	// requiredLayers leaves LayerNetwork out of a zero-rule gateless manifest because
 	// denying all egress is what namespace isolation already provides. That rests on there
 	// BEING a namespace, and a probe reporting the layer Unavailable says there is not -
@@ -652,7 +658,7 @@ func admitTier(p *policy.Policy, opts Options, probed, required Report) error {
 	// The Linux backend never reaches this: its probe ties LayerNetwork Unavailable to the
 	// same missing namespace that degrades the filesystem layer, so `degraded` is already
 	// true. But that is an invariant of one backend's probe, and Run takes any Enforcer -
-	// the same reason the gate and network-rule refusals above do not rest on it either.
+	// the same reason the gate and network-rule refusals below do not rest on it either.
 	//
 	// Read with StateOf, so a probe that never mentions the layer refuses alongside one
 	// that reports it Unavailable. The two say the same thing about the run - there is no
