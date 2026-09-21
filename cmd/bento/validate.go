@@ -305,6 +305,11 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "grants:       unknown - this host could not work out where its shields anchor,\n")
 		fmt.Fprintf(w, "              so the grants above were not checked against them and no second\n")
 		fmt.Fprintf(w, "              name for a credential was looked for\n")
+		// The anchoring failure's own words, quoted because it names a host path. Printed
+		// here rather than left to doctor: a reader told only THAT the anchors failed has
+		// to run a second command to learn which of a home, a passwd entry or a relocation
+		// is the one to fix.
+		fmt.Fprintf(w, "              reason: %q\n", r.ShieldsUnknownReason)
 	case len(r.Refusals) > 0:
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
@@ -374,10 +379,10 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 // A NOTE and never a verdict. It does not reach Runnability or --strict, and it does not
 // say which of these will refuse: admission is enforce's (Options.admit), it turns on
 // flags this command has not got, and the answer is not even the same shape per layer -
-// a core layer that enforces nothing refuses under every flag, a hardening shortfall
-// runs under none, and only the middle of that range moves with --allow-degraded.
-// Restating that table here would be a second answer to it, and getting it wrong reads
-// as a refusal of a run that works - the direction gate's package doc rules out and this
+// a core layer that enforces nothing refuses under every flag, and a hardening one may
+// refuse or run depending on which layer it is. Restating that table here would be a
+// second answer to it, and getting it wrong reads as a refusal of a run that works - the
+// direction gate's package doc rules out and this
 // shares. Naming the fact and pointing at whose decision it is, is the honest ceiling.
 // The layers are the FILTERED set, which leaves LayerNetwork out of a zero-rule gateless
 // manifest. enforce.Run reads the unfiltered probe for that one layer instead (run.go's
@@ -645,6 +650,11 @@ type policyJSON struct {
 	// A verdict rather than a note, the only one here that is about the host: --strict
 	// fails on it, as doctor's exit code does on the same fact.
 	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
+	// ShieldsUnknownReason is why the anchors could not be worked out, in the failure's
+	// own words - the same text doctor carries as shield_anchors. Carried beside the
+	// verdict because a machine consumer has nowhere to be pointed: told only that the
+	// anchors failed, it can report the manifest unjudged but not which host fact to fix.
+	ShieldsUnknownReason string `json:"shields_unknown_reason,omitempty"`
 	// ShieldCarveUnknown says refused_grants holds no carve refusal for the shields a run
 	// derives from the checkout under a write grant, because the gate cannot see that half
 	// of the shield set. A note and not a verdict: --strict does not fail on it, since
@@ -803,6 +813,7 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
 	o.ShieldsUnknown = r.ShieldsUnknown
+	o.ShieldsUnknownReason = r.ShieldsUnknownReason
 	o.ShieldCarveUnknown = r.ShieldCarveUnknown
 	o.RefusedGrants = r.Refusals
 	if !r.ShieldsUnknown {

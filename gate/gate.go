@@ -109,6 +109,13 @@ type Runnability struct {
 	// stands. Said separately from Unresolved because a consumer that folds them reports
 	// the half this host is sure of as unknown, or the half it is not as clean.
 	ShieldsUnknown bool
+	// ShieldsUnknownReason is why, in the anchoring failure's own words - the text doctor
+	// prints as shield_anchors. Carried beside the bool rather than left to doctor because
+	// a reader whose host cannot anchor otherwise learns THAT it could not and has to run
+	// a second command to learn WHY, and the two commands then disagree about how much of
+	// the same host fact each is allowed to say. Empty exactly when ShieldsUnknown is
+	// false.
+	ShieldsUnknownReason string
 	// ShieldCarveUnknown says the carve half of the grant check was answered over the
 	// BUILT-IN shields only. A run also derives shields from the checkout under each write
 	// grant that is a directory - its git hook directory, its editor task files - and
@@ -157,13 +164,15 @@ func Check(resolved *policy.Policy) Runnability {
 	// the filesystem that the shield set has no part in, so they are still answered
 	// against the zero set, as Refusals does and as validate's summary prints them.
 	set, err := shieldSet()
-	r.Refusals = refusals(set, resolved)
+	refused := Refusals(set, err, resolved)
+	r.Refusals = refused.Grants
+	r.ShieldCarveUnknown = refused.CarveUnknown
 	if err != nil {
 		r.ShieldsUnknown = true
+		r.ShieldsUnknownReason = err.Error()
 		return r
 	}
 	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
-	r.ShieldCarveUnknown = derivesWorkspaceShields(resolved.Write)
 	return r
 }
 
@@ -334,16 +343,15 @@ func WorkdirProblems(resolved *policy.Policy) []string {
 // only rename it. What comes back is not empty, though - four of the six classes are facts
 // about the manifest and the filesystem that the set has no part in, and only the two
 // shielded ones go quiet. So the list is quietly SHORT of the shield refusals rather than
-// absent, and nothing in it says so. A caller whose answer is durable - a stamp a later
-// gate trusts - has to ask ShieldSet, which reports the error, and say what it found.
-func Refusals(resolved *policy.Policy) []string {
-	set, _ := ShieldSet()
-	return refusals(set, resolved)
-}
-
-// refusals is the set against a shield set the caller already has, so Check pays for one
-// walk of the credential stores rather than two.
-func refusals(set shield.Set, resolved *policy.Policy) []string {
+// absent. It says so itself now, in RefusalSet's two qualifications, rather than leaving
+// each caller to ask ShieldSet a second time and word the shortfall for itself - which is
+// how the carve shortfall reached validate and no other reader of the same set.
+//
+// The set is the caller's, with the error ShieldSet raised beside it, for the reason
+// ShieldedReadProblems gives: a CLI asking five times over one manifest walks the
+// credential stores once, and the anchoring failure is the caller's to render in its own
+// words.
+func Refusals(set shield.Set, anchorErr error, resolved *policy.Policy) RefusalSet {
 	shieldedReads := ShieldedReadProblems(set, resolved.Read)
 	shieldedWrites := ShieldedWriteProblems(set, resolved.Write)
 	problems := append(shieldedReads, shieldedWrites...)
@@ -351,7 +359,36 @@ func refusals(set shield.Set, resolved *policy.Policy) []string {
 	problems = append(problems, FileWriteGrantProblems(resolved.Write)...)
 	problems = append(problems, RootWriteProblems(resolved.Write)...)
 	problems = append(problems, MountGrantProblems(resolved.Read, resolved.Write)...)
-	return append(problems, ShieldCarveProblems(set, resolved.Read, resolved.Write)...)
+	problems = append(problems, ShieldCarveProblems(set, resolved.Read, resolved.Write)...)
+	out := RefusalSet{Grants: problems, AnchorErr: anchorErr}
+	// Only where the shields anchored: an unanchored host answered the carve half against
+	// a zero set, which is the larger unknown AnchorErr already carries, and raising both
+	// tells the reader the same thing twice in the smaller of the two wordings.
+	if anchorErr == nil {
+		out.CarveUnknown = derivesWorkspaceShields(resolved.Write)
+	}
+	return out
+}
+
+// RefusalSet is what this host will not honor about a policy's grants, together with what
+// the answer is SHORT of - the two qualifications Check computes and a []string could not
+// carry. Every reader of the refusal set gets both from one call: a caller that asks only
+// Grants gets exactly the old answer, and one that gates on it - a stamp, a proposal - can
+// say which half of the question went unanswered instead of reading an empty list as a
+// clean bill.
+type RefusalSet struct {
+	// Grants is the refusals themselves, in the words run refuses them with.
+	Grants []string
+	// AnchorErr is the ShieldSet error the caller passed in, non-nil where this host could
+	// not work out where its shields anchor. Grants is then short of the two shielded
+	// classes, and the reason is here rather than only in the caller's own second ask, so
+	// every reader of the set can say WHY it is short and not merely that it is.
+	AnchorErr error
+	// CarveUnknown says the carve half of the check was answered over the BUILT-IN shields
+	// only, for the reason Runnability.ShieldCarveUnknown gives at length. It is asked of
+	// the write grants rather than of the set, so a caller that assembled the derived
+	// rules into its own set gets it raised anyway and should ignore it.
+	CarveUnknown bool
 }
 
 // LoopedGrantProblems reports the grants whose symlinks loop, read and write alike, since

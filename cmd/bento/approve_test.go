@@ -829,3 +829,34 @@ func TestApproveRefusesAWorkdirTheRunCannotStartIn(t *testing.T) {
 		}
 	}
 }
+
+// The qualification the refusal set could not carry. gate.Check has marked the carve half
+// unknown since the derived shields arrived, and validate prints it; approve asked through
+// gate.Refusals, which returned []string, so the one reader whose answer is DURABLE was
+// the one that never heard it. A stamp written against a carve answer that skipped the
+// checkout-derived shields is what a later CI gate trusts, while the host that wrote it
+// refuses the run at its first step.
+func TestApproveCarriesTheCarveUnknownItsRefusalSetIsShortOf(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	invalidateShieldSet()
+	const note = "derives from the checkout under a write grant"
+
+	var buf strings.Builder
+	if err := requireHonorableGrants(&buf, &policy.Policy{Entrypoint: "/bin/true", Write: []string{t.TempDir()}}); err != nil {
+		t.Fatalf("an ordinary directory write grant is not refused: %v", err)
+	}
+	if !strings.Contains(buf.String(), note) {
+		t.Errorf("approve stamped against a carve answer taken over the built-in shields alone and said nothing;\ngot:\n%s", buf.String())
+	}
+
+	// The other half, or the note is unconditional prose that says nothing: a manifest
+	// deriving no workspace shields has the whole carve answer and must be told so by
+	// silence.
+	var quiet strings.Builder
+	if err := requireHonorableGrants(&quiet, &policy.Policy{Entrypoint: "/bin/true", Read: []string{t.TempDir()}}); err != nil {
+		t.Fatalf("a read grant is not refused: %v", err)
+	}
+	if strings.Contains(quiet.String(), note) {
+		t.Errorf("a manifest with no directory write grant derives no workspace shields, so nothing was left unanswered;\ngot:\n%s", quiet.String())
+	}
+}

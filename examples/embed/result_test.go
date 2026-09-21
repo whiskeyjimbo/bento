@@ -186,8 +186,9 @@ func TestWriteResultSurfacesEveryField(t *testing.T) {
 // completeness test over fields, can see.
 func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 	printed := gate.Runnability{
-		Unresolved:     true,
-		ShieldsUnknown: true,
+		Unresolved:           true,
+		ShieldsUnknown:       true,
+		ShieldsUnknownReason: "denylist: no usable home directory for \x1b[2Kuid 1000",
 		// Problems and Refusals arrive already quoted - gate builds them with %q around
 		// the path - so only the two fields this file renders from a raw path carry an
 		// escape, which is what the scan below is watching.
@@ -226,6 +227,8 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			want = "could not answer"
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want = "where its shields anchor"
+		case f.Name == "ShieldsUnknownReason" && v.String() != "":
+			want = v.String()
 		case f.Name == "ShieldCarveUnknown" && v.Bool():
 			want = "derives from the checkout under a write grant"
 		case f.Name == "CredentialAliasesPartial" && v.Bool():

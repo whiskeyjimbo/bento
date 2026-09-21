@@ -65,7 +65,7 @@ func TestClampProposalProposesNothingTheRunRefuses(t *testing.T) {
 			}
 			p := &policy.Policy{Read: c.read, Write: c.write}
 			clampProposal(p)
-			if problems := gate.Refusals(p); len(problems) > 0 {
+			if problems := gate.Refusals(hostShieldSet(t), nil, p).Grants; len(problems) > 0 {
 				t.Errorf("clampProposal proposed a grant run refuses (%s):\n  %s", c.family, strings.Join(problems, "\n  "))
 			}
 		})
@@ -167,7 +167,7 @@ func TestClampProposalWithholdsAGrantWhoseShieldsCannotBeCarved(t *testing.T) {
 
 	p := &policy.Policy{Write: []string{grant}}
 	clampProposal(p)
-	if problems := gate.Refusals(p); len(problems) > 0 {
+	if problems := gate.Refusals(hostShieldSet(t), nil, p).Grants; len(problems) > 0 {
 		t.Errorf("clampProposal proposed a grant run refuses (ShieldNotCarvable):\n  %s", strings.Join(problems, "\n  "))
 	}
 	// Stated positively as well, because the check above shares its oracle with the clamp:

@@ -21,6 +21,12 @@ func TestCheckStillRefusesUnshieldedClassesWithoutAnchors(t *testing.T) {
 	if !r.ShieldsUnknown {
 		t.Fatal("ShieldsUnknown = false on a host whose shield set errored")
 	}
+	// The reason and not only the verdict: doctor prints the anchoring failure's own words
+	// and validate had nothing to print, so a reader whose host cannot anchor was told to
+	// go run the other command to learn what broke.
+	if r.ShieldsUnknownReason != "denylist: no usable home directory" {
+		t.Errorf("ShieldsUnknownReason = %q, want the anchoring failure's own words", r.ShieldsUnknownReason)
+	}
 	want := RootWriteProblems([]string{"/"})
 	if len(want) == 0 {
 		t.Fatal("RootWriteProblems refuses nothing for a write grant of /; the fixture no longer exercises a refusal")

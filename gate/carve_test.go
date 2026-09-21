@@ -37,7 +37,7 @@ func TestAWriteGrantThatCannotCarveItsShieldsIsRefused(t *testing.T) {
 	t.Setenv("HOME", home)
 	p := &policy.Policy{Write: []string{grant}}
 
-	if refusals := gate.Refusals(p); len(refusals) != 0 {
+	if refusals := gate.Refusals(hostShieldSet(t), nil, p).Grants; len(refusals) != 0 {
 		t.Fatalf("a grant whose shields can be carved was refused: %v", refusals)
 	}
 
@@ -49,7 +49,7 @@ func TestAWriteGrantThatCannotCarveItsShieldsIsRefused(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(grant, 0o755) })
 
-	refusals := gate.Refusals(p)
+	refusals := gate.Refusals(hostShieldSet(t), nil, p).Grants
 	var carve []string
 	for _, r := range refusals {
 		if strings.Contains(r, "and creating that mount point needs write permission on") {

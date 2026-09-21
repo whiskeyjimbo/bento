@@ -202,14 +202,24 @@ func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
 	// ones rather than an empty one - a refusal list that reads as complete. The note is
 	// the only thing that tells them apart, and it is said here because this runs on every
 	// path through approve.
-	if _, err := commandShieldSet(); err != nil {
-		fmt.Fprintf(w, "note: bento could not work out where the shields anchor on this host (%v), so the grants were not checked against them - and a run here is refused for the same reason.\n", err)
+	set, err := commandShieldSet()
+	refused := gate.Refusals(set, err, resolved)
+	if refused.AnchorErr != nil {
+		fmt.Fprintf(w, "note: bento could not work out where the shields anchor on this host (%v), so the grants were not checked against them - and a run here is refused for the same reason.\n", refused.AnchorErr)
 	}
-	problems := gate.Refusals(resolved)
-	if len(problems) == 0 {
+	// The narrower shortfall, said here for the same reason and on the same path: the
+	// stamp is durable, and a manifest stamped against a carve answer that skipped the
+	// checkout-derived shields is refused at the run's first step by the very host that
+	// approved it. Not a refusal to stamp - the refusal was not found, it was not looked
+	// for, and refusing on an unknown would refuse the runs this package rules out
+	// refusing.
+	if refused.CarveUnknown {
+		fmt.Fprintf(w, "note: the shields a run derives from the checkout under a write grant - its git hook directory, its editor task files - are read off the host by the sandbox backend, so whether their mount points can be created under these grants was not checked here, and no refusal below covers that.\n")
+	}
+	if len(refused.Grants) == 0 {
 		return nil
 	}
-	return fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(problems, "\n  "))
+	return fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(refused.Grants, "\n  "))
 }
 
 // requireStartableWorkdir is requireHonorableGrants' sibling for the one host fact that

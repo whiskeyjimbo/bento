@@ -290,6 +290,9 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	}
 	if r.ShieldsUnknown {
 		fmt.Fprintf(w, "embed: note: this host could not work out where its shields anchor, so the grants below were not checked against the shields and no second name for a credential was looked for\n")
+		// Quoted for the reason the grants below are: the anchoring failure names a host
+		// path, and an escape in one would move the cursor through this report.
+		fmt.Fprintf(w, "embed: note: the anchors failed with: %q\n", r.ShieldsUnknownReason)
 	}
 	if r.ShieldCarveUnknown {
 		fmt.Fprintf(w, "embed: note: the shields a run derives from the checkout under a write grant - its git hook directory, its editor task files - are read off the host by the sandbox backend, so whether their mount points can be created under these grants was not judged, and no refusal below covers that\n")

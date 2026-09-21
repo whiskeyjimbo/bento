@@ -507,11 +507,20 @@ func redirectedWorkspaceProblem(w string) string {
 }
 
 // withholdGateRefused is the gate.Refusals half of withholdRunRefused.
+//
+// It takes the two qualifications the refusal set now carries and acts on neither, which
+// is deliberate and not an oversight. AnchorErr is the case the shield clamp above already
+// skipped for the same reason. CarveUnknown says a refusal was not looked for rather than
+// not found, and withholding a grant on that would drop grants the run honors - the one
+// direction the gate rules out - while the reviewer-facing channel that could say it out
+// loud is the caller's, not this function's. bv2-rj5ow tracks answering it here instead,
+// which this package can: it already derives the workspace shields (workspaceShields).
 func withholdGateRefused(p *policy.Policy) []refusedGrant {
 	// The whole proposal first, so the ordinary clean case pays for one walk of the
 	// credential stores rather than one per grant; the per-grant probes below are only for
 	// attributing a refusal back to the grant that earned it.
-	if len(gate.Refusals(p)) == 0 {
+	set, anchorErr := commandShieldSet()
+	if len(gate.Refusals(set, anchorErr, p).Grants) == 0 {
 		return nil
 	}
 	var refused []refusedGrant
@@ -521,7 +530,7 @@ func withholdGateRefused(p *policy.Policy) []refusedGrant {
 			if kind == "write" {
 				one = &policy.Policy{Write: []string{g}}
 			}
-			if problems := gate.Refusals(one); len(problems) > 0 {
+			if problems := gate.Refusals(set, anchorErr, one).Grants; len(problems) > 0 {
 				refused = append(refused, refusedGrant{Kind: kind, Path: g, Problem: problems[0]})
 			} else {
 				kept = append(kept, g)

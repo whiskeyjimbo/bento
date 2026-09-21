@@ -1272,11 +1272,12 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 	// halves, so seeding it would empty the output this scans. Its own arm below asserts
 	// what it prints instead.
 	printed := gate.Runnability{
-		ShieldsUnknown: true,
-		Problems:       []string{`entrypoint "/gone/run.sh": no such file or directory`},
-		Refusals:       []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
-		MissingReads:   []string{"/data/absent"},
-		FileishWrites:  []string{"/out/report.json"},
+		ShieldsUnknown:       true,
+		ShieldsUnknownReason: "denylist: no usable home directory",
+		Problems:             []string{`entrypoint "/gone/run.sh": no such file or directory`},
+		Refusals:             []string{`grant "/home/u/.ssh" is inside the always-shielded path`},
+		MissingReads:         []string{"/data/absent"},
+		FileishWrites:        []string{"/out/report.json"},
 		CredentialAliases: []enforce.CredentialAlias{
 			{Path: "/backup/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
@@ -1334,6 +1335,11 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 			key = `"credential_aliases"`
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want, key = "where its shields anchor", `"shields_unknown":true`
+			humanFor, machineFor = render(printed), marshal(printed)
+		// Emitted by the same unanchored host as the flag above, so it is read out of the
+		// same pair of renders.
+		case f.Name == "ShieldsUnknownReason" && v.String() != "":
+			want, key = v.String(), `"shields_unknown_reason"`
 			humanFor, machineFor = render(printed), marshal(printed)
 		case f.Name == "ShieldCarveUnknown" && v.Bool():
 			want, key = "derives from the checkout under a write grant", `"shield_carve_unknown":true`
@@ -1710,5 +1716,18 @@ func TestValidateCarriesTheHostPostureToBothSurfaces(t *testing.T) {
 	}
 	if strings.Contains(quiet, "does not fully enforce") {
 		t.Errorf("a host that enforces everything the manifest needs has nothing to say; got %q", quiet)
+	}
+}
+
+// What doctor knew and validate did not: gate.Check collapsed any anchoring failure to a
+// bool, so the summary said THAT this host could not place its shields and sent the reader
+// to a second command to learn WHY. The reason is the whole of what they can act on - which
+// of a home, a passwd entry or a relocation is the one to fix.
+func TestValidateSaysWhyTheShieldsCouldNotBeAnchored(t *testing.T) {
+	const reason = "denylist: no usable home directory for uid 1000"
+	var buf strings.Builder
+	writeRunnability(&buf, gate.Runnability{ShieldsUnknown: true, ShieldsUnknownReason: reason})
+	if !strings.Contains(buf.String(), reason) {
+		t.Errorf("validate reported the anchors unknown without the failure's own words, so the reader has to run doctor to learn what broke;\ngot:\n%s", buf.String())
 	}
 }
