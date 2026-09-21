@@ -1464,22 +1464,27 @@ func TestARefusalOnlyNamesRemediesAdmissionWouldAccept(t *testing.T) {
 	probe.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "this host delegates no memory controller")
 
 	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
-	_, runErr := enforce.Run(context.Background(), &probeOnlyEnforcer{report: probe}, p, enforce.Process{}, enforce.Options{RunID: "job"})
-	var refusal *enforce.Refusal
-	if !errors.As(runErr, &refusal) {
-		t.Fatalf("a run id with an unenforceable limit was not refused; got %v", runErr)
-	}
-
-	var stderr bytes.Buffer
-	_ = writeRunResult(&stderr, false, p, nil, enforce.Result{}, nil, nil, runErr)
-	// The printer wraps, so a remedy can straddle two lines.
-	flat := strings.Join(strings.Fields(stderr.String()), " ")
-	for _, dead := range []string{"to proceed anyway", "drop `limits:`"} {
-		if strings.Contains(flat, dead) {
-			t.Errorf("the refusal offers %q, and admission refuses every remedy on this path; got:\n%s", dead, stderr.String())
+	// Strict as well as the default posture: strict is offered the manifest edit alone,
+	// on a refusal nothing marks waivable, and that edit is the dead end the run id
+	// makes of it.
+	for _, opts := range []enforce.Options{{RunID: "job"}, {RunID: "job", Strict: true}} {
+		_, runErr := enforce.Run(context.Background(), &probeOnlyEnforcer{report: probe}, p, enforce.Process{}, opts)
+		var refusal *enforce.Refusal
+		if !errors.As(runErr, &refusal) {
+			t.Fatalf("%+v: a run id with an unenforceable limit was not refused; got %v", opts, runErr)
 		}
-	}
-	if !strings.Contains(flat, "drop the run id") {
-		t.Errorf("the refusal names no step that does get past it; got:\n%s", stderr.String())
+
+		var stderr bytes.Buffer
+		_ = writeRunResult(&stderr, false, p, nil, enforce.Result{}, nil, nil, runErr)
+		// The printer wraps, so a remedy can straddle two lines.
+		flat := strings.Join(strings.Fields(stderr.String()), " ")
+		for _, dead := range []string{"to proceed anyway", "drop `limits:`"} {
+			if strings.Contains(flat, dead) {
+				t.Errorf("%+v: the refusal offers %q, and admission refuses every remedy on this path; got:\n%s", opts, dead, stderr.String())
+			}
+		}
+		if !strings.Contains(flat, "drop the run id") {
+			t.Errorf("%+v: the refusal names no step that does get past it; got:\n%s", opts, stderr.String())
+		}
 	}
 }

@@ -1648,6 +1648,11 @@ func TestAnUnsampledCoreLayerStillRefuses(t *testing.T) {
 // refuses the waived posture hands the operator a remedy that hard-refuses when they
 // take it. Driven through Run rather than through admit, because the composition is
 // Run's and only Run can honor it.
+//
+// One-sided on its own: a screen that cleared every refusal's Waivable would pass it.
+// The other side is TestUnenforceableRequestedLimitRefusesByDefault and
+// TestAnUndeliverableExecBlockRefusesByDefaultAndIsWaivable, which drive Run without a
+// run id and assert the flag IS named there.
 func TestAWaivableRefusalIsOneTheWaiverActuallyAdmits(t *testing.T) {
 	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
 	for _, runID := range []string{"", "job"} {

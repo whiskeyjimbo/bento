@@ -2089,21 +2089,29 @@ func TestDenialLegendBlamesAShieldForADiscardedFileEROFS(t *testing.T) {
 // release before the list named it, and a consumer switching on the documented set saw
 // a code it had no arm for.
 //
-// Only the codes written as literals are pinned - a reason built from a variable is
-// beyond what a source scan can name - so the list can still gain one silently that
-// way. The literal form is how every workdir and shield decision spells it.
+// Only the codes written as literals are pinned. A reason passed as an argument and
+// written through a variable (grantKinds' target-steerable-tmp and foreign-home-shield)
+// is beyond what a source scan can name, and the documented side is the concatenated doc
+// of every field called Reason in the package matched by substring, so a code documented
+// on the wrong struct would also pass. It catches the shape that has actually drifted:
+// a decision that spells its code inline where it emits it.
 func TestEveryLiteralAccessNoteReasonIsDocumented(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	fset := token.NewFileSet()
 	var documented string
 	var emitted []string
-	for _, pkg := range pkgs {
-		ast.Inspect(pkg, func(n ast.Node) bool {
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
 			switch v := n.(type) {
 			case *ast.Field:
 				if len(v.Names) == 1 && v.Names[0].Name == "Reason" && v.Doc != nil {

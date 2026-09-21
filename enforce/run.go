@@ -649,35 +649,67 @@ func admitEnv(p *policy.Policy, proc Process) error {
 // naming nothing - the operator learns it by trying - and it is generic, not the run id's
 // alone: any check Run composes after admit inherits the same gap.
 //
-// The manifest edit a frontend offers beside the flag is withdrawn with it. On the path
-// that makes the flag a dead end, dropping `limits:` is one too (admitRunID refuses a run
-// id with no limit to build a scope around), and a remedy that sends the reader back to a
-// refusal is the failure both halves are withheld to avoid. NoRemedy says so; the reason
-// the composition gave is appended, so the operator reads what the flag would have run
-// into rather than being left with a refusal that names no next step at all.
+// The manifest edit a frontend offers is screened the same way and on its own, not only
+// beside the flag: dropping `limits:` is a dead end wherever a run id is set (admitRunID
+// refuses a run id with no limit to build a scope around), and under --strict that edit
+// is the only remedy offered, on a refusal no producer ever marks waivable. A remedy
+// that sends the reader back to a refusal is the failure both halves are withheld to
+// avoid. NoRemedy says so; the reason the composition gave is appended, so the operator
+// reads what the remedy would have run into rather than being left with a refusal that
+// names no next step at all.
 func screenRemedies(err error, p *policy.Policy, opts Options, required Report) error {
 	var r *Refusal
-	if !errors.As(err, &r) || !r.Waivable {
+	if !errors.As(err, &r) {
 		return err
 	}
-	waived := opts
-	waived.Strict, waived.AllowDegraded = false, true
-	blocker := waived.admit(required)
-	if blocker == nil {
-		blocker = admitRunID(p, waived, required)
+	if r.Waivable {
+		waived := opts
+		waived.Strict, waived.AllowDegraded = false, true
+		if blocker := composedAdmission(p, waived, required); blocker != nil {
+			r.Waivable = false
+			r.NoRemedy = true
+			r.Reason += "; --allow-degraded does not admit it either: " + refusalReason(blocker)
+		}
+		return r
 	}
-	if blocker == nil {
-		return err
+	// The manifest edit, screened against the run it would produce. Only the limits
+	// shortfall has one - it is the sole remedy a frontend derives from the manifest -
+	// and admitRunID is what judges the policy that edit leaves behind, so the check is
+	// that policy rather than this one.
+	if len(r.Short) == 0 || slices.ContainsFunc(r.Short, func(l LayerStatus) bool { return !isLimitsLayer(l.Layer) }) {
+		return r
 	}
-	var second *Refusal
-	reason := blocker.Error()
-	if errors.As(blocker, &second) {
-		reason = second.Reason
+	unlimited := *p
+	unlimited.Limits = policy.Limits{}
+	if blocker := admitRunID(&unlimited, opts, required); blocker != nil {
+		r.NoRemedy = true
+		r.Reason += "; dropping `limits:` does not admit it either: " + refusalReason(blocker)
 	}
-	r.Waivable = false
-	r.NoRemedy = true
-	r.Reason += "; --allow-degraded does not admit it either: " + reason
 	return r
+}
+
+// composedAdmission is the whole of admission for a posture, in the order Run applies it.
+func composedAdmission(p *policy.Policy, opts Options, required Report) error {
+	if err := opts.admit(required); err != nil {
+		return err
+	}
+	return admitRunID(p, opts, required)
+}
+
+// refusalReason is a refusal's own sentence where there is one, so a reason quoted inside
+// another does not arrive wrapped in the prefix a frontend already printed.
+func refusalReason(err error) string {
+	var r *Refusal
+	if errors.As(err, &r) {
+		return r.Reason
+	}
+	return err.Error()
+}
+
+// isLimitsLayer says whether a layer is one of the resource caps a manifest asks for with
+// `limits:`, which is the shortfall the manifest edit answers.
+func isLimitsLayer(l Layer) bool {
+	return l == LayerLimitsMemory || l == LayerLimitsPIDs || l == LayerLimitsCPU
 }
 
 // admitRunID refuses a run that asked to be reapable but would not get a scope to be
@@ -744,7 +776,7 @@ func undeliverableExecBlock(r Report) []LayerStatus {
 func unenforcedRequestedLimits(r Report, atLeast State) []LayerStatus {
 	var out []LayerStatus
 	for _, l := range r.Layers {
-		if (l.Layer == LayerLimitsMemory || l.Layer == LayerLimitsPIDs || l.Layer == LayerLimitsCPU) && l.State >= atLeast {
+		if isLimitsLayer(l.Layer) && l.State >= atLeast {
 			out = append(out, l)
 		}
 	}
