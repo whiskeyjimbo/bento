@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -38,6 +39,10 @@ func FuzzReadConnect(f *testing.F) {
 	f.Add("connect example.com:443 HTTP/1.1\r\n\r\n")
 	f.Add("GET / HTTP/1.1\r\n\r\n") // not a CONNECT
 	f.Add("CONNECT\r\n\r\n")
+	// A leading-zero port the dialer reads as 8080, and a doubled root dot of which
+	// exactly one comes off: the two spellings the accept-side oracle exists for.
+	f.Add("CONNECT example.com:08080 HTTP/1.1\r\n\r\n")
+	f.Add("CONNECT example.com..:443 HTTP/1.1\r\n\r\n")
 	f.Add("")
 
 	f.Fuzz(func(t *testing.T, req string) {
@@ -65,6 +70,23 @@ func FuzzReadConnect(f *testing.F) {
 			if r, bad := policy.FirstUnsafeRune(s); bad {
 				t.Fatalf("readConnect accepted deceiving rune %q in %q, which reaches the egress log and the 403 body (req %q)", r, s, req)
 			}
+		}
+		// The allowlist, the egress log and the dialer all read this port, so it must be
+		// the one spelling they agree on; "08080" matches a rule as one port and dials as
+		// another.
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 || port != strconv.Itoa(n) {
+			t.Fatalf("readConnect accepted non-canonical port %q (req %q)", port, req)
+		}
+		// Screening says nothing about whether the answer is the target the client named.
+		// Restated from the request line: exactly one DNS root dot comes off the host.
+		line, _, _ := strings.Cut(req, "\n")
+		fields := strings.Fields(line)
+		wantHost, wantPort, err := net.SplitHostPort(fields[1])
+		if err != nil {
+			t.Fatalf("readConnect accepted target %q, which does not split: %v", fields[1], err)
+		}
+		if wantHost = strings.TrimSuffix(wantHost, "."); host != wantHost || port != wantPort {
+			t.Fatalf("readConnect returned %q:%q for request-line target %q, want %q:%q", host, port, fields[1], wantHost, wantPort)
 		}
 	})
 }
