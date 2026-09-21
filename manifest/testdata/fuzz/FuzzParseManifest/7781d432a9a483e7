@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("entrypoint: 000000\n#0000000000000000\nwrite: [] ")

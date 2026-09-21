@@ -137,7 +137,10 @@ func FuzzParseManifest(f *testing.F) {
 			if err != nil {
 				t.Fatalf("a re-marshalled manifest no longer parses: %v\ninput %q\nwritten:\n%s", err, data, out)
 			}
-			if !reflect.DeepEqual(again.Policy, doc.Policy) || !reflect.DeepEqual(again.Provenance, doc.Provenance) {
+			// An empty list reads back nil by design (TestMarshalRoundTripsEveryShape says
+			// why), so both sides are compared with that one normalization applied.
+			if !reflect.DeepEqual(emptyAsNil(*again.Policy), emptyAsNil(*doc.Policy)) ||
+				!reflect.DeepEqual(emptyAsNil(again.Provenance), emptyAsNil(doc.Provenance)) {
 				t.Fatalf("the manifest did not survive a write and re-read:\nbefore %#v %#v\nafter  %#v %#v", doc.Policy, doc.Provenance, again.Policy, again.Provenance)
 			}
 			return
@@ -230,4 +233,17 @@ func FuzzManifestRoundTrip(f *testing.F) {
 			t.Fatalf("the provenance did not survive the round trip:\nbefore %#v\nafter  %#v\nmanifest:\n%s", prov, doc.Provenance, data)
 		}
 	})
+}
+
+// emptyAsNil returns v with every empty top-level slice field set to nil. Reflection
+// rather than a field list, so a list field added later is compared rather than
+// silently exempted.
+func emptyAsNil[T any](v T) T {
+	rv := reflect.ValueOf(&v).Elem()
+	for i := range rv.NumField() {
+		if f := rv.Field(i); f.Kind() == reflect.Slice && f.Len() == 0 && f.CanSet() {
+			f.Set(reflect.Zero(f.Type()))
+		}
+	}
+	return v
 }
