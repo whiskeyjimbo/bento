@@ -50,6 +50,9 @@ GOVULNCHECK_VERSION ?= v1.6.0
 # target; the nightly job passes a much larger one, which is the run that is actually
 # expected to find anything.
 FUZZTIME ?= 30s
+# The packages whose targets `make fuzz` runs. The nightly job runs one package per
+# runner, because every target in series at its budget outgrew the job's time limit.
+FUZZPKGS ?= ./...
 
 # Pinned for the same reason as govulncheck: a linter that drifts turns an
 # unchanged tree red on its own schedule.
@@ -167,7 +170,7 @@ race: ## Run the concurrency tests under the race detector
 # package's testdata/fuzz, so several crashers come back in one artifact.
 fuzz: ## Fuzz every Fuzz* target for FUZZTIME each (default 30s; not part of check)
 	@printf "$(CYAN)$(BOLD)==> Fuzzing every target for $(FUZZTIME)...$(RESET)\n"
-	@set -e; pkgs=$$(GOWORK=off go list ./...); failed=""; \
+	@set -e; pkgs=$$(GOWORK=off go list $(FUZZPKGS)); failed=""; \
 	for pkg in $$pkgs; do \
 		listed=$$(GOWORK=off go test -list='^Fuzz' $$pkg) \
 			|| { failed="$$failed $$pkg(build)"; continue; }; \

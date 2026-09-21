@@ -18,9 +18,29 @@ permissions:
   security-events: write # the SARIF upload below, so a crasher raises a code-scanning alert
 
 jobs:
+  # One runner per package rather than every target in series: at the nightly budget the
+  # serial run grows by a target's budget with each new Fuzz*, and outgrew the job's time
+  # limit at 28 targets, cancelling the tail of the list before it fuzzed at all.
+  packages:
+    runs-on: ubuntu-latest
+    outputs:
+      pkgs: ${{ steps.list.outputs.pkgs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: list
+        run: |
+          pkgs=$(grep -rl --include='*_test.go' '^func Fuzz' . | xargs -n1 dirname | sed 's|^\./||' | sort -u | jq -R . | jq -sc .)
+          echo "pkgs=$pkgs" >> "$GITHUB_OUTPUT"
+
   fuzz:
+    needs: packages
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      # A crasher in one package must not cancel the others' search.
+      fail-fast: false
+      matrix:
+        pkg: ${{ fromJSON(needs.packages.outputs.pkgs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -42,11 +62,11 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: fuzz-${{ runner.os }}-${{ github.run_id }}
+          key: fuzz-${{ runner.os }}-${{ matrix.pkg }}-${{ github.run_id }}
           restore-keys: |
-            fuzz-${{ runner.os }}-
+            fuzz-${{ runner.os }}-${{ matrix.pkg }}-
 
-      - run: make fuzz FUZZTIME=${{ inputs.fuzztime || '5m' }}
+      - run: make fuzz FUZZPKGS=./${{ matrix.pkg }} FUZZTIME=${{ inputs.fuzztime || '5m' }}
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always()
@@ -54,7 +74,7 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: fuzz-${{ runner.os }}-${{ github.run_id }}
+          key: fuzz-${{ runner.os }}-${{ matrix.pkg }}-${{ github.run_id }}
 
       # A crasher is written into the package's testdata/fuzz as a regression seed that
       # every later `go test` replays, so it has to leave the runner to be committed.
@@ -62,7 +82,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fuzz-crashers
+          name: fuzz-crashers-${{ strategy.job-index }}
           path: '**/testdata/fuzz/**'
           if-no-files-found: ignore
 
@@ -81,4 +101,4 @@ jobs:
         if: always()
         with:
           sarif_file: ${{ runner.temp }}/fuzz.sarif
-          category: fuzz
+          category: fuzz-${{ matrix.pkg }}
