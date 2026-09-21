@@ -166,8 +166,9 @@ func TestEgressCollectorDedupesAndSorts(t *testing.T) {
 
 // The proxy calls observe from a goroutine per connection, and the test above drives it
 // serially, where the race detector sees nothing. This is the concurrent half, and the
-// detector is its teeth: with the collector's mutex removed, a plain run still passes and
-// only -race fails, which is why it is named in the Makefile's RACE_LINUX_TESTS. The
+// detector is its teeth: with the collector's mutex removed, a plain run can still pass
+// (the runtime's concurrent map check fires most of the time, not always) while -race
+// fails every time, which is why it is named in the Makefile's RACE_LINUX_TESTS. The
 // assertions add what -race cannot see, that a verdict lands on its own connection's set
 // and never on another's.
 func TestEgressCollectorKeepsVerdictsApartUnderConcurrency(t *testing.T) {
