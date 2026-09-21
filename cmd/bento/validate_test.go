@@ -1281,6 +1281,7 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 			{Path: "/backup/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
 		CredentialAliasesPartial: true,
+		ShieldCarveUnknown:       true,
 	}
 	render := func(r gate.Runnability) string {
 		var out strings.Builder
@@ -1334,6 +1335,8 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want, key = "where its shields anchor", `"shields_unknown":true`
 			humanFor, machineFor = render(printed), marshal(printed)
+		case f.Name == "ShieldCarveUnknown" && v.Bool():
+			want, key = "derives from the checkout under a write grant", `"shield_carve_unknown":true`
 		case f.Name == "CredentialAliasesPartial" && v.Bool():
 			want, key = "the scan for second names", `"credential_aliases_partial":true`
 		// The suppressing field, asserted on its own rather than from the fixture: the

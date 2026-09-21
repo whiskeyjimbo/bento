@@ -308,6 +308,17 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	case len(r.Refusals) > 0:
 		fmt.Fprintf(w, "grants:       NO - the grants marked REFUSED above cannot be honored\n")
 	}
+	// Printed beside the verdict above rather than as a third arm of it: a manifest can
+	// hold real refusals AND leave this half unjudged, and a switch would silence one of
+	// the two. A note and not a verdict - --strict does not fail on it - because unlike
+	// ShieldsUnknown it says nothing about whether this host runs anything at all.
+	if r.ShieldCarveUnknown {
+		fmt.Fprintf(w, "  note: the shields a run derives from the checkout under a write grant - its git\n")
+		fmt.Fprintf(w, "        hook directory, its editor task files - are read off the host by the sandbox\n")
+		fmt.Fprintf(w, "        backend, so whether their mount points can be created under these grants was\n")
+		fmt.Fprintf(w, "        not judged here. A grant refused for that alone is refused at the run's\n")
+		fmt.Fprintf(w, "        first step with nothing above saying so.\n")
+	}
 	for _, g := range r.FileishWrites {
 		fmt.Fprintf(w, "  note: this write grant is spelled like a file, but write grants name\n")
 		fmt.Fprintf(w, "        directories: %q.\n", g)
@@ -634,6 +645,13 @@ type policyJSON struct {
 	// A verdict rather than a note, the only one here that is about the host: --strict
 	// fails on it, as doctor's exit code does on the same fact.
 	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
+	// ShieldCarveUnknown says refused_grants holds no carve refusal for the shields a run
+	// derives from the checkout under a write grant, because the gate cannot see that half
+	// of the shield set. A note and not a verdict: --strict does not fail on it, since
+	// unlike shields_unknown it is about one class of refusal rather than about whether
+	// this host runs anything. A gate reading the envelope has nothing else to tell a
+	// manifest with no carve refusal from one whose carve refusal was never looked for.
+	ShieldCarveUnknown bool `json:"shield_carve_unknown,omitempty"`
 	// MissingReadGrants are read grants naming nothing here. A note, not a verdict:
 	// runnable stays true beside them, and --strict does not fail on them.
 	MissingReadGrants []string `json:"missing_read_grants,omitempty"`
@@ -785,6 +803,7 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 	o.MissingReadGrants = r.MissingReads
 	o.FileishWriteGrants = r.FileishWrites
 	o.ShieldsUnknown = r.ShieldsUnknown
+	o.ShieldCarveUnknown = r.ShieldCarveUnknown
 	o.RefusedGrants = r.Refusals
 	if !r.ShieldsUnknown {
 		for _, a := range r.CredentialAliases {

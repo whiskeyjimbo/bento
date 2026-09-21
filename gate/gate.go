@@ -109,6 +109,22 @@ type Runnability struct {
 	// stands. Said separately from Unresolved because a consumer that folds them reports
 	// the half this host is sure of as unknown, or the half it is not as clean.
 	ShieldsUnknown bool
+	// ShieldCarveUnknown says the carve half of the grant check was answered over the
+	// BUILT-IN shields only. A run also derives shields from the checkout under each write
+	// grant that is a directory - its git hook directory, its editor task files - and
+	// internal/linux assembles those from host facts a cross-platform package cannot ask
+	// for, so ShieldCarveProblems never sees them. Refusals is therefore short of any carve
+	// refusal earned by one, and a grant whose only uncarvable mount point is a git hook
+	// directory is refused at the run's first step after passing here. Said out loud
+	// because an unknown reported as a pass is not the narrowing the package doc permits.
+	//
+	// Only the carve half: the other two narrowings ShieldedReadProblems' doc enumerates
+	// over the derived shields stay accepted, for the reasons stated there.
+	//
+	// A note rather than a verdict, where ShieldsUnknown is a verdict: that one says this
+	// host refuses every run whatever the manifest says, and this one says one class of
+	// refusal was answered short on a host that otherwise runs the manifest fine.
+	ShieldCarveUnknown bool
 }
 
 // Check asks the resolved policy - the one naming host paths - what run would find.
@@ -147,7 +163,26 @@ func Check(resolved *policy.Policy) Runnability {
 		return r
 	}
 	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
+	r.ShieldCarveUnknown = derivesWorkspaceShields(resolved.Write)
 	return r
+}
+
+// derivesWorkspaceShields answers whether a run would derive any workspace shields from
+// these write grants at all, which is the one condition internal/linux's shieldRules skips
+// on: a grant that is not an existing directory is not a checkout and derives nothing, so
+// ShieldCarveProblems is the whole answer for such a manifest and marking it unknown would
+// be noise. Asked of where the grant lands, as ShieldCarveProblems asks it.
+//
+// A stat, not a shield derivation: this says only that the derived half is non-empty, and
+// which rules it holds stays internal/linux's to know.
+func derivesWorkspaceShields(writes []string) bool {
+	for _, w := range writes {
+		lands, _ := pathresolve.Existing(w)
+		if fi, err := os.Stat(lands); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // WorkdirState is what this host makes of a manifest's workdir. It is a state rather
@@ -605,7 +640,9 @@ func ShieldedWriteProblems(set shield.Set, writes []string) []string {
 // reads and this package cannot, so a grant whose only uncarvable mount point is a git
 // hook directory passes here and is refused by the run. That is the direction the package
 // doc permits - missing a refusal, never inventing one - and it leaves the case the
-// refusal exists for, a write grant on a system tree, answered.
+// refusal exists for, a write grant on a system tree, answered. Check marks that half
+// Runnability.ShieldCarveUnknown, since a short list nothing says is short reads as a
+// clean one, which is not a narrowing but a silence.
 //
 // Answered for the DEFAULT tier, which is why the degraded tier not running
 // checkShieldsCarvable at all is no reason to demote this to a finding the way the

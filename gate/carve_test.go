@@ -63,3 +63,36 @@ func TestAWriteGrantThatCannotCarveItsShieldsIsRefused(t *testing.T) {
 		t.Errorf("the refusal does not quote the grant the author wrote: %s", carve[0])
 	}
 }
+
+// The carve refusal is answered over the built-in shields only, and a run's shield set also
+// holds what internal/linux derives from the checkout under each write grant that is a
+// directory (shieldRules appends workspaceShields). The gate cannot reach that half, so the
+// one thing it must not do is answer as though it had: a grant whose only uncarvable mount
+// point is a git hook directory is refused at the run's first step while Refusals is empty.
+//
+// The negative arm is the load-bearing one. shieldRules skips a write grant that is not a
+// directory, so such a manifest derives no shields and the carve answer is whole - an
+// unknown raised there would be a constant rather than a report.
+func TestTheDerivedHalfOfTheCarveCheckIsReportedUnknown(t *testing.T) {
+	checkout := t.TempDir()
+	entrypoint := filepath.Join(checkout, "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	derived := gate.Check(&policy.Policy{Entrypoint: entrypoint, Write: []string{checkout}})
+	if !derived.ShieldCarveUnknown {
+		t.Errorf("a write grant on a directory derives workspace shields the gate never sees, "+
+			"and the carve verdict came back as though it had judged them: %+v", derived)
+	}
+
+	// A write grant naming a host file, and one naming nothing at all: neither is a
+	// checkout, so the run derives no shields from either and there is nothing unknown.
+	for _, w := range []string{entrypoint, filepath.Join(checkout, "absent")} {
+		whole := gate.Check(&policy.Policy{Entrypoint: entrypoint, Write: []string{w}})
+		if whole.ShieldCarveUnknown {
+			t.Errorf("write grant %q derives no workspace shields, so the carve answer is whole "+
+				"and must not be marked unknown", w)
+		}
+	}
+}

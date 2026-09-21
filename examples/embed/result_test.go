@@ -199,6 +199,7 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
 		CredentialAliasesPartial: true,
+		ShieldCarveUnknown:       true,
 	}
 	var out strings.Builder
 	writeRunnability(&out, printed)
@@ -225,6 +226,8 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 			want = "could not answer"
 		case f.Name == "ShieldsUnknown" && v.Bool():
 			want = "where its shields anchor"
+		case f.Name == "ShieldCarveUnknown" && v.Bool():
+			want = "derives from the checkout under a write grant"
 		case f.Name == "CredentialAliasesPartial" && v.Bool():
 			want = "did not cover everything"
 		default:

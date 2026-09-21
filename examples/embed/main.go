@@ -291,6 +291,9 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	if r.ShieldsUnknown {
 		fmt.Fprintf(w, "embed: note: this host could not work out where its shields anchor, so the grants below were not checked against the shields and no second name for a credential was looked for\n")
 	}
+	if r.ShieldCarveUnknown {
+		fmt.Fprintf(w, "embed: note: the shields a run derives from the checkout under a write grant - its git hook directory, its editor task files - are read off the host by the sandbox backend, so whether their mount points can be created under these grants was not judged, and no refusal below covers that\n")
+	}
 	for _, p := range r.Problems {
 		fmt.Fprintf(w, "embed: note: this host cannot start what the manifest names: %s\n", p)
 	}
