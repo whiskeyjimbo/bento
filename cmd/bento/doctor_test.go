@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -355,5 +356,17 @@ func TestDoctorJSONCarriesTheShieldAnchorFacts(t *testing.T) {
 	pureLookup(t, true)
 	if toDoctorJSON(clean, []string{home}, nil).LibcNSSPasswdLookup {
 		t.Error("libc_nss_passwd_lookup = true on the supported build")
+	}
+}
+
+// A CI step runs doctor as a gate, and the exit code is the whole contract there: 3 is
+// the host falling short, 125 is bento not running at all. Both have to be in the help a
+// gate author reads, and have to be the codes main actually exits with.
+func TestDoctorHelpDocumentsItsExitCodes(t *testing.T) {
+	long := newDoctorCmd().Long
+	for _, code := range []int{doctorCoreShortfall, bentoFailed} {
+		if !strings.Contains(long, fmt.Sprintf("exits %d", code)) {
+			t.Errorf("doctor --help does not document exit %d:\n%s", code, long)
+		}
 	}
 }

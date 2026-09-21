@@ -27,7 +27,12 @@ func newDoctorCmd() *cobra.Command {
 			"the gap is total or the host itself is at stake: a manifest that asked to block\n" +
 			"subprocess execution on a platform that cannot install the filter at all, or one\n" +
 			"that asked for a resource limit this host cannot enforce, is refused rather than\n" +
-			"run without it. --allow-degraded waives either.",
+			"run without it. --allow-degraded waives either.\n\n" +
+			"doctor exits 0 when a run with the default manifest would be admitted here, and\n" +
+			"exits 3 when it would be refused: a core guarantee every run needs falls short,\n" +
+			"the default exec block cannot be installed, or the shields cannot be anchored.\n" +
+			"It exits 125 when doctor itself could not run. A CI step running doctor is\n" +
+			"therefore a gate that fails the job on such a host.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// A host with no backend has no layers to report, which is doctor's own

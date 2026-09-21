@@ -187,7 +187,9 @@ jobs:
           CI_TOKEN: ${{ secrets.CI_TOKEN }}
 ```
 
-`validate --strict` is the gate: it fails the job if the manifest is unapproved
+`bento doctor` is a gate too: it exits 3 on a host that would refuse a run with
+the default manifest, so the job stops there rather than at `run`, and 125 if
+doctor itself could not run. `validate --strict` is the manifest's gate: it fails the job if the manifest is unapproved
 or was edited since approval, which is what stops permission creep landing in a
 pipeline nobody re-reviewed. `run` needs no approval flags once the stamp is in
 the repo - if it did, the gate would not mean anything. The `--env` above supplies
