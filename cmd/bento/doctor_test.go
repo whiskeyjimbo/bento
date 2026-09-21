@@ -370,3 +370,25 @@ func TestDoctorHelpDocumentsItsExitCodes(t *testing.T) {
 		}
 	}
 }
+
+// The fix for a refusing host has to be the last thing doctor says before the escape
+// hatch: the layer's own note buries it under the weaker tier's consequences.
+func TestCoreShortfallEndsWithTheLayersFix(t *testing.T) {
+	var buf bytes.Buffer
+	writeCoreShortfall(&buf, []enforce.LayerStatus{{
+		Layer:        enforce.LayerFilesystem,
+		State:        enforce.Degraded,
+		Reason:       "bubblewrap (bwrap) is not installed. Install it: sudo apt install bubblewrap.",
+		Consequences: "a long account of the degraded tier",
+	}})
+	// Joined on single spaces: the wrap is free to break the command across lines.
+	got := strings.Join(strings.Fields(buf.String()), " ")
+	fix := strings.Index(got, "sudo apt install bubblewrap")
+	hatch := strings.Index(got, "--allow-degraded")
+	if fix < 0 || hatch < 0 || fix > hatch {
+		t.Errorf("the install command must come before --allow-degraded:\n%s", got)
+	}
+	if strings.Contains(got, "long account") {
+		t.Errorf("the consequences belong in the layer's note, not the verdict:\n%s", got)
+	}
+}

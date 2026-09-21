@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"slices"
 
@@ -113,8 +114,7 @@ func newDoctorCmd() *cobra.Command {
 				return &exitError{code: doctorCoreShortfall}
 			}
 			if shortfall {
-				fmt.Println("A core guarantee every run needs is not fully enforced here. Runs are refused")
-				fmt.Println("by default; --allow-degraded opts into a weaker sandbox, knowingly.")
+				writeCoreShortfall(os.Stdout, gatedShortfall(report))
 				return &exitError{code: doctorCoreShortfall}
 			}
 			if len(refusedByDefault) > 0 {
@@ -184,6 +184,27 @@ func gatedShortfall(r enforce.Report) []enforce.LayerStatus {
 		}
 	}
 	return out
+}
+
+// writeCoreShortfall closes a report that refuses every run. Each layer's cause and fix
+// are repeated here because its note above runs on into the standing consequences of the
+// weaker tier, and a reader who skips to the verdict would otherwise meet the escape
+// hatch before the one command that removes the need for it.
+func writeCoreShortfall(w io.Writer, gated []enforce.LayerStatus) {
+	fmt.Fprintln(w, "A core guarantee every run needs is not fully enforced here, and runs are refused:")
+	for _, l := range gated {
+		if l.Reason == "" {
+			continue
+		}
+		for i, line := range wrapText(string(l.Layer)+": "+l.Reason, 76) {
+			if i > 0 {
+				line = "  " + line
+			}
+			fmt.Fprintln(w, "  "+line)
+		}
+	}
+	fmt.Fprintln(w, "Fix that and runs proceed. --allow-degraded opts into a weaker sandbox instead,")
+	fmt.Fprintln(w, "knowingly.")
 }
 
 // doctorOutputJSON is doctor's envelope on a probed host: the matrix and verdict, and the
