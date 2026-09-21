@@ -45,8 +45,10 @@ func CoversResolved(grant, path string) bool {
 	}
 	// The root covers every absolute path. It is its own case because the test below
 	// wants a separator BETWEEN grant and the rest, and the root already ends in one.
-	// A relative path is not under it - nor under anything else here - which is the
-	// safe answer for a caller that skipped the preconditions.
+	// A relative path is not under it, nor under any absolute grant, which is the safe
+	// answer for a caller that skipped the preconditions. A relative grant is compared
+	// lexically like any other: it covers its relative descendants ("rel" covers
+	// "rel/x"), never an absolute path.
 	if grant == sep {
 		return strings.HasPrefix(path, sep)
 	}

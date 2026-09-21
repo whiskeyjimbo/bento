@@ -33,6 +33,9 @@ func TestCoversResolved(t *testing.T) {
 		{"relative", "/home/u", false},
 		// The root branch must not answer for a path that is not absolute at all.
 		{"/", "relative", false},
+		// Outside the precondition a relative grant still compares lexically.
+		{"rel", "rel/x", true},
+		{"rel", "relx", false},
 		{"/", "/", true},
 		// A trailing separator on the grant is the other spelling Clean has to settle:
 		// naive prefix-building would produce "//" and match nothing.
@@ -90,15 +93,12 @@ func FuzzCoversResolvedMatchesComponents(f *testing.F) {
 	f.Add("/a", "/ab")
 	f.Add("/", "/anything")
 	f.Add("/", "rel")
+	f.Add("rel", "rel/x")
+	f.Add("..", "../x")
 	f.Add("/home/u/", "/home/u//.ssh//id_rsa")
 	f.Add("/home/u", "/home/u/../u2")
 
 	f.Fuzz(func(t *testing.T, grant, path string) {
-		// A relative grant is outside the precondition, and what the lexical test says
-		// there does not match what the doc says about relative paths.
-		if !filepath.IsAbs(grant) {
-			t.Skip("relative grant")
-		}
 		got := CoversResolved(grant, path)
 		if want := referenceCoversResolved(grant, path); got != want {
 			t.Fatalf("CoversResolved(%q, %q) = %v; the component restatement says %v", grant, path, got, want)
@@ -113,14 +113,14 @@ func FuzzCoversResolvedMatchesComponents(f *testing.F) {
 	})
 }
 
-// referenceCoversResolved takes an absolute grant: the path is the grant itself, or an
-// absolute path whose components extend the grant's. A relative path is under nothing.
+// referenceCoversResolved: the path is the grant itself, or a path of the same kind
+// (absolute or relative) whose components extend the grant's.
 func referenceCoversResolved(grant, path string) bool {
 	grant, path = filepath.Clean(grant), filepath.Clean(path)
 	if grant == path {
 		return true
 	}
-	if !filepath.IsAbs(path) {
+	if filepath.IsAbs(grant) != filepath.IsAbs(path) {
 		return false
 	}
 	split := func(s string) []string {
