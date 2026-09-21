@@ -1450,8 +1450,9 @@ func (e *probeOnlyEnforcer) Run(context.Context, *policy.Policy, enforce.Process
 // writer knows are both dead ends on that path: --allow-degraded clears the limits bar
 // and is then refused for the scope the supervisor would have nothing to reap through,
 // and dropping `limits:` is refused for a run id with no limit to build a scope around.
-// So the refusal must name neither, rather than sending the operator down a remedy that
-// hard-refuses when they take it.
+// Dropping the run id alone is refused as well, by the limits bar. So the refusal must
+// offer none of them, rather than sending the operator down a remedy that refuses again
+// when they take it.
 //
 // Driven from real admission through the real printer, not from a hand-built Refusal:
 // the defect is the disagreement between what admission allows and what the printer
@@ -1483,8 +1484,11 @@ func TestARefusalOnlyNamesRemediesAdmissionWouldAccept(t *testing.T) {
 				t.Errorf("%+v: the refusal offers %q, and admission refuses every remedy on this path; got:\n%s", opts, dead, stderr.String())
 			}
 		}
-		if !strings.Contains(flat, "drop the run id") {
-			t.Errorf("%+v: the refusal names no step that does get past it; got:\n%s", opts, stderr.String())
+		// The quoted admitRunID reason still says "drop the run id", and on this host that
+		// is refused too - by the limits bar the run without its id still meets - so the
+		// refusal must say so rather than leave it standing as the way out.
+		if !strings.Contains(flat, "dropping the run id alone does not admit it either") {
+			t.Errorf("%+v: the refusal leaves dropping the run id as the way out, and admission refuses it; got:\n%s", opts, stderr.String())
 		}
 	}
 }

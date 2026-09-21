@@ -1691,14 +1691,16 @@ func TestAWithdrawnManifestEditNamesTheLiveLever(t *testing.T) {
 	probe := fullyEnforced()
 	for i := range probe.Layers {
 		if probe.Layers[i].Layer == LayerLimitsMemory {
-			probe.Layers[i] = LayerStatus{Layer: LayerLimitsMemory, State: Unavailable, Reason: "no cgroup delegation here"}
+			probe.Layers[i] = LayerStatus{Layer: LayerLimitsMemory, State: Unsampled, Reason: "the scope was not read"}
 		}
 	}
-	opts := Options{RunID: "job", Strict: true}
+	// The default posture over an unread scope: the one cell where the run without its id
+	// is admitted, so the run id really is the lever.
+	opts := Options{RunID: "job"}
 	_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, opts)
 	var refusal *Refusal
 	if !errors.As(err, &refusal) {
-		t.Fatalf("a strict run with an unenforceable limit must refuse; got %v", err)
+		t.Fatalf("a run id over an unread scope must refuse; got %v", err)
 	}
 	if !strings.Contains(refusal.Reason, "dropping `limits:` does not admit it either") {
 		t.Skipf("the manifest edit was not withdrawn on this path; reason = %q", refusal.Reason)
@@ -1801,6 +1803,75 @@ func TestNoWaivableRefusalMeetsARefusalOfTheTier(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// A refusal that quotes admitRunID quotes its "drop the run id", and that lever is a dead
+// end wherever the run without its id meets the limits bar again: every strict cell, and
+// the default posture over a limit it cannot enforce. Driven by taking the lever, not by
+// reading the sentence, so the test fails on any cell where the reason's advice and
+// admission disagree.
+func TestADeadRunIDLeverIsSaidToBeDead(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	for _, strict := range []bool{false, true} {
+		for _, s := range []State{Unsampled, Degraded, Unavailable} {
+			probe := fullyEnforced()
+			for i := range probe.Layers {
+				if probe.Layers[i].Layer == LayerLimitsMemory {
+					probe.Layers[i] = LayerStatus{Layer: LayerLimitsMemory, State: s, Reason: "the layer under test"}
+				}
+			}
+			opts := Options{RunID: "job", Strict: strict}
+			_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, opts)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("strict=%v, memory %s: a run id over a short limit must refuse; got %v", strict, s, err)
+			}
+			if !strings.Contains(refusal.Reason, "drop the run id") {
+				continue
+			}
+			noID := opts
+			noID.RunID = ""
+			_, err = Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, noID)
+			dead := strings.Contains(refusal.Reason, "dropping the run id alone does not admit it either")
+			if err != nil && (!dead || strings.Contains(refusal.Reason, "the run id is")) {
+				t.Errorf("strict=%v, memory %s: the refusal names dropping the run id, which is refused again (%v), and does not say so:\n%s", strict, s, err, refusal.Reason)
+			}
+			if err == nil && dead {
+				t.Errorf("strict=%v, memory %s: the refusal calls dropping the run id a dead end, and admission takes it:\n%s", strict, s, refusal.Reason)
+			}
+		}
+	}
+}
+
+// The manifest edit is judged by the whole of admission, not admitRunID's part of it: a
+// strict run short only on its limits, on a host with no network namespace, is refused by
+// admitTier once `limits:` is gone. The Linux probe never reports this shape, which is why
+// it is driven from a fake: Run takes any Enforcer.
+func TestTheManifestEditIsScreenedByTheTier(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	for _, s := range []State{Unsampled, Degraded, Unavailable} {
+		probe := fullyEnforced()
+		for i := range probe.Layers {
+			if probe.Layers[i].Layer == LayerLimitsMemory {
+				probe.Layers[i] = LayerStatus{Layer: LayerLimitsMemory, State: s, Reason: "the layer under test"}
+			}
+			if probe.Layers[i].Layer == LayerNetwork {
+				probe.Layers[i] = LayerStatus{Layer: LayerNetwork, State: Unavailable, Reason: "no netns"}
+			}
+		}
+		opts := Options{Strict: true}
+		_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, opts)
+		var refusal *Refusal
+		if !errors.As(err, &refusal) {
+			t.Fatalf("memory %s: strict with a short limit must refuse; got %v", s, err)
+		}
+		unlimited := *limited
+		unlimited.Limits = policy.Limits{}
+		_, editErr := Run(context.Background(), &fakeEnforcer{probe: probe}, &unlimited, Process{}, opts)
+		if editErr != nil && !refusal.NoRemedy {
+			t.Errorf("memory %s: the refusal leaves dropping `limits:` on offer, and the edited run is refused: %v", s, editErr)
 		}
 	}
 }

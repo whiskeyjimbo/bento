@@ -583,6 +583,20 @@ func screenRemedies(err error, p *policy.Policy, opts Options, probed, required 
 	if !errors.As(err, &r) {
 		return err
 	}
+	// admitRunID's reasons, quoted below wherever it is the blocker, name dropping the run
+	// id as a way past it, and on their own. That lever is screened like the others: under
+	// strict, or where the limits fall short of the default bar, the run without its id is
+	// refused again, and the reader is told so rather than sent to find out.
+	runIDLive, runIDDead := false, ""
+	if opts.RunID != "" {
+		noID := opts
+		noID.RunID = ""
+		if blocker := admission(p, noID, probed); blocker != nil {
+			runIDDead = "; dropping the run id alone does not admit it either: " + refusalReason(blocker)
+		} else {
+			runIDLive = true
+		}
+	}
 	if r.Waivable {
 		waived := opts
 		waived.Strict, waived.AllowDegraded = false, true
@@ -590,6 +604,9 @@ func screenRemedies(err error, p *policy.Policy, opts Options, probed, required 
 			r.Waivable = false
 			r.NoRemedy = true
 			r.Reason += "; --allow-degraded does not admit it either: " + refusalReason(blocker)
+			if admitRunID(p, waived, required) != nil {
+				r.Reason += runIDDead
+			}
 		}
 		return r
 	}
@@ -602,15 +619,29 @@ func screenRemedies(err error, p *policy.Policy, opts Options, probed, required 
 	}
 	unlimited := *p
 	unlimited.Limits = policy.Limits{}
-	if blocker := admitRunID(&unlimited, opts, required); blocker != nil {
+	if blocker := admission(&unlimited, opts, probed); blocker != nil {
 		r.NoRemedy = true
+		r.Reason += "; dropping `limits:` does not admit it either: " + refusalReason(blocker)
 		// The blocker's own reason names both of admitRunID's steps, one of which is
 		// setting a limit - which would read as advice to do the thing the clause above
-		// just called a dead end. Say which lever is live so the two do not argue.
-		r.Reason += "; dropping `limits:` does not admit it either: " + refusalReason(blocker) +
-			" - so the manifest is not the lever here, the run id is"
+		// just called a dead end. Say which lever is live so the two do not argue, but
+		// only where it is: a run id dropped under strict still meets the limits bar.
+		if admitRunID(&unlimited, opts, required) != nil {
+			if runIDLive {
+				r.Reason += " - so the manifest is not the lever here, the run id is"
+			}
+			r.Reason += runIDDead
+		}
 	}
 	return r
+}
+
+// admission is composedAdmission over the run a remedy would produce, with the required
+// set recomputed for it: a remedy that changes the policy or the options changes which
+// layers the run needs, and judging it against this run's set would refuse on a layer
+// the remedied run never asks for.
+func admission(p *policy.Policy, opts Options, probed Report) error {
+	return composedAdmission(p, opts, probed, probed.forLayers(requiredLayers(p, opts)))
 }
 
 // degradedTier is the one answer to whether a run takes the degraded tier, read by
