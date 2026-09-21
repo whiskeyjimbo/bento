@@ -497,9 +497,15 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	for _, g := range res.UnresolvedHooks {
 		fmt.Fprintf(w, "embed: could not read %q whole this run, so its hook directory and auto-exec files went unchecked\n", g)
 	}
-	// Exposed: what a full run would have shielded but this tier could not (the degraded,
-	// no-mount-namespace tier). The mirror image of Shields, and the same contract as
+	// Exposed: the shielded paths the target could reach anyway. The same contract as
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.
+	//
+	// Two tiers reach it for opposite reasons, told apart by the Kind, so the wording is
+	// per entry rather than in one header. Most entries are the degraded tier's, which
+	// applies no shields at all. "folded" is the full tier's: the shield IS applied and the
+	// same path is in Shields, but the mount hands its directory out under a second
+	// spelling inside a write grant. An embedder that reads a non-empty Exposed as "this
+	// host cannot shield" is wrong about that one.
 	//
 	// "discarded" is the kind the obvious wording gets wrong: that path is not on the
 	// host at all, so framing it as exposure describes a file nothing is at. The kind
@@ -511,6 +517,10 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	for _, s := range res.Exposed {
 		if s.Kind == "discarded" {
 			fmt.Fprintf(w, "embed: WARNING: host cannot shield %q: nothing is at that path, so a full run would have materialized a stand-in there and removed it at teardown; this run materializes nothing, so whatever the target leaves there is a real host file\n", s.Path)
+			continue
+		}
+		if s.Kind == "folded" {
+			fmt.Fprintf(w, "embed: WARNING: %q is bound read-only, but this filesystem reaches the same directory under a second spelling of its name that sits inside a write grant, so the target could write around the shield\n", s.Path)
 			continue
 		}
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)

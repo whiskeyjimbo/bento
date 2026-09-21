@@ -72,6 +72,47 @@ func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.Shie
 	return shieldsApplied(sb, applied)
 }
 
+// foldedWorkspaceExposure reports the checkout-derived shields this run applies byte-exact
+// and that a write grant reaches anyway, because the mount hands the shielded directory
+// out under a second spelling. It is the FULL tier's entry into Result.Exposed, and the
+// only one: the degraded tier applies no binds, so denyArgs' own pass - which merges the
+// same workspace half through shieldRules - already lists these there as never-applied.
+//
+// The kind is stamped here rather than through shieldsApplied, and that is the point of the
+// function existing at all. shieldsApplied reads the kind off the Deny, and every rule
+// denylist.Workspace and WorkspaceGitfile emit is DenyWrite, so it would stamp "read-only"
+// - byte-identical to the record res.Shields already carries for the same path from the
+// same rules, two lists rendering as opposite claims from one struct value. On the degraded
+// tier "read-only" in Exposed means the shield was never applied; here it was. "folded"
+// is the word for the fact neither of those says: bound, and reachable around the bind.
+//
+// A shield that is not on the host answers false from foldsCase (it holds nothing to reach,
+// per its doc), so nothing absent needs filtering out here - which is the right shape, since
+// this disclosure presupposes a bind that landed.
+//
+// The isDir gate on the write grant is shieldRules' own: workspace shields are derived for
+// a project directory, and asking for a file's checkout root walks somewhere that is not one.
+func foldedWorkspaceExposure(sb sandbox, writes []string) []enforce.ShieldApplied {
+	set := shields(sb)
+	seen := map[string]bool{}
+	var out []enforce.ShieldApplied
+	for _, w := range writes {
+		if !sb.isDir(w) {
+			continue
+		}
+		rules, _ := workspaceShields(sb, w)
+		for _, r := range set.FoldedWorkspaceShields(w, rules) {
+			if seen[r.Path] {
+				continue
+			}
+			seen[r.Path] = true
+			out = append(out, enforce.ShieldApplied{Path: r.Path, Kind: "folded", Source: r.Source})
+		}
+	}
+	slices.SortFunc(out, func(a, b enforce.ShieldApplied) int { return cmp.Compare(a.Path, b.Path) })
+	return out
+}
+
 // shields is the run's assembled shield set: the built-in credential and runtime rules,
 // the caller's own denies, the symlinked-credential expansion, and the drops - all of it
 // from internal/shield, which is where the validate gate and the profiler clamp get the

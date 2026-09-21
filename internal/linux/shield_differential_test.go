@@ -116,6 +116,14 @@ func corpusVerdict(t *testing.T, sb sandbox, c shieldcorpus.Case) shieldcorpus.V
 	if err := checkWriteNotAboveWriteShield(sb, writes); err != nil {
 		return shieldcorpus.AboveWriteShield
 	}
+	// After every refusal, because it is not one: the run binds a grant that reaches here
+	// and discloses the shield the mount gets around. Read off foldedWorkspaceExposure -
+	// the function the run's own Result.Exposed is built from - rather than off a check,
+	// since there is no check to ask. A shape that is both refused and disclosed still
+	// reports the refusal, which is the run's order too.
+	if len(foldedWorkspaceExposure(sb, writes)) > 0 {
+		return shieldcorpus.FoldedWorkspaceExposed
+	}
 	return shieldcorpus.Honored
 }
 

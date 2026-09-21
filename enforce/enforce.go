@@ -510,18 +510,27 @@ type Result struct {
 	// reach: there is no observer at enforce time, so a tool that fails closed because
 	// a path it needs was denied is diagnosed by profiling, not from this list.
 	Shields []ShieldApplied
-	// Exposed lists the always-on shields a full bwrap run WOULD have engaged for this
-	// policy but that this run left exposed, so the audit stays honest on a tier that
-	// cannot shield. It is populated only by the degraded tier, which has no mount
-	// namespace and therefore applies no shields at all: a home read grant that reached
-	// a credential store makes it readable to the target here, where the full tier would
-	// have hidden it. Each record names the path and the Kind the full tier would have
-	// applied ("hidden"/"read-only"/"discarded") - it is the protection this tier did NOT
-	// deliver,
-	// the mirror image of Shields, not evidence anything was hidden. Opt-ins are excluded
-	// (they are a deliberate exposure the full tier makes too, reported via
-	// ShieldedGrants). Sorted by path, empty for the full tier and for a degraded run
-	// whose grants reached no shield.
+	// Exposed lists the shielded paths this run left reachable by the target anyway, so
+	// the audit stays honest where the boundary did not hold. Sorted by path. It is
+	// populated for two different reasons, told apart by the Kind on each record.
+	//
+	// Most of it is the degraded tier's, which has no mount namespace and therefore
+	// applies no shields at all: a home read grant that reached a credential store makes
+	// it readable to the target here, where the full tier would have hidden it. Those
+	// records name the Kind the full tier WOULD have applied
+	// ("hidden"/"read-only"/"discarded") - the protection this tier did not deliver, the
+	// mirror image of Shields, not evidence anything was hidden.
+	//
+	// The full tier populates it too, and only with "folded" records. There the shield IS
+	// applied - the same path appears in Shields - but it is one byte-exact bind, and the
+	// mount hands its directory out under a second spelling that sits inside a write
+	// grant's read-write bind. The bind is not walked back; it is walked around. A run
+	// carrying these is not a degraded run, and a consumer that reads a non-empty Exposed
+	// as "this host cannot shield" is wrong about it.
+	//
+	// Opt-ins are excluded (they are a deliberate exposure the full tier makes too,
+	// reported via ShieldedGrants). Empty means no grant reached a shield the run failed
+	// to hold - which on the full tier is the ordinary case.
 	Exposed []ShieldApplied
 	// ChangedAutoExec names the files under a write grant that auto-execute on the host
 	// later and that this run created, modified or removed - a package.json's install
@@ -627,6 +636,17 @@ type Result struct {
 // terminal must quote it; the built-in surfaces do (JSON-encoded, or counts only).
 type ShieldApplied struct {
 	Path string
+	// Kind is one of "hidden", "read-only", "discarded" or "folded". The first three
+	// name what the sandbox did at the path and appear in Shields and Exposed alike.
+	//
+	// "folded" is the odd one and never appears in Shields: it names a shield the run
+	// DID apply, byte-exact, whose directory hands the same content out under a second
+	// spelling that a grant reaches anyway. It is a property of the host's mount rather
+	// than of the bind, so the same path can be "read-only" in Shields and "folded" in
+	// Exposed in one run - not a contradiction, but the two halves of one fact. Readers
+	// counting or filtering Kind over Shields (a run's applied summary) will never see
+	// it; readers over Exposed must word it as reachable-despite-the-shield rather than
+	// as unshielded.
 	Kind string
 	// Source names the environment variable that put the shield at this path, empty
 	// for a shield at its default location. A relocation variable accepts any absolute

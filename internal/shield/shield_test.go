@@ -3,6 +3,7 @@ package shield_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -78,8 +79,11 @@ func want(v shieldcorpus.Verdict) shield.Verdict {
 		return shield.FoldedShield
 	// WorkspaceRedirected has no counterpart here on purpose: that refusal is raised
 	// outside the shield set, so this package's answer for it is the honored one the
-	// caller then overrides.
-	case shieldcorpus.Honored, shieldcorpus.WorkspaceRedirected:
+	// caller then overrides. FoldedWorkspaceExposed has none for a stronger reason - it is
+	// not a refusal at all, so Contains has nothing to return for it, and the answer it
+	// DOES have lives on FoldedWorkspaceShields. TestFoldedWorkspaceShieldsAreDisclosedNotRefused
+	// is where that half is asserted.
+	case shieldcorpus.Honored, shieldcorpus.WorkspaceRedirected, shieldcorpus.FoldedWorkspaceExposed:
 	}
 	return shield.Honored
 }
@@ -115,4 +119,58 @@ func TestEveryWorkspaceRuleRefusesAWriteAtItself(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The above direction for a checkout-derived shield on a folding mount: the one shape
+// where the run has something to say and nothing to refuse with.
+//
+// Four claims, and the first is the decision rather than the code. A checkout-derived
+// shield sits strictly under its own grant, so Contains MUST answer Honored here - adding
+// the workspace half to its above-direction loops would refuse every "write: <checkout>"
+// on any case-insensitive volume, and offer a remedy (grant something that stops short of
+// the shield) that an author whose whole checkout is the grant cannot take. The control
+// pins that the folding seam is live while that Honored is being asserted, so the first
+// claim cannot pass by the fold simply not reaching the set.
+//
+// The third is the disclosure that stands in for the refusal, and the fourth is its bound:
+// on a host that folds nothing the same layout must disclose nothing, or every ordinary
+// run warns about a shield that holds.
+func TestFoldedWorkspaceShieldsAreDisclosedNotRefused(t *testing.T) {
+	home := t.TempDir()
+	checkout := filepath.Join(home, "proj")
+	hooks := filepath.Join(checkout, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pyenv := filepath.Join(home, ".pyenv")
+	if err := os.MkdirAll(filepath.Join(pyenv, "shims"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The corpus's folding seam rather than one written here, so this test and the three
+	// differential sites cannot disagree about which names collide.
+	folding := shield.Assemble(shieldcorpus.FS(shieldcorpus.Case{Folding: true}), []string{home}, denylist.RuntimeDir(), nil)
+	workspace := denylist.Workspace(checkout)
+
+	if _, got := folding.Contains(checkout, shield.Write, nil, workspace); got != shield.Honored {
+		t.Errorf("write over the checkout answered %v; a self-derived shield is structurally under its own grant, so refusing here refuses every project write on a folding mount and offers a remedy the author cannot take", got)
+	}
+	if _, got := folding.Contains(pyenv, shield.Write, nil, nil); got != shield.FoldedShield {
+		t.Fatalf("the built-in control answered %v, want FoldedShield: the folding seam is not reaching the set, so the honored answer above states nothing", got)
+	}
+
+	if got := paths(folding.FoldedWorkspaceShields(checkout, workspace)); !slices.Contains(got, hooks) {
+		t.Errorf("the fold walks around the ro-bind at %s and the set discloses %v; with no refusal raised, an undisclosed fold leaves a plantable pre-commit named nowhere", hooks, got)
+	}
+	byteExact := shield.Assemble(shield.Host(), []string{home}, denylist.RuntimeDir(), nil)
+	if got := byteExact.FoldedWorkspaceShields(checkout, workspace); len(got) > 0 {
+		t.Errorf("a host that folds nothing disclosed %v; the shield holds there, and warning about it would put the notice on every ordinary run", paths(got))
+	}
+}
+
+func paths(rules []denylist.Rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Path)
+	}
+	return out
 }

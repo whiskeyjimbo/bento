@@ -87,7 +87,10 @@ const (
 // because they depend on the grants being judged. Two things about them are load-bearing.
 // They are consulted in the INSIDE direction only: a self-derived shield sits strictly
 // under its own grant, so refusing a grant that contains one would refuse every project
-// write there is. And the caller must pass the union derived from EVERY write grant,
+// write there is. That is a decision not to REFUSE in the above direction, not a decision
+// to ignore it: where the mount folds, the shield's byte-exact bind is walked around, and
+// FoldedWorkspaceShields below hands the caller those paths to disclose instead.
+// And the caller must pass the union derived from EVERY write grant,
 // derived without gating on the grant being an existing directory - the gate belongs on
 // what is mounted, not on what is judged, because gating here admits a grant while its
 // directory is still absent, lets the run create it, and refuses on the next pass with
@@ -230,6 +233,41 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		}
 	}
 	return denylist.Rule{}, Honored
+}
+
+// FoldedWorkspaceShields reports the checkout-derived shields that grant contains and
+// whose directory folds case - the shields the run applies byte-exact and that the grant
+// reaches anyway under a second spelling.
+//
+// It is the above direction for the workspace half, and it DISCLOSES rather than refuses,
+// which is the whole reason it is a separate method and not another loop in Contains.
+// Contains' own doc says the above relation is structurally always true for a self-derived
+// shield: a checkout's git hooks sit strictly under the checkout, so refusing a grant that
+// contains one refuses every "write: <checkout>" there is, on every case-insensitive volume
+// and some network mounts. The remedy such a refusal offers - grant something that stops
+// short of the shield - does not exist for an author whose whole checkout IS the grant.
+// So the caller reports these paths as reachable instead, and the run proceeds.
+//
+// DenyWrite alone, because that is all denylist.Workspace and WorkspaceGitfile emit; a
+// DenyAll rule added there would need its own answer rather than this one, since hiding a
+// store and making a directory read-only fail differently under a fold.
+//
+// The RESOLVED spelling, and containment before the fold, both for the reasons the
+// FoldedShield loop above states: what folds is the directory the shield really sits in,
+// and foldsCase is a syscall per rule where covers is arithmetic. Workspace rules arrive
+// unresolved, unlike an applied shield's Resolved.
+func (s Set) FoldedWorkspaceShields(grant string, workspace []denylist.Rule) []denylist.Rule {
+	var out []denylist.Rule
+	for _, r := range workspace {
+		if r.Deny != denylist.DenyWrite {
+			continue
+		}
+		resolved := s.fs.Resolve(r.Path)
+		if s.covers(grant, resolved) && s.foldsCase(resolved) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // covers reports whether a shield at or above grant covers it, byte-exact or through a

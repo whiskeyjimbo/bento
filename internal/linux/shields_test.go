@@ -13,6 +13,7 @@ import (
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/internal/shieldcorpus"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -1597,4 +1598,52 @@ func flagValues(args []string, flag string) []string {
 		}
 	}
 	return out
+}
+
+// The disclosure's whole point is that it does not read as the record beside it. On a
+// folding mount the ro-bind at <checkout>/.git/hooks LANDS - the path is in Result.Shields,
+// correctly, as "read-only" - and a second spelling reaches the same directory from inside
+// the grant's read-write bind. Both facts are true of one path in one run, so the two
+// records must differ, or two lists render opposite claims out of one struct value and the
+// operator has no way to tell which is which.
+//
+// The kind is where they part. shieldsApplied reads it off the Deny, and every rule
+// denylist.Workspace emits is DenyWrite, so a foldedWorkspaceExposure built on it would
+// return the byte-identical record. "read-only" also already means something else in
+// Exposed - on the degraded tier it means the shield was never applied at all - so reusing
+// it would make a run that shielded and a run that could not indistinguishable.
+func TestFoldedExposureIsNotTheAppliedRecord(t *testing.T) {
+	c := shieldcorpus.Case{Grant: "checkout", Write: true, Folding: true}
+	home, err := shieldcorpus.Build(t.TempDir(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := corpusSandbox(home, c)
+	writes := []string{filepath.Join(home, "checkout")}
+	hooks := filepath.Join(home, "checkout", ".git", "hooks")
+
+	exposed := recordFor(foldedWorkspaceExposure(sb, writes), hooks)
+	if exposed == nil {
+		t.Fatalf("the fold reaches around the bind at %s and nothing discloses it: %v", hooks, foldedWorkspaceExposure(sb, writes))
+	}
+	applied := recordFor(shieldsApplied(sb, shieldRules(sb, writes)), hooks)
+	if applied == nil {
+		t.Fatalf("%s is not in the applied record, so the premise of this test - that the bind lands - does not hold on this layout", hooks)
+	}
+	if *exposed == *applied {
+		t.Errorf("Shields and Exposed both carry %#v for %s; a reader cannot tell the shield that held from the one the mount walked around, and on the degraded tier that same record means the shield was never applied",
+			*applied, hooks)
+	}
+	if exposed.Kind != "folded" {
+		t.Errorf("the disclosure names kind %q; the surfaces that word it key on the kind, and every other value there says something the run did not do", exposed.Kind)
+	}
+}
+
+func recordFor(list []enforce.ShieldApplied, path string) *enforce.ShieldApplied {
+	for i, s := range list {
+		if s.Path == path {
+			return &list[i]
+		}
+	}
+	return nil
 }

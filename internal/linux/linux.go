@@ -182,6 +182,22 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
+	// Read here, immediately after compile: this is the last point a run with expired host
+	// seams is refused, and this reads the same seams compile just did. It rides out on
+	// every arm below beside Shields, for the reason those carry it - what the boundary
+	// engaged, and what got around it, is no less true for the run having failed.
+	//
+	// No test drives this assignment. A fold is a property of the host's mount, and
+	// internal/shieldcorpus's Case.Folding documents why no layout staged on disk produces
+	// one - two spellings under a temp directory on ext4 are two genuinely different files
+	// - so every site that judges a fold injects it through its own filesystem seam, and a
+	// full-tier Run has no such seam to inject through. The disclosure is pinned one level
+	// down instead, where a fold IS expressible: at shield.Set.FoldedWorkspaceShields and
+	// at foldedWorkspaceExposure, both driven off shieldcorpus.FoldedPath. What is
+	// unreachable is this wiring alone, so deleting these four Exposed fields would go
+	// green - the gap is named here rather than covered, and building CI mount
+	// infrastructure to close it was weighed and declined.
+	exposed := foldedWorkspaceExposure(sb, preflight.writes)
 	// The same call compile makes, so reconcile judges the report against the filter
 	// the launcher was actually asked for. Recomputing it from the policy alone would
 	// read a seccomp-less host's honest "none" as a shortfall.
@@ -315,7 +331,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		// No ExitCode or Signaled: the kill was the cancel's, and a SIGKILLed target has
 		// no outcome of its own to report. That separation is what tells an operator who
 		// aborted a run apart from a policy that killed it.
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: the run was cancelled before the target finished: %w", ctx.Err())
 	}
 
 	switch err := runErr; {
@@ -332,7 +348,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
+		return enforce.Result{ExitCode: 0, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	case isExitError(err):
 		var ee *exec.ExitError
 		errors.As(err, &ee)
@@ -352,7 +368,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
+		return enforce.Result{ExitCode: code, Signaled: signaled, Signal: sig, Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, nil
 	default:
 		// The auto-exec list for the same reason the cancel arm carries it: the target may
 		// already have run, and this is the arm where nothing else says what the host holds.
@@ -386,7 +402,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		noteAcceptRetries(&report, px.acceptRetries, px.acceptBackoff)
 		noteGateFault(&report, collected.gateFaultCount())
 		noteRefusedAtCapacity(&report, collected.atCapacityCount())
-		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
+		return enforce.Result{Report: report, Setup: setup, ExecRecord: a.execRecord(opts.RecordExec), EgressConnections: collected.counted(), GateAdmitted: collected.gateAdmitted(), GuardBlocked: collected.guardBlocked(), GuardBlockedMetadata: collected.guardBlockedMetadata(), Denied: collected.allowlistDenied(), GateDenied: collected.gateRefused(), Untunneled: collected.untunneledDestinations(), ShieldedGrants: reportedOptIns(optIns), Shields: shields, Exposed: exposed, AcceptedAliases: reportedAliases(accepted), ChangedAutoExec: changedAuto, RedirectedHooks: redirected, UnresolvedHooks: unresolvedHooks}, fmt.Errorf("linux: running sandbox: %w", err)
 	}
 }
 

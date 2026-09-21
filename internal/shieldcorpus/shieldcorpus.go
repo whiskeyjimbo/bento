@@ -15,7 +15,11 @@
 // bug in that site, not a case to be edited.
 //
 // SCOPE, and it is narrower than "what a run does". Verdict models six of the run's grant
-// checks. Five are checkGrants', which both tiers share; the sixth, AboveWriteShield, is
+// checks, plus one outcome that is not a check at all: FoldedWorkspaceExposed, where the
+// run binds the grant and discloses the shield the mount reaches around. It is on this
+// type because the three sites have to agree about that shape too, and because a shape the
+// backend answers by disclosing is exactly the shape a site could otherwise quietly refuse.
+// Of the six checks, five are checkGrants', which both tiers share; the sixth, AboveWriteShield, is
 // the one refusal only a degraded run raises, and it sits in runDegraded rather than in
 // checkGrants for that reason. The tier it belongs to is carried on the verdict rather than
 // on the case - which tier refuses is a property of the check, not something a case chooses.
@@ -89,6 +93,24 @@ const (
 	// divergence is carried on the verdict rather than on a per-case field because it holds
 	// for every case of this shape.
 	WorkspaceRedirected
+	// FoldedWorkspaceExposed is the corpus's one non-refusal: a write grant at a checkout
+	// on a folding mount, where the checkout-derived shield at <checkout>/.git/hooks is
+	// applied byte-exact and the same directory is reached under a second spelling from
+	// inside the grant's own read-write bind.
+	//
+	// It is disclosed rather than refused, which is why it needs a member of its own
+	// instead of joining FoldedShield. A self-derived shield sits strictly under its own
+	// grant, so refusing here would refuse every "write: <checkout>" on any folding mount,
+	// and the remedy that refusal offers - grant something that stops short - is not
+	// available to an author whose whole checkout is the grant. The run binds the grant and
+	// names the path in Result.Exposed with Kind "folded".
+	//
+	// Every site diverges from it, and all three for reasons already written down: the gate
+	// and the shared verdict pass no workspace rules at all (WorkspaceDerived), and the
+	// clamp keeps a grant the run does not refuse (ClampKeeps). Only the backend answers
+	// this one, off foldedWorkspaceExposure rather than off a check, because there is no
+	// refusal for a differential to read.
+	FoldedWorkspaceExposed
 )
 
 func (v Verdict) String() string {
@@ -107,6 +129,8 @@ func (v Verdict) String() string {
 		return "above a DenyAll shield on a case-folding mount"
 	case WorkspaceRedirected:
 		return "shielding a checkout path a symlink redirects"
+	case FoldedWorkspaceExposed:
+		return "bound over a checkout shield a case-folding mount reaches around (disclosed, not refused)"
 	}
 	return fmt.Sprintf("Verdict(%d)", int(v))
 }
@@ -279,6 +303,19 @@ var Cases = []Case{
 		Folding:          true,
 		Verdict:          UnderWriteShield,
 		WorkspaceDerived: true,
+	},
+	{
+		Name:             "write over a whole checkout on a folding mount",
+		Why:              "the above direction of the case above, and the one grant shape the fold leaves nothing to refuse with: a checkout-derived shield sits strictly under its own grant, so refusing here would refuse every write over a project on any case-insensitive volume, with a remedy - stop short of the shield - that an author whose whole checkout is the grant cannot take. The ro-bind at <checkout>/.git/hooks lands and the mount hands the same directory out as .git/HOOKS from inside the grant's read-write bind, so the run binds the grant and discloses the path instead",
+		Grant:            "checkout",
+		Write:            true,
+		Folding:          true,
+		Verdict:          FoldedWorkspaceExposed,
+		WorkspaceDerived: true,
+		// The clamp keeps it because the run does: there is no refusal to mirror. Stated
+		// here rather than read off the verdict because it is the grant being honored that
+		// keeps it, which is a fact about this shape and not about the clamp.
+		ClampKeeps: true,
 	},
 	{
 		Name:    "write over a checkout whose hooks directory is a symlink",

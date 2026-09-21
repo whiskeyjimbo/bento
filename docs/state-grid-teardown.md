@@ -289,6 +289,11 @@ list can print a third, `discarded`, which the sentence does not explain. The pe
 line no longer frames that kind as exposure - it words it as the provenance the kind
 actually carries, as both examples do - so what is left is the header alone.
 
+Settled 2026-09-21 (bv2-r2aie/bv2-k2g1h): the header now names no kind and no tier. It
+had to stop naming one, because the full tier populates `Exposed` too, with a fourth kind
+("folded") for a shield the run DID apply and a case-folding mount reaches around. The
+quoted sentence above is the pre-change wording and is kept as the record of it.
+
 ### Verification of the remaining verdicts
 
 - A4/T6 on the degraded tier rests on `Pdeathsig` firing for a launcher under the

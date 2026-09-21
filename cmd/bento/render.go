@@ -2132,12 +2132,18 @@ func commonDir(paths []string) string {
 	return dir
 }
 
-// writeExposedWarning tells the user which credential and persistence paths a full
-// bwrap run would have shielded but this degraded run left exposed, so a run on a
-// tier that cannot shield is not silent about what it exposed. The full tier's shield
-// summary confirms the boundary engaged; this is its counterpart when the boundary
-// could not. The paths carry host-enumerated names (submodule directories), so they
-// are quoted.
+// writeExposedWarning tells the user which shielded paths the script could reach anyway,
+// so a run that did not hold a boundary is never silent about it. The paths carry
+// host-enumerated names (submodule directories), so they are quoted.
+//
+// The header says only THAT they were exposed, and each line says why, because the two
+// tiers get here for opposite reasons and a header naming one of them lies about the
+// other. The degraded tier applies no shields at all; the full tier applies one and the
+// mount reaches around it ("folded", see enforce.ShieldApplied). The older header - "this
+// host cannot shield credentials or persistence surfaces" - was a whole-host claim, and it
+// became false the moment the full tier could populate this list: for a folded entry the
+// ro-bind landed, and writeShieldSummary reports the same path as read-only off
+// res.Shields in the same output.
 //
 // "discarded" gets its own line, as examples/embed and examples/supervise now word it:
 // that path is not on the host at all, so "left exposed to the script" describes a file
@@ -2147,23 +2153,30 @@ func commonDir(paths []string) string {
 // what a write does. The two shapes disagree on that: an absent directory becomes a
 // writable scratch mount, an absent FILE an empty read-only stand-in that refuses writes.
 //
-// The header still names two kinds and the list can print a third; changing it would move
-// the parity marker in output_parity_test.go, and the per-entry line is where the wrong
-// claim was actually made.
+// The header names no kind at all now, which is what let it stop naming a tier. It keeps
+// the substring "were left exposed" deliberately: that is the parity marker in
+// output_parity_test.go, and rewording past it would unpin the text/JSON pairing for no
+// gain the sentence needed.
 func writeExposedWarning(w io.Writer, res enforce.Result) {
 	if len(res.Exposed) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "[bento] WARNING: this host cannot shield credentials or persistence surfaces, so these paths")
-	fmt.Fprintln(w, "[bento] a normal run would hide or make read-only were left exposed to the script - review:")
+	fmt.Fprintln(w, "[bento] WARNING: these paths the shields name were left exposed to the script anyway,")
+	fmt.Fprintln(w, "[bento] each for the reason on its line - review:")
 	for _, s := range res.Exposed {
+		if s.Kind == "folded" {
+			fmt.Fprintf(w, "[bento]   %q: the read-only bind landed, but this filesystem hands that directory\n", s.Path)
+			fmt.Fprintf(w, "[bento]   out under a second spelling of its name, and that spelling is inside a write\n")
+			fmt.Fprintf(w, "[bento]   grant - so the script could write around the shield\n")
+			continue
+		}
 		if s.Kind == "discarded" {
 			fmt.Fprintf(w, "[bento]   %q: nothing is at that path, so a full run would have materialized a stand-in\n", s.Path)
 			fmt.Fprintf(w, "[bento]   there and removed it at teardown; this run materializes nothing, so whatever the\n")
 			fmt.Fprintf(w, "[bento]   script leaves there is a real host file\n")
 			continue
 		}
-		fmt.Fprintf(w, "[bento]   %q (%s)\n", s.Path, s.Kind)
+		fmt.Fprintf(w, "[bento]   %q: this host cannot shield at all, so the %s a normal run applies here was not\n", s.Path, s.Kind)
 	}
 }
 
