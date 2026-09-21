@@ -1398,7 +1398,8 @@ func TestSplicingExecRanOntoTargetUnreachedCannotBuyBackAVerdict(t *testing.T) {
 // improvement: Report.Set replaces
 // unconditionally, and a Degraded landing on an Unavailable layer is a report that reads
 // better than the host is. It is also the invariant worsenNetwork's comment rests on -
-// that every other Set in this package writes Unavailable or overlays an Enforced probe.
+// that every other Set in this package writes Unavailable or a state no better than what
+// the probe reported.
 func TestTheArchitectureFallbackDoesNotSoftenAnUnavailableExecStrict(t *testing.T) {
 	var r enforce.Report
 	r.Set(enforce.LayerExec, enforce.Enforced, "")

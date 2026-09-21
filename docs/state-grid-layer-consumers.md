@@ -49,7 +49,7 @@ running all 8 x 3 cells through each consumer.
 | filesystem | IMPOSSIBLE: baseline layer, so doctor.go:95 returns before the summary. Text would read "manifests run by default ... filesystem refused", which contradicts itself, but it can't be reached | same |
 | network | IMPOSSIBLE in doctor: the probe emits only E/U (probe.go:242) | IMPOSSIBLE: U is coupled to a short filesystem layer, so gated first. The coupling lives in another package and is pinned by TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced (passes, VERIFIED BY EXECUTION) |
 | exec-block | IMPOSSIBLE (probe E/U only) | HANDLED "runs with the gap reported". Matches admit (hardening) |
-| exec-strict | IMPOSSIBLE in probe | HANDLED "reported" |
+| exec-strict | HANDLED "reported": the probe emits D for the architecture fallback (seccomp without the strict filter) | HANDLED "reported" |
 | limits-memory/pids/cpu | HANDLED "refused by default". Matches unenforcedRequestedLimits | HANDLED |
 | auto-exec-report | IMPOSSIBLE (probe E/U) | HANDLED as host-only, no refusal claim |
 

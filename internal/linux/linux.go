@@ -608,8 +608,8 @@ func noteDeadBridge(r *enforce.Report, died bool) {
 // Report.Set replaces unconditionally, and the three notes run after reconcile, so a
 // network layer already judged Unavailable would be softened to Degraded by an error path
 // - a report reading better because something else went wrong. Every other Set in the
-// backend writes either Unavailable or a state overlaying a probe that reported Enforced,
-// so these are the only ones that could land on an already-worse layer.
+// backend writes either Unavailable or a state no better than what the probe reported, so
+// these are the only ones that could land on an already-worse layer.
 //
 // A note landing on a layer already at ITS OWN state joins its reason to what is there
 // instead of being dropped. The three are independent - an OOM kill under the scope's
