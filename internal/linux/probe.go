@@ -784,10 +784,14 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // is carried by all of them rather than gated on detecting a container: podman, k8s and
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
 // clause is the one a detection miss would silently deny it. It names the first two flags
-// because the refusal cannot tell them apart - docker's default seccomp profile blocks
-// unshare(CLONE_NEWUSER) and its AppArmor profile restricts the namespace, and either
-// alone produces the same bwrap message. The host remedies the diagnoses lead with are
-// a sysctl a CI engineer usually cannot set; these are the ones they can.
+// together, and says each is needed, because docker's default seccomp profile and its
+// AppArmor profile each block the namespace on their own: a container that lifted only
+// one still fails, and it fails in a shape that points elsewhere - the AppArmor sysctl
+// read through the host's /proc, or bwrap's "Failed to make / slave". Neither shape tells
+// which flag is still missing, and a seccomp filter is no container signal (host
+// processes carry them too), so the remedy names both rather than guessing. The host
+// remedies the diagnoses lead with are a sysctl a CI engineer usually cannot set; these
+// are the ones they can.
 //
 // The third is named though it is blocking nothing yet, and says so: docker also masks
 // paths under /proc, so a container that lifts the first two reaches the namespace and
@@ -798,7 +802,8 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // joinReason's trailing-period trim still leaves a clean continuation.
 const containerUsernsRemedy = " If bento is running inside a container, the host sysctl may be out of " +
 	"reach and the container runtime's own policy is blocking the namespace too; with docker, " +
-	"--security-opt seccomp=unconfined --security-opt apparmor=unconfined lift it. Lifting those " +
+	"--security-opt seccomp=unconfined and --security-opt apparmor=unconfined are both needed, " +
+	"since either profile alone still blocks it. Lifting those " +
 	"two exposes a third restriction rather than removing it, so grant --security-opt " +
 	"systempaths=unconfined alongside them: docker masks paths under /proc that the sandbox's " +
 	"root filesystem has to mount once the namespace is granted."
@@ -947,6 +952,12 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 		return namespacesBlocked, base + reason + containerUsernsRemedy
 	}
 	if !usernsRefused(out) {
+		// Docker's AppArmor profile denies the mount propagation change bwrap makes first
+		// inside a granted namespace, so a container that lifted only seccomp lands here.
+		// It stays unknown - the output names no namespace refusal - but gets the remedy.
+		if strings.Contains(out, "Failed to make / slave") {
+			return namespacesUnknown, unknownBase + ": " + strings.TrimRight(forReason(out), ".") + "." + containerUsernsRemedy
+		}
 		if out != "" {
 			return namespacesUnknown, unknownBase + ": " + forReason(out)
 		}
@@ -964,9 +975,12 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 	return namespacesBlocked, base + ": " + strings.TrimRight(forReason(out), ".") + "." + containerUsernsRemedy
 }
 
+// readSysctl is the seam for restricted's reads, so a test can present a host's sysctls.
+var readSysctl = os.ReadFile
+
 // restricted reports whether a sysctl file holds the given value.
 func restricted(path, value string) bool {
-	b, err := os.ReadFile(path)
+	b, err := readSysctl(path)
 	if err != nil {
 		return false
 	}
