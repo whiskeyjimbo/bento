@@ -508,8 +508,8 @@ func redirectedWorkspaceProblem(w string) string {
 
 // withholdGateRefused is the gate.Refusals half of withholdRunRefused.
 //
-// It takes the two qualifications the refusal set now carries and acts on neither, which
-// is deliberate and not an oversight. AnchorErr is the case the shield clamp above already
+// It takes the two qualifications the refusal set carries and acts on neither, which is
+// deliberate and not an oversight. AnchorErr is the case the shield clamp above already
 // skipped for the same reason. CarveUnknown says a refusal was not looked for rather than
 // not found, and withholding a grant on that would drop grants the run honors - the one
 // direction the gate rules out - while the reviewer-facing channel that could say it out

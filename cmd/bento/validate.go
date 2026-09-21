@@ -651,7 +651,7 @@ type policyJSON struct {
 	// fails on it, as doctor's exit code does on the same fact.
 	ShieldsUnknown bool `json:"shields_unknown,omitempty"`
 	// ShieldsUnknownReason is why the anchors could not be worked out, in the failure's
-	// own words - the same text doctor carries as shield_anchors. Carried beside the
+	// own words - the fact doctor carries as shield_anchors. Carried beside the
 	// verdict because a machine consumer has nowhere to be pointed: told only that the
 	// anchors failed, it can report the manifest unjudged but not which host fact to fix.
 	ShieldsUnknownReason string `json:"shields_unknown_reason,omitempty"`

@@ -109,8 +109,8 @@ type Runnability struct {
 	// stands. Said separately from Unresolved because a consumer that folds them reports
 	// the half this host is sure of as unknown, or the half it is not as clean.
 	ShieldsUnknown bool
-	// ShieldsUnknownReason is why, in the anchoring failure's own words - the text doctor
-	// prints as shield_anchors. Carried beside the bool rather than left to doctor because
+	// ShieldsUnknownReason is why, in the anchoring failure's own words - the fact doctor
+	// reports as shield_anchors. Carried beside the bool rather than left to doctor because
 	// a reader whose host cannot anchor otherwise learns THAT it could not and has to run
 	// a second command to learn WHY, and the two commands then disagree about how much of
 	// the same host fact each is allowed to say. Empty exactly when ShieldsUnknown is
@@ -343,9 +343,9 @@ func WorkdirProblems(resolved *policy.Policy) []string {
 // only rename it. What comes back is not empty, though - four of the six classes are facts
 // about the manifest and the filesystem that the set has no part in, and only the two
 // shielded ones go quiet. So the list is quietly SHORT of the shield refusals rather than
-// absent. It says so itself now, in RefusalSet's two qualifications, rather than leaving
-// each caller to ask ShieldSet a second time and word the shortfall for itself - which is
-// how the carve shortfall reached validate and no other reader of the same set.
+// absent. RefusalSet's two qualifications are what says so, rather than each caller asking
+// ShieldSet a second time and wording the shortfall for itself - which leaves a
+// qualification reaching whichever reader its author had in mind and no other.
 //
 // The set is the caller's, with the error ShieldSet raised beside it, for the reason
 // ShieldedReadProblems gives: a CLI asking five times over one manifest walks the
@@ -387,7 +387,9 @@ type RefusalSet struct {
 	// CarveUnknown says the carve half of the check was answered over the BUILT-IN shields
 	// only, for the reason Runnability.ShieldCarveUnknown gives at length. It is asked of
 	// the write grants rather than of the set, so a caller that assembled the derived
-	// rules into its own set gets it raised anyway and should ignore it.
+	// rules into its own set gets it raised anyway and should ignore it. False whenever
+	// AnchorErr is non-nil: that is the larger unknown, and raising both says the same
+	// thing twice in the smaller wording.
 	CarveUnknown bool
 }
 

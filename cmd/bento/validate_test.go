@@ -1305,7 +1305,9 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 		return string(encoded)
 	}
 	anchored := printed
-	anchored.ShieldsUnknown = false
+	// Both halves of the unknown go, or the fixture models a host that reported a reason
+	// for an anchoring failure it did not have.
+	anchored.ShieldsUnknown, anchored.ShieldsUnknownReason = false, ""
 	human, machine := render(anchored), marshal(anchored)
 
 	for _, f := range reflect.VisibleFields(reflect.TypeFor[gate.Runnability]()) {

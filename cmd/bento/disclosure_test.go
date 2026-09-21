@@ -102,7 +102,7 @@ type hostFactRow struct {
 // decision that kept being made by omission.
 var doctorHostFacts = []hostFactRow{
 	{key: "shield_anchors", validate: "shields_unknown_reason"},
-	{key: "shield_anchor_homes", exempt: "where a healthy host's shields land is not a verdict on a manifest; validate reports the anchors only when they fail, as shields_unknown"},
+	{key: "shield_anchor_homes", exempt: "where a healthy host's shields land is not a verdict on a manifest; validate reports the anchors only when they fail, as shields_unknown and shields_unknown_reason"},
 	{key: "no_usable_passwd_home", exempt: "who decides where the shields land; the same anchors validate checks the grants against, and it reports what they refused rather than how they were chosen"},
 	{key: "libc_nss_passwd_lookup", exempt: "a property of this build, not of this host or this manifest"},
 	{key: "unshieldable_runtime_dir", validate: "unshieldable_runtime_dir"},
