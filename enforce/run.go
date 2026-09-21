@@ -683,7 +683,11 @@ func screenRemedies(err error, p *policy.Policy, opts Options, required Report) 
 	unlimited.Limits = policy.Limits{}
 	if blocker := admitRunID(&unlimited, opts, required); blocker != nil {
 		r.NoRemedy = true
-		r.Reason += "; dropping `limits:` does not admit it either: " + refusalReason(blocker)
+		// The blocker's own reason names both of admitRunID's steps, one of which is
+		// setting a limit - which would read as advice to do the thing the clause above
+		// just called a dead end. Say which lever is live so the two do not argue.
+		r.Reason += "; dropping `limits:` does not admit it either: " + refusalReason(blocker) +
+			" - so the manifest is not the lever here, the run id is"
 	}
 	return r
 }

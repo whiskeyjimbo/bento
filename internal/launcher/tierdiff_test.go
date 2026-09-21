@@ -129,8 +129,12 @@ var tierProbes = []tierProbe{
 		// flag is dropped (measured by ablation, not reasoned). Carried anyway because the
 		// two measure different things - sysv-ipc measures REACH, which the degraded tier
 		// denies with seccomp and the bwrap tier with a namespace, so it cannot say WHICH
-		// mechanism answered. This row measures IDENTITY, so it stays red if the bwrap arm
-		// ever grows a filter that denies reach without a namespace.
+		// mechanism answered. This row measures IDENTITY, which names the mechanism.
+		//
+		// It is carried for that legibility, not for a red of its own: the case that would
+		// give it one - the bwrap arm denying reach by filter rather than namespace -
+		// cannot arise while that arm installs no seccomp by construction, which is the
+		// whole point of keeping the two tiers' mechanisms apart here.
 		why:      "grid rows 3 and 11: --unshare-ipc gives the bwrap tier its own System V namespace; the degraded tier shares the host's and substitutes BlockProcessReach, which the sysv-ipc row measures",
 		unfenced: "shared",
 		degraded: "shared",

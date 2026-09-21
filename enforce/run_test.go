@@ -1681,3 +1681,29 @@ func TestAWaivableRefusalIsOneTheWaiverActuallyAdmits(t *testing.T) {
 		}
 	}
 }
+
+// The withdrawn manifest edit quotes the blocker's own reason, and that reason names
+// both of admitRunID's steps - one of which is setting a limit, immediately after the
+// clause above said removing it is a dead end. Pinning the sentence that says which
+// lever is live, because without it the composed refusal argues with itself.
+func TestAWithdrawnManifestEditNamesTheLiveLever(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	probe := fullyEnforced()
+	for i := range probe.Layers {
+		if probe.Layers[i].Layer == LayerLimitsMemory {
+			probe.Layers[i] = LayerStatus{Layer: LayerLimitsMemory, State: Unavailable, Reason: "no cgroup delegation here"}
+		}
+	}
+	opts := Options{RunID: "job", Strict: true}
+	_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, opts)
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("a strict run with an unenforceable limit must refuse; got %v", err)
+	}
+	if !strings.Contains(refusal.Reason, "dropping `limits:` does not admit it either") {
+		t.Skipf("the manifest edit was not withdrawn on this path; reason = %q", refusal.Reason)
+	}
+	if !strings.Contains(refusal.Reason, "the run id is") {
+		t.Errorf("the withdrawn edit quotes advice to set a limit and never says which lever is live:\n%s", refusal.Reason)
+	}
+}
