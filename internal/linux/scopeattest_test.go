@@ -184,6 +184,12 @@ func TestRunReconcilesTheLimitsLayersItGot(t *testing.T) {
 // fast to sample - so the report must not keep the pre-run probe's Enforced over it. That
 // is the forbidden direction of the limits invariant: a limit may read unenforced when it
 // was in fact enforced, never the reverse.
+//
+// It is Unsampled and not Unavailable, which is the other half of the same point:
+// Unavailable is the verdict that the cap was read and did not bind, and asserting it
+// from a reading that happened at all is the forbidden direction one layer up - a
+// could-not-tell folded into a verdict. enforce's
+// TestAnUnsampledLimitDoesNotFaultACompletedRun holds the consequence.
 func TestAnUnsampledScopeDoesNotLeaveTheLimitsEnforced(t *testing.T) {
 	limits := policy.Limits{Memory: "64M", PIDs: 64, CPU: "50%"}
 
@@ -197,8 +203,8 @@ func TestAnUnsampledScopeDoesNotLeaveTheLimitsEnforced(t *testing.T) {
 	noteScopeLimits(&r, limits, scopeLimits{})
 
 	for _, l := range []enforce.Layer{enforce.LayerLimitsMemory, enforce.LayerLimitsPIDs, enforce.LayerLimitsCPU} {
-		if got := r.StateOf(l); got != enforce.Unavailable {
-			t.Errorf("%v = %v over a run whose scope was never sampled, want unavailable: nothing verified the cap, so the report is claiming an enforcement on the probe's word alone", l, got)
+		if got := r.StateOf(l); got != enforce.Unsampled {
+			t.Errorf("%v = %v over a run whose scope was never sampled, want unsampled: nothing verified the cap, so the report must neither claim an enforcement on the probe's word alone nor assert the cap missing", l, got)
 		}
 		if reason := reasonOf(r, l); !strings.Contains(reason, "no scope was found to read") {
 			t.Errorf("%v reason = %q, want it to say the reading attested nothing", l, reason)

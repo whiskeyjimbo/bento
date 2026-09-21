@@ -73,14 +73,17 @@ func hasLayer(short []LayerStatus, layer Layer) bool {
 }
 
 // confinedHost is the probe a test builds on when the layer under test is something
-// else: the two core layers every run needs, fenced. Run refuses a probe that leaves
-// LayerNetwork out (a missing layer reads Unavailable, see Enforcer.Probe), so a test
-// about cgroup delegation or env validation would otherwise refuse for a reason it is
-// not about.
+// else: the layers a default-posture run is refused for lacking, fenced. Run refuses a
+// probe that leaves LayerNetwork out (a missing layer reads Unavailable, see
+// Enforcer.Probe), so a test about cgroup delegation or env validation would otherwise
+// refuse for a reason it is not about. LayerExec is here for the same reason and not
+// because it is core: validPolicy blocks exec, and a platform that cannot install the
+// filter refuses by default (see undeliverableExecBlock).
 func confinedHost() Report {
 	var r Report
 	r.Add(LayerFilesystem, Enforced, "")
 	r.Add(LayerNetwork, Enforced, "")
+	r.Add(LayerExec, Enforced, "")
 	return r
 }
 
@@ -95,9 +98,9 @@ func fullyEnforced() Report {
 
 // none-strict requires the exec-strict layer (fork/clone blocking). Where the host
 // provides it, --strict admits and the report shows it enforced. Where it does not
-// (e.g. a non-amd64 build that blocks only execve), the default run proceeds
-// (exec-strict is hardening tier) but the report and --strict surface the gap
-// rather than silently claiming the stricter mode.
+// (e.g. a non-amd64 build that blocks only execve), the default refuses rather than
+// running without the fence the manifest asked for, and --allow-degraded is the
+// explicit choice to run anyway.
 func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 	noneStrict := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
 
@@ -111,13 +114,18 @@ func TestNoneStrictRequiresExecStrictLayer(t *testing.T) {
 		t.Errorf("exec-strict state = %v, want enforced", got)
 	}
 
-	// Host lacks exec-strict: default proceeds, but the report names the gap.
+	// Host lacks exec-strict: the default refuses, --allow-degraded runs and the report
+	// names the gap.
 	degraded := fullyEnforced()
 	degraded.Set(LayerExecStrict, Unavailable, "not implemented for this architecture")
 	f = &fakeEnforcer{probe: degraded}
-	res, err = Run(context.Background(), f, noneStrict, Process{}, Options{})
+	if _, err := Run(context.Background(), f, noneStrict, Process{}, Options{}); !errors.As(err, new(*Refusal)) {
+		t.Fatalf("default should refuse none-strict where exec-strict cannot be installed; got %v", err)
+	}
+	f = &fakeEnforcer{probe: degraded}
+	res, err = Run(context.Background(), f, noneStrict, Process{}, Options{AllowDegraded: true})
 	if err != nil {
-		t.Fatalf("default run should proceed for a hardening-tier gap; got %v", err)
+		t.Fatalf("--allow-degraded should admit the undeliverable exec-strict fence; got %v", err)
 	}
 	if got := res.Report.StateOf(LayerExecStrict); got != Unavailable {
 		t.Errorf("exec-strict state = %v, want unavailable", got)
@@ -243,6 +251,7 @@ func TestCPULimitRequiresDelegation(t *testing.T) {
 	// missing cpu line as Unavailable rather than reading its absence as no shortfall.
 	var noScope Report
 	noScope.Add(LayerFilesystem, Enforced, "")
+	noScope.Add(LayerExec, Enforced, "")
 	noScope.Add(LayerLimitsMemory, Unavailable, "no usable systemd user manager")
 	f = &fakeEnforcer{probe: noScope}
 	if _, err := Run(context.Background(), f, cpuLimited, Process{}, Options{}); !errors.As(err, &refusal) {
@@ -307,6 +316,7 @@ func TestCPULimitLayerOmittedByProbeRefused(t *testing.T) {
 
 	var probe Report
 	probe.Add(LayerFilesystem, Enforced, "")
+	probe.Add(LayerExec, Enforced, "")
 	probe.Add(LayerLimitsMemory, Enforced, "") // limits-cpu deliberately omitted
 	f := &fakeEnforcer{probe: probe}
 
@@ -513,17 +523,22 @@ func TestRequiredLayerBlocksRun(t *testing.T) {
 	}
 }
 
-// A hardening layer that cannot be enforced (no seccomp) is reported loudly but
-// does not refuse the run by default - that is the macOS reality.
+// A hardening layer that is only WEAKER than asked is reported loudly but does not
+// refuse the run by default - that is the macOS reality. The fence that cannot be
+// installed at all is the exception, and TestAnUndeliverableExecBlockRefusesByDefault
+// pins it: an absent fence is not a weaker one, so the two are not the same case.
 func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	newProbe := func() Report {
 		r := confinedHost()
-		r.Add(LayerExec, Unavailable, "no seccomp on this platform")
+		r.Add(LayerExecStrict, Degraded, "fork blocking unavailable; execve still blocked")
 		return r
 	}
 
+	// none-strict, so the exec-strict layer is in the required set at all.
+	noneStrict := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecNoneStrict}
+
 	f := &fakeEnforcer{probe: newProbe()}
-	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{}); err != nil {
+	if _, err := Run(context.Background(), f, noneStrict, Process{}, Options{}); err != nil {
 		t.Fatalf("default mode should run despite a hardening gap: %v", err)
 	}
 	if !f.ran {
@@ -531,7 +546,7 @@ func TestHardeningGapRunsByDefaultButRefusesUnderStrict(t *testing.T) {
 	}
 
 	f = &fakeEnforcer{probe: newProbe()}
-	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{Strict: true}); err == nil {
+	if _, err := Run(context.Background(), f, noneStrict, Process{}, Options{Strict: true}); err == nil {
 		t.Error("strict mode should refuse on a hardening gap")
 	}
 	if f.ran {
@@ -907,6 +922,7 @@ func TestGatedRunRequiresTheNetworkLayer(t *testing.T) {
 	// egress concern while a proxy was serving one.
 	f = &fakeEnforcer{}
 	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerExec, Enforced, "")
 	f.probe.Add(LayerNetwork, Enforced, "")
 	res, err := Run(context.Background(), f, validPolicy(), Process{}, Options{NetworkGate: gate})
 	if err != nil {
@@ -973,6 +989,7 @@ func TestABackendErrorStillCarriesThePostureShortfall(t *testing.T) {
 	boom := errors.New("running sandbox: input/output error")
 	f := &fakeEnforcer{err: boom}
 	f.probe.Add(LayerFilesystem, Enforced, "")
+	f.probe.Add(LayerExec, Enforced, "")
 	f.probe.Add(LayerNetwork, Enforced, "")
 	f.result.Report.Add(LayerFilesystem, Degraded, "the Landlock backstop could not be applied")
 
@@ -1495,5 +1512,94 @@ func TestAReportOnlyLayerOnlyTheBackendReportsReachesTheRunsReport(t *testing.T)
 	}
 	if got != Unavailable {
 		t.Errorf("carried state = %v, want the backend's Unavailable", got)
+	}
+}
+
+// A limits layer nobody could read must not fault a run that COMPLETED. Unsampled is
+// what a reader that asked and got no answer leaves behind - the scope was gone, or was
+// never placed in time - and it asserts nothing about whether the cap bound. Faulting on
+// it hands back a non-nil error for a run that may well have been fully capped, which is
+// the could-not-tell-folded-into-a-verdict shape this package keeps apart at the source
+// (probedState). It must still not read as Enforced: nothing observed the fence.
+func TestAnUnsampledLimitDoesNotFaultACompletedRun(t *testing.T) {
+	unsampled := Report{Layers: []LayerStatus{
+		{Layer: LayerFilesystem, State: Enforced},
+		{Layer: LayerLimitsMemory, State: Unsampled, Reason: "no scope was found to read for this run"},
+	}}
+
+	if short := postRunShortfall(Options{}, unsampled); len(short) > 0 {
+		t.Errorf("the default posture faulted a completed run on an unsampled limit: %+v", short)
+	}
+	// The verdict it is kept apart from still faults, so the exemption is about the
+	// could-not-tell and not about limits going unjudged.
+	measured := Report{Layers: []LayerStatus{
+		{Layer: LayerFilesystem, State: Enforced},
+		{Layer: LayerLimitsMemory, State: Unavailable, Reason: "the scope carries no memory cap"},
+	}}
+	if short := postRunShortfall(Options{}, measured); len(short) == 0 {
+		t.Error("a limit measured absent must still fault the completed run")
+	}
+	// Strict demands positive proof of every layer, so an unproven one is a shortfall
+	// there. This is the bar that makes Unsampled not a quiet Enforced.
+	if short := postRunShortfall(Options{Strict: true}, unsampled); len(short) == 0 {
+		t.Error("--strict passed a limit nothing ever read")
+	}
+	if unsampled.StateOf(LayerLimitsMemory) == Enforced {
+		t.Error("an unsampled limit reads as enforced; nothing observed the cap")
+	}
+	if !unsampled.HasDegradation() {
+		t.Error("an unsampled limit is invisible to HasDegradation, so no frontend would disclose it")
+	}
+	// A run id asks for a scope to reap through, and an unread scope is exactly the
+	// supervisor having no handle - so that one posture does fault it.
+	if short := postRunShortfall(Options{RunID: "job"}, unsampled); len(short) == 0 {
+		t.Error("a run id passed a scope that was never found: there is nothing to reap through")
+	}
+}
+
+// A manifest that asks to block exec, on a platform where the filter cannot be installed
+// at all, refuses by default rather than running and disclosing the absent fence
+// afterwards. Off amd64 that is not one host falling short: the foreign-arch guard the
+// filter rests on is amd64-only, so no arm64 host has ever had the block, and post-run
+// disclosure tells the operator the fence was missing only once the target has run
+// without it. --allow-degraded is where an operator who needs to run anyway says so.
+func TestAnUndeliverableExecBlockRefusesByDefaultAndIsWaivable(t *testing.T) {
+	// What probe.execLayers emits when seccomp.Supported() is false, which is the arm64
+	// answer by construction (foreignArchSupported is amd64-only).
+	arm64Host := func() Report {
+		var r Report
+		r.Add(LayerFilesystem, Enforced, "")
+		r.Add(LayerNetwork, Enforced, "")
+		r.Add(LayerExec, Unavailable, "this host cannot install the exec-block filter")
+		return r
+	}
+
+	f := &fakeEnforcer{probe: arm64Host()}
+	_, err := Run(context.Background(), f, validPolicy(), Process{}, Options{})
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("default posture admitted a run whose exec block cannot be installed; got %v", err)
+	}
+	if f.ran {
+		t.Error("a refused run reached the enforcer, so the target ran without the block")
+	}
+	if !hasLayer(refusal.Short, LayerExec) {
+		t.Errorf("the refusal does not name the exec layer; short = %+v", refusal.Short)
+	}
+	if !refusal.Waivable {
+		t.Error("the refusal is not marked waivable, so nothing points the operator at the flag that runs anyway")
+	}
+
+	f = &fakeEnforcer{probe: arm64Host()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{AllowDegraded: true}); err != nil {
+		t.Fatalf("--allow-degraded must admit the run the default refuses; got %v", err)
+	}
+
+	// A manifest that never asked to block exec is not held to a fence it did not
+	// request, however little the platform can do.
+	f = &fakeEnforcer{probe: arm64Host()}
+	execAll := &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}
+	if _, err := Run(context.Background(), f, execAll, Process{}, Options{}); err != nil {
+		t.Fatalf("an exec: all manifest was refused for an exec block it never asked for; got %v", err)
 	}
 }

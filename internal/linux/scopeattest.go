@@ -175,15 +175,20 @@ var limitControllers = []struct {
 // noteScopeLimits reconciles the limits layers against what the scope's cgroup actually
 // carries. It only ever WORSENS a layer, like the applied report's own reconcile: the
 // probe answers what this host can enforce, and this answers what this run got.
+//
+// The two ways it can fall short are different answers and get different states: a scope
+// that was read and carries no cap is Unavailable, the target demonstrably ran unbounded;
+// a scope that was never found to read is Unsampled, which asserts nothing either way and
+// so does not fault a run that completed.
 func noteScopeLimits(r *enforce.Report, l policy.Limits, a scopeLimits) {
 	for _, c := range limitControllers {
 		if !c.requested(l) || r.StateOf(c.layer) != enforce.Enforced {
 			continue
 		}
 		if !a.sampled {
-			r.Set(c.layer, enforce.Unavailable, "no scope was found to read for this run, so the "+c.name+
+			r.Set(c.layer, enforce.Unsampled, "no scope was found to read for this run, so the "+c.name+
 				" cap the manifest asked for could not be confirmed to have been applied: the pre-run probe answers what this host can enforce, "+
-				"and an unverifiable run is reported unenforced rather than claimed enforced on that answer")
+				"and this run got no reading of its own to hold that answer to")
 			continue
 		}
 		if bound, known := a.caps[c.file]; known && !bound {

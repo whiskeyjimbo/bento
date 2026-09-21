@@ -404,12 +404,26 @@ func postRunShortfall(opts Options, r Report) []LayerStatus {
 		// supervisor's ability to reap the target through its scope.
 		short := r.shortfall(TierCore, Unavailable)
 		if opts.RunID != "" {
-			short = append(short, unenforcedRequestedLimits(r)...)
+			short = append(short, unenforcedRequestedLimits(r, Unsampled)...)
 		}
 		return short
 	default:
-		return append(r.shortfall(TierCore, Degraded), unenforcedRequestedLimits(r)...)
+		short := append(r.shortfall(TierCore, Degraded), undeliverableExecBlock(r)...)
+		// A run id widens the limits bar to Unsampled, as admitRunID does: an unread
+		// scope is not a cap measured missing, but it is exactly the supervisor having
+		// nothing to reap through, which is the question the run id asks.
+		return append(short, unenforcedRequestedLimits(r, limitsBar(opts))...)
 	}
+}
+
+// limitsBar is how far a requested-limits layer has to fall before the posture faults
+// it. One function so admission and postRunShortfall cannot pick different bars for the
+// same posture, which is the disagreement TestAdmissionAndPostRunShortfallAgree pins.
+func limitsBar(opts Options) State {
+	if opts.RunID != "" {
+		return Unsampled
+	}
+	return Degraded
 }
 
 // BaselineLayers returns the layers every policy requires regardless of its contents -
@@ -509,6 +523,11 @@ func (o Options) admit(r Report) error {
 		if short := r.shortfall(TierCore, Unavailable); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be enforced at all on this host", Short: short}
 		}
+		// An undeliverable exec block is deliberately not re-checked here either, for the
+		// same reason and with the same consequence: --allow-degraded is the explicit
+		// flag the default refusal below points an operator at, so it has to admit the
+		// run the default refuses. The target then runs able to spawn subprocesses.
+		//
 		// A requested-but-unenforceable resource limit is deliberately not re-checked
 		// here: --allow-degraded waives it along with the confinement layers, so an
 		// untrusted target may run without its memory/pid cap and could exhaust host
@@ -521,12 +540,30 @@ func (o Options) admit(r Report) error {
 		if short := r.shortfall(TierCore, Degraded); len(short) > 0 {
 			return &Refusal{Report: r, Reason: "a core guarantee cannot be fully enforced on this host", Short: short}
 		}
+		// The exec block is hardening-tier, so a host without it used to run the
+		// manifest anyway and disclose the missing fence after the fact. That is the
+		// wrong end of the run for the news: the operator learns the subprocess block
+		// was absent once the target has already run without it. Off amd64 it is also
+		// not a shortfall of one machine - the foreign-arch guard the filter rests on is
+		// amd64-only, so no arm64 host has ever had the block - and an architecture-wide
+		// absence disclosed per-run reads as bad luck rather than as the standing fact
+		// it is. So a manifest that asked to block exec, on a platform that cannot
+		// deliver the block at all, refuses here and --allow-degraded accepts it
+		// explicitly, exactly as for a requested limit below.
+		if short := undeliverableExecBlock(r); len(short) > 0 {
+			return &Refusal{
+				Report:   r,
+				Reason:   "the manifest asks to block subprocess execution and this platform cannot install the filter that does it, so the target would run able to spawn subprocesses",
+				Short:    short,
+				Waivable: true,
+			}
+		}
 		// Resource limits are hardening-tier, but unlike the others a limit the
 		// manifest explicitly requested protects the *host*: running an untrusted
 		// target without its requested memory/CPU cap risks exhausting host
 		// resources. So a requested-but-unenforceable limit refuses by default,
 		// rather than running unbounded. --allow-degraded overrides.
-		if short := unenforcedRequestedLimits(r); len(short) > 0 {
+		if short := unenforcedRequestedLimits(r, Degraded); len(short) > 0 {
 			return &Refusal{
 				Report:   r,
 				Reason:   "the manifest requests resource limits this host cannot enforce; running unbounded could exhaust host resources",
@@ -615,7 +652,7 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 	// alone: a cpu-only manifest requires neither of the others, and StateOf reports a
 	// missing layer as Unavailable, so keying on one refused a reapable cpu-only run on a
 	// host that could deliver the scope perfectly well.
-	if short := unenforcedRequestedLimits(required); len(short) > 0 {
+	if short := unenforcedRequestedLimits(required, Unsampled); len(short) > 0 {
 		return &Refusal{
 			Report: required,
 			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through",
@@ -625,12 +662,37 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 	return nil
 }
 
-// unenforcedRequestedLimits returns the limits layer when the policy required it
-// (it is present in the required-filtered report) but it is not fully enforced.
-func unenforcedRequestedLimits(r Report) []LayerStatus {
+// undeliverableExecBlock returns the exec layers a manifest asked to block that this
+// platform cannot enforce at all. Unavailable only, not the whole non-Enforced range: a
+// Degraded exec-strict layer still blocks execve, which is a weaker fence rather than no
+// fence, and the default posture has never refused a hardening layer for being weaker
+// than asked.
+//
+// Read from the required-filtered report, so an exec: all manifest - which requires
+// neither layer - is never held to a block it did not ask for.
+func undeliverableExecBlock(r Report) []LayerStatus {
 	var out []LayerStatus
 	for _, l := range r.Layers {
-		if (l.Layer == LayerLimitsMemory || l.Layer == LayerLimitsPIDs || l.Layer == LayerLimitsCPU) && l.State != Enforced {
+		if (l.Layer == LayerExec || l.Layer == LayerExecStrict) && l.State >= Unavailable {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// unenforcedRequestedLimits returns the limits layer when the policy required it
+// (it is present in the required-filtered report) and its state is at least atLeast.
+//
+// The bar is a parameter rather than != Enforced because Unsampled means different
+// things to the two questions asked here. For "did the cap the manifest asked for
+// bind", a scope that could not be read is not a cap measured missing, and faulting a
+// run that completed on it folds a could-not-tell into a verdict - so those callers
+// pass Degraded. For "is there a scope to reap the run through", an unread scope is
+// exactly the supervisor's problem, so postRunShortfall's run-id arm passes Unsampled.
+func unenforcedRequestedLimits(r Report, atLeast State) []LayerStatus {
+	var out []LayerStatus
+	for _, l := range r.Layers {
+		if (l.Layer == LayerLimitsMemory || l.Layer == LayerLimitsPIDs || l.Layer == LayerLimitsCPU) && l.State >= atLeast {
 			out = append(out, l)
 		}
 	}

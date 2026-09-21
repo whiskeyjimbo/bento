@@ -123,6 +123,10 @@ Latent / non-forbidden:
   block, disclosed only after the run. Allowed branch of the invariant (layer not Enforced), same as
   an amd64 kernel without seccomp BPF, but the stub turns a per-host gap into a whole-architecture
   one. Design question, not a bug. VERIFIED BY SPIKE.
+  RESOLVED 2026-09-20: the default now refuses. `enforce.admit` calls `undeliverableExecBlock`,
+  so a manifest asking to block exec on a platform that cannot install the filter is refused
+  before the target runs, waivable with `--allow-degraded`. Cell 27's reading describes the
+  code at this grid's base, not the code now.
 
 ## Rejected findings
 

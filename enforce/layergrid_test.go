@@ -127,7 +127,7 @@ func TestAdmissionAndPostRunShortfallAgree(t *testing.T) {
 	}
 	for _, o := range postures {
 		for _, l := range admissionLayers {
-			for _, s := range []State{Enforced, Degraded, Unavailable} {
+			for _, s := range []State{Enforced, Unsampled, Degraded, Unavailable} {
 				r := Report{Layers: []LayerStatus{{Layer: l, State: s}}}
 				faulted := len(postRunShortfall(o, r)) > 0
 				if l.ReportOnly() {
@@ -146,7 +146,7 @@ func TestAdmissionAndPostRunShortfallAgree(t *testing.T) {
 
 	// A host doctor calls ready must be one every posture admits.
 	for _, o := range postures {
-		for _, s := range []State{Enforced, Degraded, Unavailable} {
+		for _, s := range []State{Enforced, Unsampled, Degraded, Unavailable} {
 			var r Report
 			for _, l := range BaselineLayers() {
 				r.Layers = append(r.Layers, LayerStatus{Layer: l, State: s})

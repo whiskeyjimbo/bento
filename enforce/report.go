@@ -69,13 +69,29 @@ func (l Layer) Tier() Tier {
 }
 
 // State is how fully a layer is enforced on this host. The values are ordered by
-// severity (Enforced < Degraded < Unavailable) and admission checks compare
+// severity (Enforced < Unsampled < Degraded < Unavailable) and admission checks compare
 // against that order, so a new state must be inserted at its correct severity.
 type State int
 
 const (
 	// Enforced: the layer holds as specified.
 	Enforced State = iota
+	// Unsampled: the layer could not be read, so nothing is asserted about it either
+	// way. It is not a verdict - it is the absence of one - which is why it is kept
+	// apart from Degraded rather than folded into it, the same separation probedState
+	// makes between what a probe said and whether it said anything.
+	//
+	// It sits BELOW Degraded, which is the placement that needs the argument, since
+	// StateOf and forLayers fold a layer nobody reported to Unavailable, the most
+	// severe. The two are different questions: those fold the silence of a probe that
+	// was never asked, where reading it as enforced would admit a run on a guarantee
+	// nothing evaluated, and they stay fail-safe. Unsampled is set by a reader that DID
+	// ask and got no answer, after the target has already run - and the bars above it
+	// exist to refuse a guarantee measured short, not one nobody could measure. So every
+	// ordered bar (the two at admission, the two in postRunShortfall) passes it, and only
+	// strict, which scans != Enforced and demands positive proof of every layer, refuses
+	// it. Never Enforced: that would report a fence as held that nothing observed.
+	Unsampled
 	// Degraded: partially enforced, with a weaker guarantee than intended.
 	Degraded
 	// Unavailable: not enforced at all on this host.
@@ -86,6 +102,8 @@ func (s State) String() string {
 	switch s {
 	case Enforced:
 		return "enforced"
+	case Unsampled:
+		return "unsampled"
 	case Degraded:
 		return "degraded"
 	case Unavailable:
