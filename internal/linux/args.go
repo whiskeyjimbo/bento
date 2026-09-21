@@ -484,11 +484,12 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on
 // whether the kernel supports seccomp. The exec-block is a hardening layer
 // (TierHardening): where seccomp BPF is absent the probe reports
-// LayerExec=Unavailable and admission proceeds with a warning, so the launcher
-// must run the target without the filter rather than hard-refuse to install one it
-// cannot. Off amd64 none-strict still installs (installExecFilter degrades it to
-// the execve-only block), so only the no-seccomp case drops the block. StrictBlock
-// always implies Block.
+// LayerExec=Unavailable, which admission refuses by default and --allow-degraded
+// waives - so a run reaching here without seccomp is one the operator accepted
+// explicitly, and the launcher must run the target without the filter rather than
+// hard-refuse to install one it cannot. Off amd64 none-strict still installs
+// (installExecFilter degrades it to the execve-only block), so only the no-seccomp case
+// drops the block. StrictBlock always implies Block.
 func execBlockFlags(execMode policy.ExecMode, seccompOK bool) (block, strict bool) {
 	if execMode == policy.ExecAll || !seccompOK {
 		return false, false
