@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1432,5 +1433,53 @@ func TestWriteRunResultCarriesThePreRunNotes(t *testing.T) {
 		if fmt.Sprint(got) != fmt.Sprint(*notes) {
 			t.Errorf("%s event notes = %+v, want %+v", name, got, *notes)
 		}
+	}
+}
+
+// probeOnlyEnforcer answers a probe and refuses to run: every test built on it is about
+// an admission decision, which is settled before a backend is reached.
+type probeOnlyEnforcer struct{ report enforce.Report }
+
+func (e *probeOnlyEnforcer) Probe(context.Context) enforce.Report { return e.report }
+
+func (e *probeOnlyEnforcer) Run(context.Context, *policy.Policy, enforce.Process, enforce.RunOptions) (enforce.Result, error) {
+	return enforce.Result{}, errors.New("a refused run must not reach the backend")
+}
+
+// A run id with a limit this host cannot enforce is refused, and the remedies this
+// writer knows are both dead ends on that path: --allow-degraded clears the limits bar
+// and is then refused for the scope the supervisor would have nothing to reap through,
+// and dropping `limits:` is refused for a run id with no limit to build a scope around.
+// So the refusal must name neither, rather than sending the operator down a remedy that
+// hard-refuses when they take it.
+//
+// Driven from real admission through the real printer, not from a hand-built Refusal:
+// the defect is the disagreement between what admission allows and what the printer
+// says, and a refusal written by hand asserts one side of it as fact.
+func TestARefusalOnlyNamesRemediesAdmissionWouldAccept(t *testing.T) {
+	var probe enforce.Report
+	probe.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	probe.Add(enforce.LayerNetwork, enforce.Enforced, "")
+	probe.Add(enforce.LayerExec, enforce.Enforced, "")
+	probe.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "this host delegates no memory controller")
+
+	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	_, runErr := enforce.Run(context.Background(), &probeOnlyEnforcer{report: probe}, p, enforce.Process{}, enforce.Options{RunID: "job"})
+	var refusal *enforce.Refusal
+	if !errors.As(runErr, &refusal) {
+		t.Fatalf("a run id with an unenforceable limit was not refused; got %v", runErr)
+	}
+
+	var stderr bytes.Buffer
+	_ = writeRunResult(&stderr, false, p, nil, enforce.Result{}, nil, nil, runErr)
+	// The printer wraps, so a remedy can straddle two lines.
+	flat := strings.Join(strings.Fields(stderr.String()), " ")
+	for _, dead := range []string{"to proceed anyway", "drop `limits:`"} {
+		if strings.Contains(flat, dead) {
+			t.Errorf("the refusal offers %q, and admission refuses every remedy on this path; got:\n%s", dead, stderr.String())
+		}
+	}
+	if !strings.Contains(flat, "drop the run id") {
+		t.Errorf("the refusal names no step that does get past it; got:\n%s", stderr.String())
 	}
 }

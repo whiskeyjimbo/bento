@@ -2,6 +2,7 @@ package enforce
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -124,7 +125,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	probed := e.Probe(ctx)
 	required := probed.forLayers(wanted)
 	if err := opts.admit(required); err != nil {
-		return Result{}, err
+		return Result{}, screenRemedies(err, p, opts, required)
 	}
 	if err := admitRunID(p, opts, required); err != nil {
 		return Result{}, err
@@ -639,6 +640,46 @@ func admitEnv(p *policy.Policy, proc Process) error {
 	}
 }
 
+// screenRemedies withdraws the way past a refusal that admission would refuse anyway.
+//
+// Waivable says --allow-degraded admits THIS run, and admit sets it knowing only its own
+// half of admission: the effective bar for a posture is the composition admit ||
+// admitRunID (see limitsBar), so a refusal admit marked waivable can still meet a hard
+// refusal further along when the operator takes the flag. That is worse than a refusal
+// naming nothing - the operator learns it by trying - and it is generic, not the run id's
+// alone: any check Run composes after admit inherits the same gap.
+//
+// The manifest edit a frontend offers beside the flag is withdrawn with it. On the path
+// that makes the flag a dead end, dropping `limits:` is one too (admitRunID refuses a run
+// id with no limit to build a scope around), and a remedy that sends the reader back to a
+// refusal is the failure both halves are withheld to avoid. NoRemedy says so; the reason
+// the composition gave is appended, so the operator reads what the flag would have run
+// into rather than being left with a refusal that names no next step at all.
+func screenRemedies(err error, p *policy.Policy, opts Options, required Report) error {
+	var r *Refusal
+	if !errors.As(err, &r) || !r.Waivable {
+		return err
+	}
+	waived := opts
+	waived.Strict, waived.AllowDegraded = false, true
+	blocker := waived.admit(required)
+	if blocker == nil {
+		blocker = admitRunID(p, waived, required)
+	}
+	if blocker == nil {
+		return err
+	}
+	var second *Refusal
+	reason := blocker.Error()
+	if errors.As(blocker, &second) {
+		reason = second.Reason
+	}
+	r.Waivable = false
+	r.NoRemedy = true
+	r.Reason += "; --allow-degraded does not admit it either: " + reason
+	return r
+}
+
 // admitRunID refuses a run that asked to be reapable but would not get a scope to be
 // reaped through. Both conditions are silent failures otherwise: a policy with no limits
 // is never wrapped at all, and a host that cannot create a scope runs the target
@@ -666,7 +707,7 @@ func admitRunID(p *policy.Policy, opts Options, required Report) error {
 	if short := unenforcedRequestedLimits(required, limitsBar(opts)); len(short) > 0 {
 		return &Refusal{
 			Report: required,
-			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through",
+			Reason: "a run id asks for a reapable scope, and the resource limits a scope is created for are not fully enforced on this host, so there would be nothing to reap through; drop the run id, or run where the limits can be enforced",
 			Short:  short,
 		}
 	}
@@ -731,8 +772,17 @@ type Refusal struct {
 	//
 	// A frontend that renders a Waivable refusal must name the flag for ALL of them: a
 	// hint wired to the limits refusal alone leaves the exec one refusing an entire
-	// architecture with no way past it printed.
+	// architecture with no way past it printed. It is cleared again by screenRemedies
+	// where the rest of admission refuses the waived run, so the field holds what it
+	// says for the composed decision and not only for admit's half.
 	Waivable bool
+
+	// NoRemedy says every way past this refusal a frontend could offer - the waiver
+	// flag, or the manifest edit that drops what fell short - is itself refused further
+	// along admission, so naming any of them would send the reader back to a refusal.
+	// The Reason carries what the composition refused for instead. A frontend prints no
+	// remedy when it is set.
+	NoRemedy bool
 }
 
 // Shortfall is returned when an admitted run did not hold for the whole run the posture

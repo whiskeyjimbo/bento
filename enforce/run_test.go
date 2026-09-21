@@ -1641,3 +1641,36 @@ func TestAnUnsampledCoreLayerStillRefuses(t *testing.T) {
 		t.Error("the post-run bar passed an unread core layer, so admission and it disagree")
 	}
 }
+
+// Waivable is the statement that --allow-degraded admits THIS run, and a frontend
+// prints the flag on the strength of it. Admission is the composition admit ||
+// admitRunID, so a refusal marked by the first half while the second half still
+// refuses the waived posture hands the operator a remedy that hard-refuses when they
+// take it. Driven through Run rather than through admit, because the composition is
+// Run's and only Run can honor it.
+func TestAWaivableRefusalIsOneTheWaiverActuallyAdmits(t *testing.T) {
+	limited := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M"}}
+	for _, runID := range []string{"", "job"} {
+		for _, l := range []Layer{LayerFilesystem, LayerNetwork, LayerExec, LayerLimitsMemory} {
+			for _, s := range []State{Unsampled, Degraded, Unavailable} {
+				probe := fullyEnforced()
+				for i := range probe.Layers {
+					if probe.Layers[i].Layer == l {
+						probe.Layers[i] = LayerStatus{Layer: l, State: s, Reason: "the layer under test"}
+					}
+				}
+				opts := Options{RunID: runID}
+				_, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, opts)
+				var refusal *Refusal
+				if !errors.As(err, &refusal) || !refusal.Waivable {
+					continue
+				}
+				waived := opts
+				waived.AllowDegraded = true
+				if _, err := Run(context.Background(), &fakeEnforcer{probe: probe}, limited, Process{}, waived); err != nil {
+					t.Errorf("run id %q, %s %s: the refusal says --allow-degraded admits this run, and it does not: %v", runID, l, s, err)
+				}
+			}
+		}
+	}
+}

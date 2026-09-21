@@ -169,8 +169,8 @@ type accessNoteJSON struct {
 	Port string `json:"port,omitempty"`
 	// Reason is one of: system-tree, sandbox-scratch, unix-socket, unrepresentable,
 	// not-tunneled, read-shielded, write-shielded, too-broad, run-refused (withheld); above-write-shield,
-	// foreign-home-shield, target-steerable-tmp, whole-workdir, ungranted-workdir, listed-directory
-	// (proposed and flagged).
+	// foreign-home-shield, target-steerable-tmp, whole-workdir, ungranted-workdir,
+	// unstartable-workdir, listed-directory (proposed and flagged).
 	Reason string `json:"reason"`
 	// Holds is what the shield was hiding (denylist.Holds.Code), on a read-shielded note
 	// and no other - it is the one decision whose consequence differs by bucket, and a
@@ -1052,6 +1052,12 @@ func writeRefusal(w io.Writer, lead string, r *enforce.Refusal) {
 // this is, and an uninstalled systemd-run and an undelegated controller do not have the
 // same answer.
 func writeRefusalRemedy(w io.Writer, r *enforce.Refusal) {
+	// Nothing this writer knows is reachable on the path the refusal took, and the
+	// refusal's own reason says what refused it. The withheld-edit rule below, applied
+	// to a remedy admission itself refuses.
+	if r.NoRemedy {
+		return
+	}
 	isLimits := func(l enforce.LayerStatus) bool {
 		return l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU
 	}

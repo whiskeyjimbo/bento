@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2077,5 +2080,83 @@ func TestDenialLegendBlamesAShieldForADiscardedFileEROFS(t *testing.T) {
 	}}, false)
 	if out := b.String(); !strings.Contains(out, "or a shielded path inside one") {
 		t.Errorf("a discarded file shield answers EROFS from inside the write grant, so the legend must say so: %q", out)
+	}
+}
+
+// The Reason list on accessNoteJSON is what a harness reads to know which codes a
+// --json note can carry, and the decisions that emit them live in another file. That is
+// the drift this repo does not leave to prose: unstartable-workdir was emitted for a
+// release before the list named it, and a consumer switching on the documented set saw
+// a code it had no arm for.
+//
+// Only the codes written as literals are pinned - a reason built from a variable is
+// beyond what a source scan can name - so the list can still gain one silently that
+// way. The literal form is how every workdir and shield decision spells it.
+func TestEveryLiteralAccessNoteReasonIsDocumented(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var documented string
+	var emitted []string
+	for _, pkg := range pkgs {
+		ast.Inspect(pkg, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.Field:
+				if len(v.Names) == 1 && v.Names[0].Name == "Reason" && v.Doc != nil {
+					documented += v.Doc.Text()
+				}
+			case *ast.CompositeLit:
+				// A note written inside []accessNoteJSON{{...}} carries no type of its
+				// own, so the element literals are read through the slice's type too.
+				notes := []*ast.CompositeLit{v}
+				switch t := v.Type.(type) {
+				case *ast.Ident:
+					if t.Name != "accessNoteJSON" {
+						return true
+					}
+				case *ast.ArrayType:
+					id, ok := t.Elt.(*ast.Ident)
+					if !ok || id.Name != "accessNoteJSON" {
+						return true
+					}
+					notes = nil
+					for _, e := range v.Elts {
+						if lit, ok := e.(*ast.CompositeLit); ok {
+							notes = append(notes, lit)
+						}
+					}
+				default:
+					return true
+				}
+				for _, note := range notes {
+					for _, e := range note.Elts {
+						kv, ok := e.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						key, ok := kv.Key.(*ast.Ident)
+						if !ok || key.Name != "Reason" {
+							continue
+						}
+						if lit, ok := kv.Value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							emitted = append(emitted, strings.Trim(lit.Value, `"`))
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	if len(emitted) == 0 {
+		t.Fatal("no accessNoteJSON reason literal was found, so this pin asserts nothing")
+	}
+	for _, code := range emitted {
+		if !strings.Contains(documented, code) {
+			t.Errorf("a --json note carries reason %q that the Reason field's list does not name", code)
+		}
 	}
 }
