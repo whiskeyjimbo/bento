@@ -2071,3 +2071,42 @@ func TestPrintUngrantedWorkdirSeparatesUnreadableFromAbsent(t *testing.T) {
 		t.Errorf("--json must carry the same decision as the prose; got %+v", notes)
 	}
 }
+
+// mergeExisting reads the approval BEFORE manifest.Resolve, and that order is the whole
+// reason the "its approval is gone" line survives for a manifest written with relative
+// grants. Resolve rewrites entrypoint, interpreter, workdir and the grants, all of which
+// Fingerprint covers, so CheckApproval on the resolved policy compares a stamp against a
+// policy that is no longer the one that was stamped and reads not-approved.
+//
+// Swapping the two lines compiles and drops the line silently, which is why this exists:
+// every other stamped merge test uses absolute paths, where the order cannot show.
+func TestMergeReadsTheApprovalBeforeResolvingRelativeGrants(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe.py")
+	path := filepath.Join(dir, "probe.py.manifest.yaml")
+	base := &policy.Policy{
+		Entrypoint: script,
+		Read:       []string{"./prior"}, // relative: Resolve rewrites it, Fingerprint covers it
+		Exec:       policy.ExecNone,
+	}
+	data, err := manifest.Marshal(base, manifest.Provenance{Approves: base.Fingerprint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Read: []string{filepath.Join(dir, "fresh")}, Exec: policy.ExecNone})
+	if err != nil {
+		t.Fatalf("mergeExisting: %v", err)
+	}
+	if !merged.approvalVoided {
+		t.Fatal("a stamped manifest with a relative grant must still read as approved when the merge voids it; the approval was checked against the resolved policy")
+	}
+	var b strings.Builder
+	writeMergeNotice(&b, path, merged)
+	if out := b.String(); !strings.Contains(out, "its approval is gone") {
+		t.Errorf("merge notice does not say the approval is gone; got:\n%s", out)
+	}
+}
