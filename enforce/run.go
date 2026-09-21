@@ -625,8 +625,10 @@ func screenRemedies(err error, p *policy.Policy, opts Options, probed, required 
 		// The blocker's own reason names both of admitRunID's steps, one of which is
 		// setting a limit - which would read as advice to do the thing the clause above
 		// just called a dead end. Say which lever is live so the two do not argue, but
-		// only where it is: a run id dropped under strict still meets the limits bar.
-		if admitRunID(&unlimited, opts, required) != nil {
+		// only where it is: a run id dropped under strict still meets the strict bar.
+		// With a run id set the blocker is always admitRunID's, since the unlimited
+		// policy has no limit to scope and admitRunID runs before admitTier.
+		if opts.RunID != "" {
 			if runIDLive {
 				r.Reason += " - so the manifest is not the lever here, the run id is"
 			}

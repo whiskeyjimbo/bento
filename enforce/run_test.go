@@ -1703,7 +1703,7 @@ func TestAWithdrawnManifestEditNamesTheLiveLever(t *testing.T) {
 		t.Fatalf("a run id over an unread scope must refuse; got %v", err)
 	}
 	if !strings.Contains(refusal.Reason, "dropping `limits:` does not admit it either") {
-		t.Skipf("the manifest edit was not withdrawn on this path; reason = %q", refusal.Reason)
+		t.Fatalf("the manifest edit was not withdrawn on this path; reason = %q", refusal.Reason)
 	}
 	if !strings.Contains(refusal.Reason, "the run id is") {
 		t.Errorf("the withdrawn edit quotes advice to set a limit and never says which lever is live:\n%s", refusal.Reason)
