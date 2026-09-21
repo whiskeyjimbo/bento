@@ -172,8 +172,13 @@ func execLayers(seccompOK, strictOK bool) []enforce.LayerStatus {
 			Reason: "this host cannot install the exec-block filter - either the kernel has no seccomp BPF support, or the filter is not implemented for this architecture",
 		})
 	case !strictOK:
+		// Degraded, not Unavailable: seccomp works here, so the execve block is installed
+		// and this is a weaker fence rather than none. reconcile reads the same fact after
+		// the run and answers the same way; enforce's undeliverableExecBlock bars at
+		// Unavailable, so disagreeing here would refuse at admission a run the post-run
+		// report would have called merely short.
 		out = append(out, enforce.LayerStatus{
-			Layer: enforce.LayerExecStrict, State: enforce.Unavailable,
+			Layer: enforce.LayerExecStrict, State: enforce.Degraded,
 			Reason: "fork/vfork/process-clone blocking is not implemented for this architecture; none-strict blocks only execve here",
 		})
 	default:

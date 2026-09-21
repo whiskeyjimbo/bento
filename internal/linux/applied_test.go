@@ -1392,10 +1392,10 @@ func TestSplicingExecRanOntoTargetUnreachedCannotBuyBackAVerdict(t *testing.T) {
 	}
 }
 
-// Off amd64 the probe reports exec-strict Unavailable - the fork/vfork/process-clone
-// filter is not implemented for the architecture - while execBlockFlags still asks for
-// strict, so the launcher installs the execve-only filter and reports it. The
-// architecture-fallback arm must not read that as an improvement: Report.Set replaces
+// A host with no seccomp at all reports exec-strict Unavailable - no exec filter of any
+// kind is installed - while a tampered or confused child report can still name the
+// execve-only filter. The architecture-fallback arm must not read that as an
+// improvement: Report.Set replaces
 // unconditionally, and a Degraded landing on an Unavailable layer is a report that reads
 // better than the host is. It is also the invariant worsenNetwork's comment rests on -
 // that every other Set in this package writes Unavailable or overlays an Enforced probe.
@@ -1403,7 +1403,7 @@ func TestTheArchitectureFallbackDoesNotSoftenAnUnavailableExecStrict(t *testing.
 	var r enforce.Report
 	r.Set(enforce.LayerExec, enforce.Enforced, "")
 	r.Set(enforce.LayerExecStrict, enforce.Unavailable,
-		"fork/vfork/process-clone blocking is not implemented for this architecture")
+		"this host cannot install the exec-block filter")
 	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
 
 	a := applied{complete: true, execFilter: launcher.AppliedExecBasic, landlock: launcher.AppliedYes}
@@ -1412,5 +1412,49 @@ func TestTheArchitectureFallbackDoesNotSoftenAnUnavailableExecStrict(t *testing.
 	}
 	if st := r.StateOf(enforce.LayerExecStrict); st != enforce.Unavailable {
 		t.Errorf("exec-strict = %v, want Unavailable; the fallback upgraded a layer the probe said this host cannot enforce at all", st)
+	}
+}
+
+// One host fact - seccomp works, the fork/vfork/process-clone filter is not built for
+// this architecture - is read twice: by the probe before the run and by reconcile after
+// it. Both must answer with the same state, because admission and the post-run report
+// bar on that state and a fact that is Unavailable to one reader and Degraded to the
+// other refuses a run the other side would have called merely short.
+//
+// The answer is Degraded: the execve block IS installed here, so the strict layer is a
+// weaker fence rather than no fence - which is what enforce's undeliverableExecBlock
+// bar, doctor's readiness gate and the launcher's own fallback all already say a
+// Degraded exec-strict means.
+//
+// The two verdicts are computed independently: the pre-run one from execLayers over the
+// capability booleans, the post-run one from reconcile over a report that does not
+// carry the fallback, so neither side can inherit the other's answer.
+func TestProbeAndReconcileAgreeOnTheArchitectureFallback(t *testing.T) {
+	var pre enforce.State
+	found := false
+	for _, ls := range execLayers(true, false) {
+		if ls.Layer == enforce.LayerExecStrict {
+			pre, found = ls.State, true
+		}
+	}
+	if !found {
+		t.Fatal("execLayers emitted no exec-strict layer")
+	}
+
+	var r enforce.Report
+	r.Set(enforce.LayerExec, enforce.Enforced, "")
+	r.Set(enforce.LayerExecStrict, enforce.Enforced, "")
+	r.Set(enforce.LayerFilesystem, enforce.Enforced, "")
+	a := applied{complete: true, execFilter: launcher.AppliedExecBasic, landlock: launcher.AppliedYes}
+	if got := a.reconcile(&r, true, true, true, 0); got != enforce.SetupAttested {
+		t.Fatalf("setup state = %v, want SetupAttested", got)
+	}
+	post := r.StateOf(enforce.LayerExecStrict)
+
+	if pre != post {
+		t.Errorf("exec-strict for the architecture fallback: probe says %v, reconcile says %v; one host fact must not refuse pre-run and pass post-run", pre, post)
+	}
+	if pre != enforce.Degraded {
+		t.Errorf("exec-strict for the architecture fallback = %v, want Degraded: the execve block is installed, so this is a weaker fence and not no fence", pre)
 	}
 }

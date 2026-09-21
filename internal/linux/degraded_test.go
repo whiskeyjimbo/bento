@@ -622,16 +622,14 @@ func TestRealProbeRefusesStrictExecUnderStrictWhenUnsupported(t *testing.T) {
 		t.Error("a refused run must not execute the target")
 	}
 
-	// The other half of the decision: the default posture refuses this too, because the
-	// strict extra cannot be installed at all here rather than being weaker than asked,
-	// and --allow-degraded is where an operator accepts the missing fence. Asserting the
-	// waiver runs is what makes the refusals above a posture rather than a host that
+	// The other half of the decision: the default posture RUNS this, because the execve
+	// block underneath still installs here, so the layer is a weaker fence and not no
+	// fence - the bar admission refuses a requested exec block on is Unavailable, and the
+	// probe reports this fallback Degraded exactly as the post-run report does. Asserting
+	// the default runs is what makes the refusal above a posture rather than a host that
 	// refuses everything.
-	if _, err := run(enforce.Options{}); !errors.As(err, &refusal) {
-		t.Errorf("the default posture must refuse a none-strict manifest whose filter cannot be installed; got %v", err)
-	}
-	if out, err := run(enforce.Options{AllowDegraded: true}); err != nil || !strings.Contains(out, "RAN") {
-		t.Errorf("--allow-degraded must run with only the hardening-tier extra missing; got err=%v out=%q", err, out)
+	if out, err := run(enforce.Options{}); err != nil || !strings.Contains(out, "RAN") {
+		t.Errorf("the default posture must run a none-strict manifest whose execve block still installs; got err=%v out=%q", err, out)
 	}
 }
 

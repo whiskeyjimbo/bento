@@ -202,9 +202,11 @@ func TestLimitsLayersTrackScopeCreation(t *testing.T) {
 }
 
 // exec-strict is the stricter of the two claims and needs the architecture filter on
-// top of seccomp, so a host with seccomp but no strict filter must report exec
-// Enforced and exec-strict Unavailable rather than letting the coarser layer's
-// success speak for both.
+// top of seccomp, so a host with seccomp but no strict filter must not let the coarser
+// layer's success speak for both: exec stays Enforced and exec-strict drops to
+// Degraded, the execve block having landed where the fork/clone one could not. Without
+// seccomp there is no filter at all and both are Unavailable, which is the state
+// admission refuses a requested exec block on.
 func TestExecLayers(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -215,7 +217,7 @@ func TestExecLayers(t *testing.T) {
 		strictReasonHas string
 	}{
 		{"seccomp and strict filter", true, true, enforce.Enforced, enforce.Enforced, ""},
-		{"seccomp, no strict filter", true, false, enforce.Enforced, enforce.Unavailable, "not implemented for this architecture"},
+		{"seccomp, no strict filter", true, false, enforce.Enforced, enforce.Degraded, "not implemented for this architecture"},
 		{"no seccomp", false, true, enforce.Unavailable, enforce.Unavailable, "cannot install the exec-block filter"},
 	}
 	for _, tc := range cases {
@@ -284,7 +286,7 @@ func TestProbeReadsTheRealCapabilityChecks(t *testing.T) {
 		},
 		{
 			"no strict exec filter", func(t *testing.T) { swap(t, &seccompStrictExecSupported, false) },
-			enforce.LayerExecStrict, enforce.Unavailable, "not implemented for this architecture",
+			enforce.LayerExecStrict, enforce.Degraded, "not implemented for this architecture",
 		},
 	}
 	for _, tc := range cases {
@@ -950,8 +952,10 @@ func TestCanUnshareBoundsItselfAndReportsTheDeadline(t *testing.T) {
 
 // doctor's readiness gate (cmd/bento gatedShortfall) covers only the baseline layers, and
 // network is not one of them - so a host that can fence no egress at all exits ready
-// unless something in the baseline is short too. Nothing in cmd/bento holds that up: what
-// does is here, and only here, which is why it is asserted here. Exhaustive over the whole
+// unless something in the baseline is short too. validate's hostPosture note rests on the
+// same coupling for the same reason: it would go quiet about a run Run refuses. Nothing in
+// cmd/bento holds either of them up - what does is here, and only here, which is why it is
+// asserted here, and why both of those comments point at this test by name. Exhaustive over the whole
 // input space of both layers, because a fact two functions happen to agree on today is one
 // a later branch can split without anything failing to compile.
 func TestAnUnavailableNetworkLayerNeverLeavesFilesystemEnforced(t *testing.T) {

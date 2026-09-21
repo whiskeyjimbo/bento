@@ -467,10 +467,10 @@ func (a applied) reconcile(r *enforce.Report, blockWanted, strictWanted, mountCo
 		// basic where strict was asked for is the architecture fallback: execve is
 		// blocked, but fork/vfork/process-clone are not.
 		//
-		// Skipped where the probe already said Unavailable, which is the same
-		// architecture off amd64: Set replaces unconditionally, so writing Degraded
-		// there would UPGRADE the layer and attest a partial guarantee this host has
-		// none of.
+		// Skipped where the probe already said Unavailable - a host with no seccomp at
+		// all, where the execve block this state rests on was never installed: Set
+		// replaces unconditionally, so writing Degraded there would UPGRADE the layer
+		// and attest a partial guarantee this host has none of.
 		r.Set(enforce.LayerExecStrict, enforce.Degraded,
 			"the sandbox installed the execve-only block; fork/vfork/process-clone blocking is not available on this architecture")
 	}

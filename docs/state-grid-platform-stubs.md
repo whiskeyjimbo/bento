@@ -47,7 +47,7 @@ Reachability facts that collapse cells:
 |---|---|---|---|---|---|---|
 | 1 | foreignArchSupported=false, so Supported()=false | linux/arm64 | exec-block and exec-strict layers | HANDLED | seccomp_linux.go:30 folds foreignArch into Supported; probe.go:161-172 reports both Unavailable; args.go:468 clears Block/StrictBlock so the launcher installs nothing and records AppliedExecNone | VERIFIED BY SPIKE |
 | 2 | blockForeignArch errors | linux/arm64 | BlockExec / BlockExecStrict / BlockProcessReach / BlockIoUring | HANDLED | seccomp_linux.go:79, :129, iouring_linux.go:42 return its error first; every launcher call site is fatal (launcher.go:420, degraded.go:206-227) | VERIFIED BY READING |
-| 3 | StrictExecSupported=false | linux/arm64 | exec-strict layer, launcher filter choice | HANDLED | probe.go:173-176 Unavailable; launcher.go:891-900 falls back to execve-only and returns AppliedExecBasic, reported as exec-strict degraded | VERIFIED BY SPIKE |
+| 3 | StrictExecSupported=false | linux/arm64 | exec-strict layer, launcher filter choice | HANDLED | probe.go reports exec-strict Degraded (the execve block still installs); launcher.go:891-900 falls back to execve-only and returns AppliedExecBasic, which reconcile reports as the same Degraded | VERIFIED BY SPIKE |
 | 4 | EgressSupported=false | linux/arm64 | degraded tier offer | HANDLED | probe.go:51 degradedFencesOK; probe.go:260-269 Filesystem Unavailable, not Degraded | VERIFIED BY SPIKE |
 | 5 | EgressSupported=false | linux/arm64 | degraded launcher | HANDLED | degraded.go:168 degradedPrerequisites refuses (degraded.go:124) | VERIFIED BY SPIKE |
 | 6 | TerminalInjectionSupported=false | linux/arm64 | degraded tier offer and launcher | HANDLED | probe.go:51 and degraded.go:127 | VERIFIED BY SPIKE |
