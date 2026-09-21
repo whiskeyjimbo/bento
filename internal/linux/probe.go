@@ -785,7 +785,8 @@ func (e *usernsError) Error() string { return e.err.Error() }
 // nerdctl all defeat a /.dockerenv-style probe, and the reader who most needs this
 // clause is the one a detection miss would silently deny it. It names the first two flags
 // together, and says each is needed, because docker's default seccomp profile and its
-// AppArmor profile each block the namespace on their own: a container that lifted only
+// AppArmor profile each stop the sandbox on their own (the AppArmor one at the namespace
+// or at the first mount inside it, depending on the host's AppArmor): a container that lifted only
 // one still fails, and it fails in a shape that points elsewhere - the AppArmor sysctl
 // read through the host's /proc, or bwrap's "Failed to make / slave". Neither shape tells
 // which flag is still missing, and a seccomp filter is no container signal (host
@@ -952,9 +953,10 @@ func classifyUnshare(err error) (namespaceProbe, string) {
 		return namespacesBlocked, base + reason + containerUsernsRemedy
 	}
 	if !usernsRefused(out) {
-		// Docker's AppArmor profile denies the mount propagation change bwrap makes first
-		// inside a granted namespace, so a container that lifted only seccomp lands here.
-		// It stays unknown - the output names no namespace refusal - but gets the remedy.
+		// The namespace was granted, then docker's AppArmor profile (deny mount) refused the
+		// propagation change bwrap makes first inside it, so a container that lifted only
+		// seccomp lands here on an AppArmor without userns mediation. It stays unknown - the
+		// output names no namespace refusal - but gets the remedy.
 		if strings.Contains(out, "Failed to make / slave") {
 			return namespacesUnknown, unknownBase + ": " + strings.TrimRight(forReason(out), ".") + "." + containerUsernsRemedy
 		}
