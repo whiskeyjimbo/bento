@@ -111,6 +111,10 @@ func FuzzParseManifest(f *testing.F) {
 	// and the terminal acts on it anyway. Seeded rather than left to the mutator, which
 	// has no reason to construct a two-byte encoding of one codepoint.
 	f.Add([]byte("entrypoint: \u009b31mBAD:\n\tbad"))
+	// The shapes the typed round trip never builds: a non-default exec mode, two rules,
+	// and a provenance block, so the accept side starts from something to mutate.
+	f.Add([]byte("entrypoint: ./app\nexec: all\nread: [/a, /b]\nnetwork:\n  - {host: a.example, port: \"443\"}\n  - {host: \".b.example\", port: \"80-90\"}\nprovenance:\n  generated-by: bento-test\n  approves: abc123\n"))
+	f.Add([]byte("entrypoint: ./app\nexec: none-strict\nwrite: [/out]\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := bytes.NewReader(data)
@@ -118,6 +122,23 @@ func FuzzParseManifest(f *testing.F) {
 		if err == nil && doc != nil {
 			if doc.Policy == nil {
 				t.Fatal("Parse returned non-nil Document with nil Policy without returning error")
+			}
+			if err := doc.Policy.Validate(); err != nil {
+				t.Fatalf("Parse accepted a policy Validate refuses: %v\ninput %q", err, data)
+			}
+			// The parse-side round trip. FuzzManifestRoundTrip builds its policies from a
+			// fixed shape, so an exec mode other than none, several rules, or a list the
+			// author wrote never reach Marshal there; here whatever Parse accepts does.
+			out, err := Marshal(doc.Policy, doc.Provenance)
+			if err != nil {
+				t.Fatalf("Parse accepted a manifest Marshal refuses to write back: %v\ninput %q", err, data)
+			}
+			again, err := Parse(bytes.NewReader(out))
+			if err != nil {
+				t.Fatalf("a re-marshalled manifest no longer parses: %v\ninput %q\nwritten:\n%s", err, data, out)
+			}
+			if !reflect.DeepEqual(again.Policy, doc.Policy) || !reflect.DeepEqual(again.Provenance, doc.Provenance) {
+				t.Fatalf("the manifest did not survive a write and re-read:\nbefore %#v %#v\nafter  %#v %#v", doc.Policy, doc.Provenance, again.Policy, again.Provenance)
 			}
 			return
 		}
