@@ -22,8 +22,10 @@ const bentoFailed = 125
 // doctorCoreShortfall is doctor's exit code when this host refuses a run nobody had to
 // ask for: a core guarantee not fully enforced, or an exec block the platform cannot
 // install at all, which refuses the default manifest. Distinct from bentoFailed and from
-// a target's own code so a CI wrapper can gate on host readiness. A hardening gap a
-// manifest has to name, where runs still proceed, stays exit 0.
+// a target's own code so a CI wrapper can gate on host readiness. Every other gap stays
+// exit 0 because the DEFAULT manifest does not need the layer, not because runs on it
+// proceed: a requested limit this host cannot enforce refuses too, but only a manifest
+// that asked for one.
 const doctorCoreShortfall = 3
 
 // profileIncomplete is `bento profile`'s exit code when it wrote a manifest it cannot

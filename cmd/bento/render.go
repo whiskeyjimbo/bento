@@ -647,11 +647,11 @@ func writeEgressHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 // It reports whether it said anything, so no second explanation stacks on top.
 func writeExecHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 	// The declared mode is not enough, which is why this asks blockedExecMode rather than
-	// p.Exec: a run whose filter never landed at all is refused by default and only got
-	// here under --allow-degraded - and writeDegradations has just said so a few lines
-	// above. Blaming the
-	// manifest there both contradicts that line and sends the reader to change a setting
-	// that had no part in the failure.
+	// p.Exec: a manifest can ask for the block and not get it, either because the operator
+	// waived the refusal with --allow-degraded or because the probe said Enforced and the
+	// launcher then reported no filter installed - and writeDegradations has just said so a
+	// few lines above. Blaming the manifest there both contradicts that line and sends the
+	// reader to change a setting that had no part in the failure.
 	mode := blockedExecMode(p, res)
 	if res.ExitCode != 126 || mode == "" {
 		return false
@@ -1863,10 +1863,16 @@ func writeDegradedSummary(w io.Writer, short []enforce.LayerStatus) {
 		// that cannot happen. Strict does not reach it either.
 		case l.Layer.ReportOnly():
 			hostOnly = append(hostOnly, string(l.Layer))
-		// The two halves of admit(): a core layer refuses when the manifest needs it, and
-		// so does a requested limit - unlike the other hardening layers, a limit protects
-		// the host, so running unbounded is not an option the run gets to take.
-		case l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU:
+		// The three halves of admit(): a core layer refuses when the manifest needs it, so
+		// does a requested limit - unlike the other hardening layers, a limit protects the
+		// host, so running unbounded is not an option the run gets to take - and so does an
+		// exec block the platform cannot install AT ALL. The bar is what makes the exec case
+		// different from the rest: Unavailable only, because a Degraded exec-strict layer
+		// still blocks execve, which is a weaker fence rather than no fence, and admission
+		// admits it (enforce's undeliverableExecBlock). A Degraded one therefore falls
+		// through to `reported` below, which is what a run on it really gets.
+		case l.Layer.Tier() == enforce.TierCore || l.Layer == enforce.LayerLimitsMemory || l.Layer == enforce.LayerLimitsPIDs || l.Layer == enforce.LayerLimitsCPU,
+			(l.Layer == enforce.LayerExec || l.Layer == enforce.LayerExecStrict) && l.State >= enforce.Unavailable:
 			refused = append(refused, string(l.Layer))
 		default:
 			reported = append(reported, string(l.Layer))

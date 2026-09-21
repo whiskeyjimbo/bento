@@ -144,7 +144,24 @@ func TestDegradedSummaryNamesOnlyTheLayersThatFellShort(t *testing.T) {
 		t.Errorf("a core layer refuses the manifests that need it; got %q", got)
 	}
 	if !strings.Contains(got, "needs exec-block runs with the gap reported") {
-		t.Errorf("a non-limit hardening gap runs; got %q", got)
+		t.Errorf("a weaker exec fence is still a fence, so the run proceeds; got %q", got)
+	}
+
+	// An exec block the platform cannot install AT ALL is the case the Degraded one above
+	// is not: admission refuses a manifest that asked for it rather than running it
+	// without the fence, so the summary must not send the reader off with "runs with the
+	// gap reported" three lines under a table that says unavailable.
+	var absent enforce.Report
+	absent.Add(enforce.LayerExec, enforce.Unavailable, "the foreign-architecture guard is amd64-only")
+
+	b.Reset()
+	writeDegradedSummary(&b, absent.Degradations())
+	got = strings.Join(strings.Fields(b.String()), " ")
+	if !strings.Contains(got, "needs exec-block is refused by default") {
+		t.Errorf("an exec block this platform cannot install refuses; got %q", got)
+	}
+	if strings.Contains(got, "runs with the gap reported") {
+		t.Errorf("nothing here runs with a gap, so that clause has no referent; got %q", got)
 	}
 }
 
@@ -226,14 +243,17 @@ func TestDoctorGatesOnTheSameExecBarAdmissionRefusesOn(t *testing.T) {
 		t.Error("a host that refuses the default manifest must not report ready")
 	}
 
+	// LayerExec, not LayerExecStrict: exec-strict is not in the zero policy's required
+	// set at all, so a fixture built on it passes whatever bar this gate uses and would
+	// pin nothing.
 	var weaker enforce.Report
 	weaker.Add(enforce.LayerFilesystem, enforce.Enforced, "")
-	weaker.Add(enforce.LayerExecStrict, enforce.Degraded, "fork blocking unavailable; execve still blocked")
+	weaker.Add(enforce.LayerExec, enforce.Degraded, "a weaker fence than asked, but a fence")
 	if got := undeliverableDefaultExecBlock(weaker); len(got) != 0 {
 		t.Errorf("a weaker fence is not an absent one and admission admits it; got %+v", got)
 	}
 	if !toDoctorJSON(weaker, nil, nil).Ready {
-		t.Error("a degraded exec-strict layer must stay ready (exit 0)")
+		t.Error("a degraded exec layer must stay ready (exit 0)")
 	}
 }
 

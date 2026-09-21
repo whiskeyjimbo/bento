@@ -23,9 +23,11 @@ func newDoctorCmd() *cobra.Command {
 			"Each layer is reported as enforced, degraded, or unavailable, with the reason.\n" +
 			"Core layers are the guarantees bento makes everywhere; a core layer that falls\n" +
 			"short refuses a run by default. Hardening layers have no equivalent on every\n" +
-			"platform - a run that needs one proceeds and says so, except where the platform\n" +
-			"cannot install it at all: a manifest that asked to block subprocess execution is\n" +
-			"refused there rather than run without the fence, and --allow-degraded waives it.",
+			"platform, so a run that needs one usually proceeds and says so - but not where\n" +
+			"the gap is total or the host itself is at stake: a manifest that asked to block\n" +
+			"subprocess execution on a platform that cannot install the filter at all, or one\n" +
+			"that asked for a resource limit this host cannot enforce, is refused rather than\n" +
+			"run without it. --allow-degraded waives either.",
 		Args: noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// A host with no backend has no layers to report, which is doctor's own
@@ -64,10 +66,12 @@ func newDoctorCmd() *cobra.Command {
 			// for: a guarantee EVERY run needs, or the exec block the DEFAULT manifest
 			// asks for by saying nothing (policy's Exec zero value is ExecNone). So a CI
 			// wrapper can gate on host readiness without parsing output and without the
-			// verdict disagreeing with what the next `bento run` does. A
-			// conditionally-required core layer (network egress control) and a hardening
-			// layer a manifest has to name still let runs proceed, so they are reported
-			// but stay exit 0.
+			// verdict disagreeing with what the next `bento run` does. Every other
+			// shortfall stays exit 0 because no manifest needs the layer unless it says
+			// so - a conditionally-required core layer (network egress control), or a
+			// hardening layer only a manifest that named it depends on. That is the
+			// reason, not that runs on those gaps proceed: a requested limit this host
+			// cannot enforce refuses as well.
 			//
 			// Not because a run needing one is refused at run time: enforce.Run refuses a
 			// non-degraded run on an Unavailable network layer whether or not the manifest
