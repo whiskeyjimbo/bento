@@ -372,6 +372,9 @@ func outboundLink(path, resolvedHome string, d fs.DirEntry) (Skip, bool) {
 // developer token store the parity audit missed sits (.config/<tool>/<file> is two, and
 // .local/share/<tool>/<file> three). Deeper than that the cheap signals still apply, which
 // is the same bargain the rest of the home is scanned under.
+//
+// The bound is anchored at the home root for a dotdirectory and at the farm root for a
+// farm; farmDirs below says why the two anchors differ.
 const dotDirSniffDepth = 3
 
 // farmDirs are the names a dotfile farm goes by. A farm holds ~/.config/<tool>/<file> as
@@ -383,10 +386,14 @@ const dotDirSniffDepth = 3
 //
 // This reaches the UNVERSIONED farm only. A farm under git - the common one - is pruned
 // whole by the isCheckout test above before any file in it is visited, and that prune is
-// named in Hunt's second result, so it is disclosed rather than silent. Within
-// dotDirSniffDepth the two halves leave no farm both unsniffed and unreported; an
-// unversioned farm deeper than that is the same bargain the rest of the home is scanned
-// under, and is tracked as bv2-c3z78 rather than claimed here.
+// named in Hunt's second result, so it is disclosed rather than silent.
+//
+// Where the farm sits in the home is not the farm's business: one kept beside the source
+// it is versioned with is several segments down, and the home-anchored bound would drop
+// it while the same store at the home root is sniffed. So the depth below a farm is
+// measured from the FARM root, which costs only inside a directory already named as a
+// farm and leaves the home-anchored bound on ordinary dotdirectories exactly where the
+// flood measurement put it.
 var farmDirs = []string{"dotfiles"}
 
 func sniffUnconditionally(path, home string) bool {
@@ -398,12 +405,19 @@ func sniffUnconditionally(path, home string) bool {
 		return true
 	}
 	segs := strings.Split(rel, string(filepath.Separator))
-	if len(segs) > dotDirSniffDepth {
-		return false
+	for i, seg := range segs {
+		// A farm root stands in for the home root, so the budget below it is counted the
+		// same way: the segments below the farm, not below home. That is what makes the
+		// farm spelling of a store reach as deep as the dotdirectory spelling of the same
+		// store - local/share/<tool>/<file> against .local/share/<tool>/<file>.
+		if slices.Contains(farmDirs, seg) && len(segs)-i-1 <= dotDirSniffDepth {
+			return true
+		}
+		if strings.HasPrefix(seg, ".") && len(segs) <= dotDirSniffDepth {
+			return true
+		}
 	}
-	return slices.ContainsFunc(segs, func(seg string) bool {
-		return strings.HasPrefix(seg, ".") || slices.Contains(farmDirs, seg)
-	})
+	return false
 }
 
 // shapesOf returns the signals a file trips, or nil when it looks like nothing, plus

@@ -608,6 +608,32 @@ func TestHuntDisclosesEveryPlantedSecret(t *testing.T) {
 			channel: "found",
 		},
 		{
+			// Same cell, but the farm is not at the home root. A farm kept beside the
+			// source it is versioned with puts config/<tool>/<file> four segments below
+			// home, past the home-anchored bound, while it sits at the same depth INSIDE
+			// the farm as the row above. Nothing prunes it either - it carries no .git -
+			// so before the depth was re-anchored on the farm it was silent in every
+			// channel.
+			name:    "token store in an unversioned dotfile farm below the home root",
+			maxSize: 64 << 10,
+			plant: func(t *testing.T, home string) string {
+				return plant(t, home, "src/personal/dotfiles/config/acmecloud/settings.json", 0o644, token)
+			},
+			channel: "found",
+		},
+		{
+			// The farm root stands in for the home root, so the budget below it is the
+			// same one: .local/share/<tool>/<file> is the deepest store the parity audit
+			// missed, and a farm spells it local/share/<tool>/<file>. Counting the farm
+			// segment itself against the budget would drop exactly this layout.
+			name:    "the deepest store layout, spelled as a farm",
+			maxSize: 64 << 10,
+			plant: func(t *testing.T, home string) string {
+				return plant(t, home, "dotfiles/local/share/acmecloud/settings.json", 0o644, token)
+			},
+			channel: "found",
+		},
+		{
 			// The walk never follows a link, so the target is not hunted under any name.
 			// Naming the link is the disclosure; following it would walk the host.
 			name:    "home-root symlink to a secret outside the home",
