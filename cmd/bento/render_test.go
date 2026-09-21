@@ -2089,12 +2089,12 @@ func TestDenialLegendBlamesAShieldForADiscardedFileEROFS(t *testing.T) {
 // release before the list named it, and a consumer switching on the documented set saw
 // a code it had no arm for.
 //
-// Only the codes written as literals are pinned. A reason passed as an argument and
-// written through a variable (grantKinds' target-steerable-tmp and foreign-home-shield)
-// is beyond what a source scan can name, and the documented side is the concatenated doc
-// of every field called Reason in the package matched by substring, so a code documented
-// on the wrong struct would also pass. It catches the shape that has actually drifted:
-// a decision that spells its code inline where it emits it.
+// Only the codes written as literals are pinned - at the note, or at a grantKinds call,
+// whose reason is a literal there and a variable by the time the note is built. A code
+// reaching either through a variable is still beyond what a source scan can name, and the
+// documented side is the concatenated doc of every field called Reason in the package
+// matched by substring, so a code documented on the wrong struct would also pass. It
+// catches the shape that has actually drifted: a decision that spells its code inline.
 func TestEveryLiteralAccessNoteReasonIsDocumented(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -2155,12 +2155,28 @@ func TestEveryLiteralAccessNoteReasonIsDocumented(t *testing.T) {
 						}
 					}
 				}
+			case *ast.CallExpr:
+				// grantKinds builds the note from a reason it is handed, so its codes are
+				// literals at the CALL rather than in a composite literal. Reading them
+				// here is what keeps a helper from being the way a code escapes the list.
+				id, ok := v.Fun.(*ast.Ident)
+				if !ok || id.Name != "grantKinds" || len(v.Args) != 3 {
+					return true
+				}
+				if lit, ok := v.Args[2].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					emitted = append(emitted, strings.Trim(lit.Value, `"`))
+				}
 			}
 			return true
 		})
 	}
 	if len(emitted) == 0 {
 		t.Fatal("no accessNoteJSON reason literal was found, so this pin asserts nothing")
+	}
+	// The helper's own codes are why this pin was widened; if it stops being called with
+	// a literal the widening has quietly lapsed and the list is back to trusting prose.
+	if !slices.Contains(emitted, "target-steerable-tmp") || !slices.Contains(emitted, "foreign-home-shield") {
+		t.Errorf("the grantKinds call sites no longer contribute their codes, so this pin covers less than it says: %v", emitted)
 	}
 	for _, code := range emitted {
 		if !strings.Contains(documented, code) {
