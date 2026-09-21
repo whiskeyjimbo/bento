@@ -65,8 +65,10 @@ away from it, and a run that hit every shield can exit 0.
 - `ShieldedGrants` - shields a grant deliberately lifted, each by the home-expanded absolute path,
   what it `Holds` (`"credentials"`, `"history"`, ...), and an `OnHost` for the
   case where the granted name is a symlink and the exposure landed elsewhere.
-- `Exposed []ShieldApplied` - under the degraded tier, shields that would have
-  been applied and were not.
+- `Exposed []ShieldApplied` - the shielded paths the target could reach anyway.
+  Under the degraded tier, shields that would have been applied and were not;
+  under the full tier, `"folded"` entries, where the bind landed and a
+  case-folding mount reaches the same path around it.
 - `Report` - which enforcement layers were live, and at what tier.
 
 The CLI does this already: `bento run` prints a shield count on stderr after a

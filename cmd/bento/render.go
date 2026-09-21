@@ -2165,9 +2165,9 @@ func writeExposedWarning(w io.Writer, res enforce.Result) {
 	fmt.Fprintln(w, "[bento] each for the reason on its line - review:")
 	for _, s := range res.Exposed {
 		if s.Kind == "folded" {
-			fmt.Fprintf(w, "[bento]   %q: the read-only bind landed, but this filesystem hands that directory\n", s.Path)
-			fmt.Fprintf(w, "[bento]   out under a second spelling of its name, and that spelling is inside a write\n")
-			fmt.Fprintf(w, "[bento]   grant - so the script could write around the shield\n")
+			fmt.Fprintf(w, "[bento]   %q: the read-only bind landed, but this filesystem reaches the\n", s.Path)
+			fmt.Fprintf(w, "[bento]   same path under a second spelling of its name, and that spelling is inside a\n")
+			fmt.Fprintf(w, "[bento]   write grant - so the script could write around the shield\n")
 			continue
 		}
 		if s.Kind == "discarded" {

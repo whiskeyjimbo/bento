@@ -38,7 +38,11 @@ func populatedResult() enforce.Result {
 		// OnHost is the store the grant landed on, enumerated from the host filesystem.
 		ShieldedGrants: []enforce.ShieldedGrant{{Path: "/home/u/.ssh", OnHost: "/home/u/real\x1b[2K/.ssh", Holds: "credentials"}},
 		Shields:        []enforce.ShieldApplied{{Path: "/home/u/.gnupg", Kind: "hidden"}},
-		Exposed:        []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "read-only"}},
+		// "folded" rather than one of the degraded-tier kinds: supervise passes
+		// DenyPaths, which refuses a degraded run outright, so a folded entry - the
+		// shield applied and reached around by the mount - is the only kind this
+		// program can ever be handed.
+		Exposed: []enforce.ShieldApplied{{Path: "/home/u/.aws\"", Kind: "folded"}},
 		// Host-enumerated under a directory the script could write, so a filename it chose
 		// reaches the summary.
 		ChangedAutoExec: []string{"/repo/\x1b[2Kpackage.json"},
@@ -82,7 +86,7 @@ func TestWriteSummarySurfacesEveryHonestyField(t *testing.T) {
 		`"/home/u/.ssh"`,                              // ShieldedGrants
 		`on this host: "/home/u/real\x1b[2K/.ssh"`,    // ShieldedGrants OnHost, quoted
 		`"/backup/\x1b[2Kid_rsa" aliases`,             // AcceptedAliases, quoted
-		"read-only on a host that can shield",         // Exposed
+		"write around the shield",                     // Exposed
 		`"/repo/\x1b[2Kpackage.json"`,                 // ChangedAutoExec, quoted
 		"run on the host later without being read",    // ChangedAutoExec
 		"no connection through the egress proxy",      // EgressConnections read as a bypass

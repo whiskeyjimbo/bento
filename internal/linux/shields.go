@@ -73,7 +73,7 @@ func exposedShields(sb sandbox, visible, writes, optIns []string) []enforce.Shie
 }
 
 // foldedWorkspaceExposure reports the checkout-derived shields this run applies byte-exact
-// and that a write grant reaches anyway, because the mount hands the shielded directory
+// and that a write grant reaches anyway, because the mount hands the shielded path
 // out under a second spelling. It is the FULL tier's entry into Result.Exposed, and the
 // only one: the degraded tier applies no binds, so denyArgs' own pass - which merges the
 // same workspace half through shieldRules - already lists these there as never-applied.

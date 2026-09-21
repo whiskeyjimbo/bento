@@ -80,7 +80,7 @@ Total 43 cells.
 | A2-5.report | same | F-report | HANDLED: reconcile plus every `note*` on every arm; run.go overlay only worsens (run.go:222) |
 | A2-5.rec | same | F-rec | HANDLED: `a.execRecord(opts.RecordExec)` on every arm, non-nil when asked (applied.go:361) |
 | A2-5.net | same | F-net | HANDLED: collector read after `stopProxy` on all four arms |
-| A2-5.shield | same | F-shield | HANDLED: Shields/ShieldedGrants/AcceptedAliases on all four; Exposed empty by design on this tier (enforce.go:486) |
+| A2-5.shield | same | F-shield | HANDLED: Shields/ShieldedGrants/AcceptedAliases on all four; Exposed too, since bv2-k2g1h - `"folded"` entries, carried on all four arms (linux.go) |
 | A2-5.hooks | same | F-hooks | HANDLED: `changed` computed once above the cancel check (linux.go:258) |
 | A6.exit | degraded cancel | F-exit | HANDLED: zero with err |
 | A6.setup/report | degraded cancel | F-setup, F-report | HANDLED: reconcile (degraded.go:265) |
@@ -114,7 +114,7 @@ Only cells where the backend arm can carry a non-empty value (A2, A5, A6, A9).
 | B10 | embed error | F-net | FIXED in 6731896 (was **UNHANDLED**: not read). Finding 3 |
 | B11 | embed error | F-report | HANDLED for degradations (main.go:256); inherits A1.report |
 | B12 | supervise interrupt/error | F-hooks | HANDLED: main.go:298-306, UnresolvedHooks inside writeRedirectedHooks (main.go:498) |
-| B13 | supervise interrupt/error | Exposed | IMPOSSIBLE: DenyPaths set (main.go:294), so the degraded tier is refused (run.go:193) |
+| B13 | supervise interrupt/error | Exposed | WAS IMPOSSIBLE, now reachable: DenyPaths still refuses the degraded tier (run.go:193), but since bv2-k2g1h the FULL tier populates Exposed with `"folded"` entries, so supervise's only possible entries are those. Read and worded as such (main.go) |
 | B14 | supervise interrupt/error | AcceptedAliases | IMPOSSIBLE: Options carries no AcceptAliasesUnder (main.go:294) |
 | B15 | supervise interrupt/error | ShieldedGrants | FIXED in 638befc/15dae72 (was **UNHANDLED**: not read; an approved manifest granting ~/.ssh reaches A2/A5). Finding 4 |
 | B16 | supervise interrupt/error | F-net | FIXED in 638befc/15dae72 (was **UNHANDLED**: GateAdmitted is carried on cancel precisely for a supervised run that timed out (linux.go:283-288) and supervise does not read it). Finding 4 |
@@ -222,7 +222,7 @@ Prior grid (2026-08-13) mapped onto these cells:
 
 | Prior site / fix | Cell here | Carried to the grid B consumers? |
 |---|---|---|
-| linux.go 292 cancel, shield set (83f212e) | A2.shield, A2.net | cmd/bento: shield set yes (B2), egress set yes since 0eacfd5 (B4). embed: yes since 6731896 (B9, B10). supervise: shield and egress sets yes since 638befc (B15, B16; Exposed and AcceptedAliases are impossible there) |
+| linux.go 292 cancel, shield set (83f212e) | A2.shield, A2.net | cmd/bento: shield set yes (B2), egress set yes since 0eacfd5 (B4). embed: yes since 6731896 (B9, B10). supervise: shield and egress sets yes since 638befc (B15, B16; AcceptedAliases impossible there, Exposed reachable since bv2-k2g1h - see B13) |
 | linux.go 321 default-err, shield and egress sets | A5.shield, A5.net | Same as the row above: B2 yes; B4, B9, B10, B15, B16 yes since their fixes |
 | degraded.go 238 cancel, ShieldedGrants/Exposed/AcceptedAliases | A6.shield | cmd/bento yes (B2). embed yes since 6731896 (B9). supervise: Exposed impossible (B13), ShieldedGrants yes since 638befc (B15) |
 | degraded.go 255 default-err, same fields | A9.shield | Same as the row above |

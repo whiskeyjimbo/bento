@@ -182,10 +182,19 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
-	// Read here, immediately after compile: this is the last point a run with expired host
-	// seams is refused, and this reads the same seams compile just did. It rides out on
-	// every arm below beside Shields, for the reason those carry it - what the boundary
-	// engaged, and what got around it, is no less true for the run having failed.
+	// Read here, immediately after compile, so the disclosure describes the host the run
+	// was compiled against rather than whatever it is by teardown. It rides out on every
+	// arm below beside Shields, for the reason those carry it - what the boundary engaged,
+	// and what got around it, is no less true for the run having failed.
+	//
+	// It is NOT the same set of syscalls compile made, which is why it is a read of its
+	// own: the fold question over a workspace shield is a stat pair (hooks against HOOKS)
+	// that compile never issues - Contains asks foldsCase of the assembled shields alone,
+	// and its workspace loop uses covers by itself. So a mount that dies between compile
+	// and here answers ok=false from boundedStatID, which is not a deadMount note, and the
+	// run proceeds with nothing disclosed. That is a silence on a host already coming
+	// apart, not a wrong claim, and it is the direction to fail in here - but it is a
+	// silence, so it is written down rather than assumed away.
 	//
 	// No test drives this assignment. A fold is a property of the host's mount, and
 	// internal/shieldcorpus's Case.Folding documents why no layout staged on disk produces

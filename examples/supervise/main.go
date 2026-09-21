@@ -451,23 +451,32 @@ func writeRunFacts(w io.Writer, t theme, res enforce.Result) {
 	}
 	writeChangedAutoExec(w, t, res)
 	writeRedirectedHooks(w, t, res)
-	// The mirror of Shields, populated only by the tier that has no mount namespace and
-	// so applies no shields at all. Same contract as the grants above: bento does not
-	// refuse, so staying quiet is what would hide the exposure.
+	// The shielded paths the script could reach anyway. Same contract as the grants above:
+	// bento does not refuse, so staying quiet is what would hide the exposure.
 	//
-	// The header says what did not happen rather than what the script can read, because
-	// "read them" is wrong for one of the three kinds: a "discarded" entry names a path
-	// that is NOT on the host, so there is nothing there to read. What it says instead
+	// The header says only THAT they were exposed, and each entry says why, because the
+	// two tiers populate this for opposite reasons and a header naming one lies about the
+	// other. It lied here in particular: supervise passes Options.DenyPaths, which refuses
+	// a run that lands on the degraded tier outright, so the kinds that mean "this host
+	// applies no shields" can never appear in this list at all. The only entry supervise
+	// can ever print is "folded" - a shield the run DID apply, reached around by the mount
+	// - which the old header ("this host applied none of the shields a full run would
+	// have") contradicted every single time it could fire.
+	//
+	// The other kinds are worded for an embedder who does not pass DenyPaths. "discarded"
 	// stays on the provenance, which is all the kind carries (enforce.ShieldApplied): a
 	// full run materialized a stand-in there and took it away at teardown, and this one
 	// materializes nothing. Deliberately not "a write lands on the host and stays" - the
 	// two shapes do not agree on what a write does (an absent directory becomes a
 	// writable scratch mount, an absent FILE an empty read-only stand-in that refuses
-	// one), and this tier may not have made the path writable at all.
+	// one), and that tier may not have made the path writable at all.
 	if len(res.Exposed) > 0 {
-		fmt.Fprintf(w, "\n%s\n", t.warn("this host applied none of the shields a full run would have:"))
+		fmt.Fprintf(w, "\n%s\n", t.warn("these shielded paths were left exposed to the script:"))
 		for _, s := range res.Exposed {
-			note := s.Kind + " on a host that can shield"
+			note := "a full run on a host that can shield would have made this " + s.Kind + "; this host applied no shield at all"
+			if s.Kind == "folded" {
+				note = "the read-only bind landed, but this filesystem reaches the same path under a second spelling of its name, and that spelling is inside a write grant - so the script could write around the shield"
+			}
 			if s.Kind == "discarded" {
 				note = "nothing is at this path on the host - a full run would have materialized a stand-in and removed it at teardown; this run materializes nothing, so whatever the script leaves here is a real host file"
 			}

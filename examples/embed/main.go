@@ -520,7 +520,7 @@ func writeFacts(w io.Writer, res enforce.Result) {
 			continue
 		}
 		if s.Kind == "folded" {
-			fmt.Fprintf(w, "embed: WARNING: %q is bound read-only, but this filesystem reaches the same directory under a second spelling of its name that sits inside a write grant, so the target could write around the shield\n", s.Path)
+			fmt.Fprintf(w, "embed: WARNING: %q is bound read-only, but this filesystem reaches the same path under a second spelling of its name that sits inside a write grant, so the target could write around the shield\n", s.Path)
 			continue
 		}
 		fmt.Fprintf(w, "embed: WARNING: host cannot shield %q (%s), left exposed to the target\n", s.Path, s.Kind)
