@@ -1229,7 +1229,12 @@ func printScratchWrites(out io.Writer, writes []string) []accessNoteJSON {
 		}
 		seen[dir] = true
 		notes = append(notes, accessNoteJSON{Kind: "write", Path: dir, Reason: "sandbox-scratch"})
-		fmt.Fprintf(out, "[bento] not proposing write access to %q - no such directory exists on the host, so inside the box that name is in the private /tmp every run mounts and there is nothing to grant. Nothing written there survives the run; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir)
+		// /tmp itself exists on every host, so only a name under it can be called absent.
+		why := "no such directory exists on the host, so inside the box that name is in the private /tmp every run mounts"
+		if dir == "/tmp" {
+			why = "inside the box it is the private tmpfs every run mounts, not the host's"
+		}
+		fmt.Fprintf(out, "[bento] not proposing write access to %q - %s, and there is nothing to grant. Nothing written there survives the run; if that output is meant to persist, have the script write it somewhere the manifest grants.\n", dir, why)
 	}
 	return notes
 }

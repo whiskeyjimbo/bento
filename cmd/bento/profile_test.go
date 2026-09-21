@@ -2110,3 +2110,17 @@ func TestMergeReadsTheApprovalBeforeResolvingRelativeGrants(t *testing.T) {
 		t.Errorf("merge notice does not say the approval is gone; got:\n%s", out)
 	}
 }
+
+// /tmp is on every host, so a write directly into it must not be explained as a name the
+// host lacks - the one claim the reader can check, and would find false.
+func TestScratchWriteToTmpDoesNotClaimTmpIsAbsent(t *testing.T) {
+	var buf bytes.Buffer
+	printScratchWrites(&buf, []string{"/tmp/out.txt"})
+	got := buf.String()
+	if !strings.Contains(got, `"/tmp"`) {
+		t.Fatalf("the write to /tmp was not reported:\n%s", got)
+	}
+	if strings.Contains(got, "no such directory exists on the host") {
+		t.Errorf("claims the host has no /tmp:\n%s", got)
+	}
+}
