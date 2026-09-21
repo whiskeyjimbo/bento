@@ -175,6 +175,14 @@ func Check(resolved *policy.Policy) Runnability {
 //
 // A stat, not a shield derivation: this says only that the derived half is non-empty, and
 // which rules it holds stays internal/linux's to know.
+//
+// Deliberately coarser than the run's own carve set, which keeps only the derived mount
+// points a grant actually reaches and the host does not already have (internal/linux's
+// shieldNeeded). Asking that here would need the anchors and the checkout walk this package
+// cannot reach, so the unknown is raised wherever the half is non-empty - which on a real
+// host is most manifests holding a directory write grant. Coarse the safe way: the flag
+// says a question was not asked, and asking it of fewer grants than the run does would put
+// the silence back.
 func derivesWorkspaceShields(writes []string) bool {
 	for _, w := range writes {
 		lands, _ := pathresolve.Existing(w)
