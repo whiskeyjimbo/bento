@@ -508,20 +508,26 @@ func redirectedWorkspaceProblem(w string) string {
 
 // withholdGateRefused is the gate.Refusals half of withholdRunRefused.
 //
-// It takes the two qualifications the refusal set carries and acts on neither, which is
-// deliberate and not an oversight. AnchorErr is the case the shield clamp above already
-// skipped for the same reason. CarveUnknown says a refusal was not looked for rather than
-// not found, and withholding a grant on that would drop grants the run honors - the one
-// direction the gate rules out - while the reviewer-facing channel that could say it out
-// loud is the caller's, not this function's. Answering it here instead is the better
-// shape and is open work: this package already derives the workspace shields
-// (workspaceShields), so it can settle the carve half rather than inherit an unknown.
+// AnchorErr it does not act on: that is the case the shield clamp above already skipped
+// for the same reason. CarveUnknown it answers rather than inherits. The gate asks the
+// carve half over the built-in shields only, because the checkout-derived ones are host
+// facts it does not read; this package derives them already (workspaceShields), so a set
+// assembled with them lets gate.ShieldCarveProblems settle the half the gate left open.
+// Withholding on the unknown itself would drop grants the run honors, the one direction
+// the clamp rules out.
 func withholdGateRefused(p *policy.Policy) []refusedGrant {
+	set, anchorErr := commandShieldSet()
+	problems := func(one *policy.Policy) []string { return gate.Refusals(set, anchorErr, one).Grants }
+	if gate.Refusals(set, anchorErr, p).CarveUnknown {
+		derived := workspaceShieldSet(p.Write)
+		problems = func(one *policy.Policy) []string {
+			return append(gate.Refusals(set, anchorErr, one).Grants, gate.ShieldCarveProblems(derived, one.Read, one.Write)...)
+		}
+	}
 	// The whole proposal first, so the ordinary clean case pays for one walk of the
 	// credential stores rather than one per grant; the per-grant probes below are only for
 	// attributing a refusal back to the grant that earned it.
-	set, anchorErr := commandShieldSet()
-	if len(gate.Refusals(set, anchorErr, p).Grants) == 0 {
+	if len(problems(p)) == 0 {
 		return nil
 	}
 	var refused []refusedGrant
@@ -531,7 +537,7 @@ func withholdGateRefused(p *policy.Policy) []refusedGrant {
 			if kind == "write" {
 				one = &policy.Policy{Write: []string{g}}
 			}
-			if problems := gate.Refusals(set, anchorErr, one).Grants; len(problems) > 0 {
+			if problems := problems(one); len(problems) > 0 {
 				refused = append(refused, refusedGrant{Kind: kind, Path: g, Problem: problems[0]})
 			} else {
 				kept = append(kept, g)
@@ -542,6 +548,22 @@ func withholdGateRefused(p *policy.Policy) []refusedGrant {
 	p.Read = keep("read", p.Read)
 	p.Write = keep("write", p.Write)
 	return refused
+}
+
+// workspaceShieldSet is the run's shield set as a run over writes assembles it: the
+// built-ins plus the checkout-derived shields, which the backend appends to the rules it
+// carves mount points for. Only the carve question is asked of it - as caller denies these
+// rules would take the caller's blame wording in the containment checks, which are
+// answered above over the ordinary set with the workspace passed to Contains instead.
+//
+// Asked only where gate.Refusals raised CarveUnknown, which it does only where the
+// anchors resolved, so the anchors are asked again rather than threaded through the cache.
+func workspaceShieldSet(writes []string) shield.Set {
+	anchors, err := denylist.HomeAnchors()
+	if err != nil {
+		panic(fmt.Sprintf("the shield anchors resolved for this run and then did not: %v", err))
+	}
+	return shield.Assemble(shield.Host(), anchors, denylist.RuntimeDir(), workspaceShields(writes))
 }
 
 // partitionBroad splits grants into those safe to bind whole and those too broad

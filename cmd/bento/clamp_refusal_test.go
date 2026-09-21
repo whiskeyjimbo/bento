@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/gate"
+	"github.com/whiskeyjimbo/bento/internal/grantrefusal"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -231,5 +232,35 @@ func TestClampProposalWithholdsWalkDerivedRefusals(t *testing.T) {
 				t.Errorf("the clamp withheld the ordinary project write beside it (kept %v)", p.Write)
 			}
 		})
+	}
+}
+
+// The carve half the gate answers over the built-in shields only (RefusalSet.CarveUnknown):
+// a checkout whose .git this uid cannot create hooks in. The run derives .git/hooks as a
+// shield for the grant and dies carving it, so the clamp has to answer that half itself
+// from the workspace shields it already derives, rather than propose the grant.
+func TestClampProposalWithholdsAGrantWhoseWorkspaceShieldsCannotBeCarved(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root creates entries in any directory, so no host directory refuses the carve")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repo := filepath.Join(t.TempDir(), "repo")
+	gitdir := filepath.Join(repo, ".git")
+	if err := os.MkdirAll(gitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(gitdir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitdir, 0o755) })
+
+	p := &policy.Policy{Write: []string{repo}}
+	_, _, _, _, _, refused := clampProposal(p)
+	if slices.Contains(p.Write, repo) {
+		t.Fatalf("the proposal kept %q, whose .git/hooks shield this uid cannot create; the run refuses it at its first step", repo)
+	}
+	want := grantrefusal.ShieldNotCarvable(repo, filepath.Join(gitdir, "hooks"), gitdir).Error()
+	if !slices.Contains(refused, refusedGrant{Kind: "write", Path: repo, Problem: want}) {
+		t.Errorf("refused = %+v, want %q withheld with the run's own sentence %q", refused, repo, want)
 	}
 }
