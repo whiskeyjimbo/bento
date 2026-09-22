@@ -1571,7 +1571,7 @@ func TestReadStringStopsAtAnUnmappedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Munmap(mem)
+	defer func() { _ = unix.Munmap(mem) }()
 	if err := unix.Mprotect(mem[page:], unix.PROT_NONE); err != nil {
 		t.Fatal(err)
 	}

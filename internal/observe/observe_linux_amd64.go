@@ -1751,10 +1751,11 @@ func readString(pid int, addr uintptr) (string, bool) {
 // answers the traced call EFAULT for the same bytes, so what is lost is a path it never
 // opened either.
 //
-// The read is split at the page boundary because process_vm_readv(2) transfers no part of
-// a remote iovec that faults: a pathname near the end of the last mapped page would
-// otherwise read as nothing, where the page-split form still delivers the prefix holding
-// its NUL.
+// The read is split at the page boundary because process_vm_readv(2) promises partial
+// transfers only per remote iovec. Current kernels do deliver a faulting iovec's mapped
+// prefix, but on the documented contract a pathname near the end of the last mapped page
+// could read as nothing, and the page-split form is what the man page itself prescribes
+// for reading a C string.
 func readMem(pid int, addr uintptr, buf []byte) int {
 	page := uintptr(os.Getpagesize())
 	first := min(uintptr(len(buf)), page-addr%page)
