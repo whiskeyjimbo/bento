@@ -326,10 +326,10 @@ func TestWorkspaceShieldsEditorConfigDirs(t *testing.T) {
 	}
 }
 
-// An agent's project config is the same persistence class as an editor's: a checkout's
-// .claude/settings.json declares hooks Claude Code runs on the host at the next session, and
-// .mcp.json names MCP server commands it launches. Shielded like .vscode, with .claude whole
-// so no sibling (settings.local.json, a hook script beside it) is left plantable.
+// A coding agent's project config is the same persistence class as an editor's: it declares
+// hooks, MCP servers or lint/test commands the agent runs on the host at the next session.
+// The config dirs are shielded whole, like .vscode, so no sibling (settings.local.json, a
+// hook script beside it) is left plantable.
 func TestWorkspaceShieldsAgentConfig(t *testing.T) {
 	byPath := make(map[string]Rule)
 	for _, r := range Workspace("/w") {
@@ -337,7 +337,12 @@ func TestWorkspaceShieldsAgentConfig(t *testing.T) {
 	}
 	for _, want := range []Rule{
 		{Path: "/w/.claude", Deny: DenyWrite, Dir: true},
+		{Path: "/w/.codex", Deny: DenyWrite, Dir: true},
+		{Path: "/w/.cursor", Deny: DenyWrite, Dir: true},
+		{Path: "/w/.gemini", Deny: DenyWrite, Dir: true},
+		{Path: "/w/.continue", Deny: DenyWrite, Dir: true},
 		{Path: "/w/.mcp.json", Deny: DenyWrite},
+		{Path: "/w/.aider.conf.yml", Deny: DenyWrite},
 	} {
 		got, ok := byPath[want.Path]
 		if !ok {

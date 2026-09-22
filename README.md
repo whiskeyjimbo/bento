@@ -286,7 +286,7 @@ To report a boundary failure privately, and for how versioning treats a shield r
 
 ### What Bento Protects
 1. **Credentials & Secrets:** SSH keys, cloud CLI tokens, GPG keyrings, crypto vaults, and shell histories under `$HOME`.
-2. **Host Integrity & Persistence:** Blocks write access to persistence vectors such as `.git/hooks`, `.vscode`, `.idea`, a checkout's `.claude` and `.mcp.json`, and shell initialization files (`.bashrc`, `.zshrc`).
+2. **Host Integrity & Persistence:** Blocks write access to persistence vectors such as `.git/hooks`, `.vscode`, `.idea`, coding-agent project config (`.claude`, `.cursor`, `.mcp.json` and the like), and shell initialization files (`.bashrc`, `.zshrc`).
 3. **Host Service Sockets:** Shields unix control sockets in `/run` and `/var/run` (e.g., Docker daemon, gpg-agent, session bus) to prevent host compromise via socket connections.
 4. **Network Egress:** Denies outbound network connections by default via an empty network namespace (`--unshare-net`).
 5. **Secrecy During Profiling:** Profiling inspects syscall registers directly (via `ptrace`) without opening host files, preventing untrusted scripts from probing secrets during manifest discovery.

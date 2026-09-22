@@ -1854,12 +1854,21 @@ func Workspace(dir string) []Rule {
 		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
 		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
 		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
-		// An agent's project config: .claude/settings{,.local}.json declare hooks Claude
-		// Code runs on the host, and .mcp.json names server commands it launches. .claude is
-		// taken whole for the editor-dir reason above. Residual: Claude Code keeps worktrees
-		// under .claude/worktrees, so an agent confined by bento cannot create one there.
+		// Coding agents' project config, the checkout-level twin of Home's agent trees:
+		// each declares hooks, MCP servers or lint/test commands the agent runs on the host
+		// at its next session. The dirs are taken whole for the editor-dir reason above.
+		//
+		// Residual: Claude Code keeps worktrees under .claude/worktrees, so a write grant
+		// on a checkout ro-binds its worktrees, and granting both the checkout and a
+		// worktree inside it is refused as a write under a write shield. A worktree granted
+		// on its own still works.
 		{Path: join(".claude"), Deny: DenyWrite, Dir: true},
+		{Path: join(".codex"), Deny: DenyWrite, Dir: true},
+		{Path: join(".cursor"), Deny: DenyWrite, Dir: true},
+		{Path: join(".gemini"), Deny: DenyWrite, Dir: true},
+		{Path: join(".continue"), Deny: DenyWrite, Dir: true},
 		{Path: join(".mcp.json"), Deny: DenyWrite},
+		{Path: join(".aider.conf.yml"), Deny: DenyWrite},
 		// config{,.toml} here names a rustc-wrapper, linker or target runner the host
 		// execs on the developer's next cargo command - the ~/.cargo/config.toml case one
 		// level in, and the one toolchain surface with no approval record that an agent

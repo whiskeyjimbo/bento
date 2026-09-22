@@ -146,7 +146,8 @@ hidden outright, which also takes its exec knobs (msmtp's `passwordeval`, mutt's
 source-pipe) off the table.
 
 Inside a repo you've granted write access to, `.git/hooks`, `.git/config`,
-`.vscode`, `.idea`, `.claude`, and `.mcp.json` are read-only, so a program that can write your project
+`.vscode`, `.idea`, and coding agents' project config (`.claude`, `.codex`,
+`.cursor`, `.gemini`, `.continue`, `.mcp.json`, `.aider.conf.yml`) are read-only, so a program that can write your project
 can't leave something that fires the next time you open it.
 
 What those shields cannot take away is the checked-in project file that also runs
