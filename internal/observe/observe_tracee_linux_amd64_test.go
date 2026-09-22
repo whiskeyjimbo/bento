@@ -1596,6 +1596,9 @@ func TestTracePtraceOpsPerStop(t *testing.T) {
 	}
 	opsSmall, ss := measure(small)
 	ol, sl := measure(large)
+	if t.Failed() {
+		return // a trace failed on countPtrace's goroutine, so the counts describe nothing
+	}
 	perStop := float64(ol-opsSmall) / float64(sl-ss)
 	t.Logf("%.2f stops per extra getpid, %.2f ptrace ops per stop", float64(sl-ss)/float64(large-small), perStop)
 	// Headroom above 2 because the count runs a little high: a ptrace call waiting on the
@@ -1628,7 +1631,6 @@ func countPtrace(t *testing.T, fn func()) uint64 {
 		error int32
 		flags uint32
 	}
-	const notifRecv, notifSend = 0xc0502100, 0xc0182101 // _IOWR('!', 0/1, ...) on amd64
 
 	listener := make(chan int, 1)
 	done := make(chan struct{})
@@ -1681,12 +1683,12 @@ func countPtrace(t *testing.T, fn func()) uint64 {
 				continue
 			}
 			var n seccompNotif
-			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), notifRecv, uintptr(unsafe.Pointer(&n))); errno != 0 {
+			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.SECCOMP_IOCTL_NOTIF_RECV, uintptr(unsafe.Pointer(&n))); errno != 0 {
 				continue // ENOENT: the caller died before its notification was read
 			}
 			count++
 			resp := seccompNotifResp{id: n.id, flags: unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE}
-			_, _, _ = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), notifSend, uintptr(unsafe.Pointer(&resp)))
+			_, _, _ = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.SECCOMP_IOCTL_NOTIF_SEND, uintptr(unsafe.Pointer(&resp)))
 		}
 	}()
 	// Every counted call was answered before fn could return, so the count is final here.

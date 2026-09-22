@@ -1074,9 +1074,9 @@ func inspect(pid int, op byte, regs *syscall.PtraceRegs, record, recordProbe fun
 	// it is skipped silently rather than dropped. A raw syscall(-1) enters with it, and the
 	// kernel answers ENOSYS without touching anything.
 	//
-	// rt_sigreturn's exit stop does not reach here, although its registers carry -1: they
-	// are the RESTORED pre-signal context, and orig_rax -1 is the marker that suppresses
-	// syscall restart. The number decoded at an exit stop is its entry stop's (see
+	// rt_sigreturn's exit stop does not present -1 here, although its registers carry it:
+	// they are the RESTORED pre-signal context, and orig_rax -1 is the marker that
+	// suppresses syscall restart. The number decoded at an exit stop is its entry stop's (see
 	// nativeSyscall), 15, under which nothing is ever held, so that stop decodes nothing.
 	//
 	// This must precede the x32 test: -1 has every bit set, so it matches x32SyscallBit and
