@@ -201,43 +201,56 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 // writes cannot reach it, and a mount point inside a read-only mount aborts bwrap. (The
 // walk never enters a project config directory, so a checkout kept inside a deep .claude
 // is not found at all; this covers the built-in directory shields a write grant can
-// contain.) seen deduplicates checkouts across grants.
+// contain.) Claude Code's worktrees under the read-only .claude are the ordinary case of a
+// checkout left out this way. seen deduplicates checkouts across grants.
 //
 // Shared by shieldRules and checkWriteNotUnderReadOnlyShield, so a grant inside a derived
 // shield is refused by the rules that would otherwise have neutered it silently.
 func derivedWorkspaceRules(sb sandbox, w string, above []denylist.Rule, seen map[string]bool) []denylist.Rule {
-	var out []denylist.Rule
-	all := func() []denylist.Rule { return slices.Concat(above, out) }
-	for _, r := range sb.projectConfig[sb.resolve(w)] {
-		// Already in force: the grant root's own entries are Workspace's.
-		inForce := slices.ContainsFunc(all(), func(a denylist.Rule) bool { return sb.resolve(a.Path) == r.Path })
-		if !inForce && !insideDirShield(sb, all(), r.Path) {
-			out = append(out, r)
+	rw := sb.resolve(w)
+	config, nested := sb.projectConfig[rw], sb.nestedCheckouts[rw]
+	// Most grants hold neither, and resolving above for them would cost every rule in
+	// force on each call for nothing.
+	if len(config) == 0 && len(nested) == 0 {
+		return nil
+	}
+	// The rules in force are resolved once and extended as findings are accepted, since a
+	// later finding can land inside an earlier one. Only the rule side is resolved: the
+	// findings' own paths come from the walk of the resolved grant and are compared as
+	// they stand.
+	inForce := map[string]bool{}
+	var dirs []string
+	accept := func(rules ...denylist.Rule) {
+		for _, r := range rules {
+			rp := sb.resolve(r.Path)
+			inForce[rp] = true
+			if r.Dir {
+				dirs = append(dirs, rp)
+			}
 		}
 	}
-	for _, nested := range sb.nestedCheckouts[sb.resolve(w)] {
-		if seen[nested] || insideDirShield(sb, all(), nested) {
+	insideDirShield := func(path string) bool {
+		return slices.ContainsFunc(dirs, func(d string) bool { return d != path && policy.CoversResolved(d, path) })
+	}
+	accept(above...)
+	var out []denylist.Rule
+	for _, r := range config {
+		// Already in force: the grant root's own entries are Workspace's.
+		if !inForce[r.Path] && !insideDirShield(r.Path) {
+			out = append(out, r)
+			accept(r)
+		}
+	}
+	for _, n := range nested {
+		if seen[n] || insideDirShield(n) {
 			continue
 		}
-		seen[nested] = true
-		ns, _ := workspaceShields(sb, nested)
+		seen[n] = true
+		ns, _ := workspaceShields(sb, n)
 		out = append(out, ns...)
+		accept(ns...)
 	}
 	return out
-}
-
-// insideDirShield reports whether path lies strictly inside a directory one of rules
-// shields. A
-// checkout there is already beyond the run's writes - Claude Code's worktrees under the
-// read-only .claude are the ordinary case - and shields of its own would need bwrap to
-// create their mount points inside a read-only mount, which aborts the run.
-func insideDirShield(sb sandbox, rules []denylist.Rule, path string) bool {
-	for _, r := range rules {
-		if rp := sb.resolve(r.Path); r.Dir && rp != path && policy.CoversResolved(rp, path) {
-			return true
-		}
-	}
-	return false
 }
 
 // maxNestedCheckouts bounds nestedCheckouts. A .git entry is plantable under a write
