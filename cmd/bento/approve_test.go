@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -342,7 +343,7 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 	// there, where there is no callouts block to carry it, and one screen saying it twice
 	// teaches the reader to skim the block that asks for a decision.
 	var summary bytes.Buffer
-	writePolicySummary(&summary, "m.yaml", broad, resolvedGrants(broad, "m.yaml"), nil, false)
+	writePolicySummary(&summary, "m.yaml", broad, resolvedGrants(broad, "m.yaml"), gate.RefusalSet{}, nil, false)
 	if strings.Contains(summary.String(), "whole home or top-level directory") {
 		t.Errorf("approve's summary must leave the breadth note to its callouts; got:\n%s", summary.String())
 	}
@@ -842,7 +843,7 @@ func TestApproveCarriesTheCarveUnknownItsRefusalSetIsShortOf(t *testing.T) {
 	const note = "derives from the checkout under a write grant"
 
 	var buf strings.Builder
-	if err := requireHonorableGrants(&buf, &policy.Policy{Entrypoint: "/bin/true", Write: []string{t.TempDir()}}); err != nil {
+	if _, err := requireHonorableGrants(&buf, &policy.Policy{Entrypoint: "/bin/true", Write: []string{t.TempDir()}}); err != nil {
 		t.Fatalf("an ordinary directory write grant is not refused: %v", err)
 	}
 	if !strings.Contains(buf.String(), note) {
@@ -853,7 +854,7 @@ func TestApproveCarriesTheCarveUnknownItsRefusalSetIsShortOf(t *testing.T) {
 	// deriving no workspace shields has the whole carve answer and must be told so by
 	// silence.
 	var quiet strings.Builder
-	if err := requireHonorableGrants(&quiet, &policy.Policy{Entrypoint: "/bin/true", Read: []string{t.TempDir()}}); err != nil {
+	if _, err := requireHonorableGrants(&quiet, &policy.Policy{Entrypoint: "/bin/true", Read: []string{t.TempDir()}}); err != nil {
 		t.Fatalf("a read grant is not refused: %v", err)
 	}
 	if strings.Contains(quiet.String(), note) {

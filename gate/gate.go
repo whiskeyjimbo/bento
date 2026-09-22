@@ -154,14 +154,15 @@ func Check(resolved *policy.Policy) Runnability {
 		return Runnability{Unresolved: true}
 	}
 	set, err := ShieldSet()
-	return CheckAgainst(set, err, resolved)
+	return CheckAgainst(set, Refusals(set, err, resolved), resolved)
 }
 
-// CheckAgainst is Check over a shield set the caller already holds, with the error
-// ShieldSet raised beside it - the contract Refusals takes the set on, and for the same
-// reason: a CLI that also prints the refusals grant by grant walks the credential stores
-// once rather than once per question. Keeping the set fresh is then the caller's.
-func CheckAgainst(set shield.Set, anchorErr error, resolved *policy.Policy) Runnability {
+// CheckAgainst is Check over a shield set the caller already holds and the Refusals it
+// already asked of that set for this same policy, which carries ShieldSet's error as
+// AnchorErr. A CLI that also prints the refusals grant by grant then walks the credential
+// stores once and answers the shielded classes once, rather than once per question.
+// Keeping the set fresh, and the refusals asked of it, is then the caller's.
+func CheckAgainst(set shield.Set, refused RefusalSet, resolved *policy.Policy) Runnability {
 	if resolved == nil {
 		return Runnability{Unresolved: true}
 	}
@@ -186,12 +187,11 @@ func CheckAgainst(set shield.Set, anchorErr error, resolved *policy.Policy) Runn
 	// looped, file-write, root-write and mount refusals are facts about the manifest and
 	// the filesystem that the shield set has no part in, so they are still answered
 	// against the zero set, as Refusals does and as validate's summary prints them.
-	refused := Refusals(set, anchorErr, resolved)
 	r.Refusals = refused.Grants
 	r.ShieldCarveUnknown = refused.CarveUnknown
-	if anchorErr != nil {
+	if refused.AnchorErr != nil {
 		r.ShieldsUnknown = true
-		r.ShieldsUnknownReason = anchorErr.Error()
+		r.ShieldsUnknownReason = refused.AnchorErr.Error()
 		return r
 	}
 	r.CredentialAliases, r.CredentialAliasesUnwalked, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
@@ -374,15 +374,23 @@ func WorkdirProblems(resolved *policy.Policy) []string {
 // credential stores once, and the anchoring failure is the caller's to render in its own
 // words.
 func Refusals(set shield.Set, anchorErr error, resolved *policy.Policy) RefusalSet {
-	shieldedReads := ShieldedReadProblems(set, resolved.Read)
-	shieldedWrites := ShieldedWriteProblems(set, resolved.Write)
-	problems := append(shieldedReads, shieldedWrites...)
+	out := RefusalSet{
+		ShieldedReads:  ShieldedReadProblems(set, resolved.Read),
+		ShieldedWrites: ShieldedWriteProblems(set, resolved.Write),
+		Carves:         ShieldCarveProblems(set, resolved.Read, resolved.Write),
+		AnchorErr:      anchorErr,
+	}
+	// A fresh slice: appending onto ShieldedReads would share its backing array with
+	// Grants, and a caller appending to the one would rewrite the other.
+	var problems []string
+	problems = append(problems, out.ShieldedReads...)
+	problems = append(problems, out.ShieldedWrites...)
 	problems = append(problems, LoopedGrantProblems(resolved.Read, resolved.Write)...)
 	problems = append(problems, FileWriteGrantProblems(resolved.Write)...)
 	problems = append(problems, RootWriteProblems(resolved.Write)...)
 	problems = append(problems, MountGrantProblems(resolved.Read, resolved.Write)...)
-	problems = append(problems, ShieldCarveProblems(set, resolved.Read, resolved.Write)...)
-	out := RefusalSet{Grants: problems, AnchorErr: anchorErr}
+	problems = append(problems, out.Carves...)
+	out.Grants = problems
 	// Only where the shields anchored: an unanchored host answered the carve half against
 	// a zero set, which is the larger unknown AnchorErr already carries, and raising both
 	// tells the reader the same thing twice in the smaller of the two wordings.
@@ -401,6 +409,15 @@ func Refusals(set shield.Set, anchorErr error, resolved *policy.Policy) RefusalS
 type RefusalSet struct {
 	// Grants is the refusals themselves, in the words run refuses them with.
 	Grants []string
+	// ShieldedReads, ShieldedWrites and Carves are the three classes of Grants asked of the
+	// shield set, as their own functions return them. They are the costly ones - every
+	// grant is walked against every rule - so a caller printing refusals per class reads
+	// them here rather than asking the set again. The other classes are cheap and are
+	// grouped differently per reader (validate splits looped and mount refusals by side),
+	// so they are left for the caller to ask.
+	ShieldedReads  []string
+	ShieldedWrites []string
+	Carves         []string
 	// AnchorErr is the ShieldSet error the caller passed in, non-nil where this host could
 	// not work out where its shields anchor. Grants is then short of the two shielded
 	// classes, and the reason is here rather than only in the caller's own second ask, so

@@ -33,7 +33,7 @@ func TestValidateShowsLimits(t *testing.T) {
 	p := &policy.Policy{Entrypoint: "./x", Limits: policy.Limits{Memory: "128M", CPU: "50%", PIDs: 64}}
 
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", p, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", p, nil, gate.RefusalSet{}, nil, true)
 	out := buf.String()
 	for _, want := range []string{"limits:", "memory 128M", "cpu 50%", "pids 64"} {
 		if !strings.Contains(out, want) {
@@ -399,7 +399,7 @@ func TestLoadDocumentNamesTheManifestForAScript(t *testing.T) {
 // script using the ordinary ~/... idiom otherwise fails on a path its author never wrote.
 func TestValidateStatesTheSandboxHome(t *testing.T) {
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"LANG"}}, nil, gate.RefusalSet{}, nil, true)
 	if out := buf.String(); !strings.Contains(out, enforce.SandboxHome) || !strings.Contains(out, "HOME is not passed through") {
 		t.Errorf("summary must say what HOME becomes inside the sandbox; got:\n%s", out)
 	}
@@ -409,7 +409,7 @@ func TestValidateStatesTheSandboxHome(t *testing.T) {
 	// script expands lands on a granted path, and the manifest carries only the name.
 	t.Setenv("HOME", "/home/someone")
 	buf.Reset()
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Env: []string{"HOME"}}, nil, gate.RefusalSet{}, nil, true)
 	out := buf.String()
 	if strings.Contains(out, "HOME is not passed through") {
 		t.Errorf("a manifest allowlisting HOME must not be told it was remapped; got:\n%s", out)
@@ -428,7 +428,7 @@ func TestValidateStatesTheSandboxHome(t *testing.T) {
 	}
 	os.Unsetenv("HOME")
 	buf.Reset()
-	writePolicySummary(&buf, "m.yaml", p, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", p, nil, gate.RefusalSet{}, nil, true)
 	if got := buf.String(); !strings.Contains(got, "allowlisted but unset on this host") ||
 		!strings.Contains(got, enforce.SandboxHome) {
 		t.Errorf("an allowlisted-but-unset HOME must say so and name the remapped home; got:\n%s", got)
@@ -448,7 +448,7 @@ func TestValidateNotesRulesCoveringABlockedHost(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", p, nil, []string{"metadata.internal:80"}, true)
+	writePolicySummary(&buf, "m.yaml", p, nil, gate.RefusalSet{}, []string{"metadata.internal:80"}, true)
 	out := buf.String()
 	// Matched through the wildcard, not by spelling: a rule that covers the refusal
 	// without naming it is the one the reader is least able to see for themselves.
@@ -462,7 +462,7 @@ func TestValidateNotesRulesCoveringABlockedHost(t *testing.T) {
 	// approve prints the same rules through writeApprovalCallouts, where the reader is
 	// deciding, so it passes nil rather than saying it twice on one screen.
 	var quiet bytes.Buffer
-	writePolicySummary(&quiet, "m.yaml", p, nil, nil, true)
+	writePolicySummary(&quiet, "m.yaml", p, nil, gate.RefusalSet{}, nil, true)
 	if strings.Contains(quiet.String(), "egress guard refused") {
 		t.Errorf("with no blocked hosts recorded the summary must stay silent; got:\n%s", quiet.String())
 	}
@@ -918,14 +918,14 @@ func TestValidateMarksACarveRefusalBesideTheGrant(t *testing.T) {
 func TestValidateShowsInterpreterArgs(t *testing.T) {
 	var buf strings.Builder
 	p := &policy.Policy{Entrypoint: "./x.sh", Interpreter: "/bin/sh", InterpreterArgs: []string{"-eu"}}
-	writePolicySummary(&buf, "m.yaml", p, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", p, nil, gate.RefusalSet{}, nil, true)
 	out := buf.String()
 	if !strings.Contains(out, "before the entrypoint") || !strings.Contains(out, strconv.Quote("-eu")) {
 		t.Errorf("the summary did not show the interpreter's own arguments:\n%s", out)
 	}
 	// A policy with none says nothing extra: the line exists to flag a real setting.
 	var plain strings.Builder
-	writePolicySummary(&plain, "m.yaml", &policy.Policy{Entrypoint: "./x.sh", Interpreter: "/bin/sh"}, nil, nil, true)
+	writePolicySummary(&plain, "m.yaml", &policy.Policy{Entrypoint: "./x.sh", Interpreter: "/bin/sh"}, nil, gate.RefusalSet{}, nil, true)
 	if strings.Contains(plain.String(), "before the entrypoint") {
 		t.Errorf("an empty interpreter_args must print nothing:\n%s", plain.String())
 	}
@@ -1115,7 +1115,7 @@ func assertApproveRefuses(t *testing.T, path string) {
 // so the footer must not promise they hold over the grants above it.
 func TestValidateUnresolvedFooterClaimsNoShield(t *testing.T) {
 	var buf strings.Builder
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Read: []string{"~"}}, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Read: []string{"~"}}, nil, gate.RefusalSet{}, nil, true)
 	out := buf.String()
 	if strings.Contains(out, "shielded even if a path above would otherwise expose them") {
 		t.Errorf("an unresolved summary claimed the shields hold; got:\n%s", out)
@@ -1241,6 +1241,25 @@ func TestValidateSaysWhenTheAliasScanWasCutShort(t *testing.T) {
 	}
 }
 
+// The shielded classes cost a walk of every grant against every rule, and validate has
+// already asked them of the gate for its verdict. The summary prints the set it is handed;
+// sentinels no shield set could produce show it did not walk the set again for its own.
+func TestPolicySummaryPrintsTheRefusalsItIsHanded(t *testing.T) {
+	p := &policy.Policy{Entrypoint: "./x", Read: []string{t.TempDir()}, Write: []string{t.TempDir()}}
+	refused := gate.RefusalSet{
+		ShieldedReads:  []string{"sentinel shielded read"},
+		ShieldedWrites: []string{"sentinel shielded write"},
+		Carves:         []string{"sentinel carve"},
+	}
+	var buf bytes.Buffer
+	writePolicySummary(&buf, "m.yaml", p, resolvedGrants(p, "m.yaml"), refused, nil, true)
+	for _, want := range []string{"REFUSED: sentinel shielded read", "REFUSED: sentinel shielded write", "REFUSED: sentinel carve"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary is missing %q, so it asked the shield set again rather than printing the refusals it was handed; got:\n%s", want, buf.String())
+		}
+	}
+}
+
 // The breadth judgement existed on approve alone, and the edit-run loop spins on
 // validate: an author who validates twenty times and approves once meets the sentence
 // about `write: /etc` after the loop that would have acted on it. Both commands raise it
@@ -1248,7 +1267,7 @@ func TestValidateSaysWhenTheAliasScanWasCutShort(t *testing.T) {
 func TestValidateNotesABroadGrant(t *testing.T) {
 	var buf bytes.Buffer
 	p := &policy.Policy{Entrypoint: "./x", Read: []string{"/srv/app/data"}, Write: []string{"/etc"}}
-	writePolicySummary(&buf, "m.yaml", p, resolvedGrants(p, "m.yaml"), nil, true)
+	writePolicySummary(&buf, "m.yaml", p, resolvedGrants(p, "m.yaml"), gate.RefusalSet{}, nil, true)
 
 	out := buf.String()
 	if !strings.Contains(out, `write: "/etc" is a whole home or top-level directory`) {
@@ -1426,7 +1445,7 @@ func TestValidateNamesEveryUnsetAllowlistedEnvVar(t *testing.T) {
 
 	var buf bytes.Buffer
 	p := &policy.Policy{Entrypoint: "./x", Env: []string{"HOME", "BENTO_TEST_SET", "BENTO_TEST_UNSET", "BENTO_TEST_ALSO_UNSET"}}
-	writePolicySummary(&buf, "m.yaml", p, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", p, nil, gate.RefusalSet{}, nil, true)
 	out := buf.String()
 	for _, name := range []string{"BENTO_TEST_UNSET", "BENTO_TEST_ALSO_UNSET"} {
 		if !strings.Contains(out, "note: env "+name+" is allowed by the manifest but not set") {
@@ -1455,7 +1474,7 @@ func TestValidateResolvesTheInterpreter(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var buf bytes.Buffer
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "myinterp"}, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "myinterp"}, nil, gate.RefusalSet{}, nil, true)
 	if out := buf.String(); !strings.Contains(out, strconv.Quote(interp)) {
 		t.Errorf("summary must say where the interpreter name lands on this host; got:\n%s", out)
 	}
@@ -1463,7 +1482,7 @@ func TestValidateResolvesTheInterpreter(t *testing.T) {
 	// Nothing to add when the name is already the path, and nothing to add when it does
 	// not resolve - runnable: NO reports that, with the lookup's own error.
 	buf.Reset()
-	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "nosuchinterp"}, nil, nil, true)
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./x", Interpreter: "nosuchinterp"}, nil, gate.RefusalSet{}, nil, true)
 	if out := buf.String(); strings.Contains(out, "on this host: ") {
 		t.Errorf("an unresolvable interpreter must not be given a landing place; got:\n%s", out)
 	}

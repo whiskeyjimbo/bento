@@ -74,10 +74,14 @@ func newValidateCmd() *cobra.Command {
 			}
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
-			// The summary below asks the same set, so the gate is handed the command's
-			// rather than walking its own.
+			// The summary below prints the same refusals class by class, so they are asked
+			// once, of the command's set, and handed to both.
 			shields, anchorErr := commandShieldSet()
-			run := gate.CheckAgainst(shields, anchorErr, resolved)
+			var refused gate.RefusalSet
+			if resolved != nil {
+				refused = gate.Refusals(shields, anchorErr, resolved)
+			}
+			run := gate.CheckAgainst(shields, refused, resolved)
 			if resolved != nil {
 				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], resolved)...)
 			}
@@ -112,7 +116,7 @@ func newValidateCmd() *cobra.Command {
 				}
 				return relocatableError(relocatable, pinned)
 			}
-			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, doc.Provenance.BlockedHosts, true)
+			writePolicySummary(os.Stdout, args[0], doc.Policy, resolved, refused, doc.Provenance.BlockedHosts, true)
 			// The same block approve prints, minus the notes the summary above already put
 			// beside their grants. It is the sharpest judgement either command makes - a write
 			// that reaches the entrypoint or the manifest - and arriving only at the stamp put
@@ -948,7 +952,7 @@ func resolvedGrants(p *policy.Policy, manifestPath string) *policy.Policy {
 // breadth judgement in its callouts, under the header that asks for a decision. It is a
 // switch rather than an absent input because breadth is read off the grants already here,
 // so there is nothing for a caller to withhold.
-func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, blockedHosts []string, noteBreadth bool) {
+func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, refused gate.RefusalSet, blockedHosts []string, noteBreadth bool) {
 	var resolvedRead, resolvedWrite []string
 	if resolved != nil {
 		resolvedRead, resolvedWrite = resolved.Read, resolved.Write
@@ -989,22 +993,19 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, bl
 		fmt.Fprintf(w, "        deliberate read-only exception rather than refusing, so the script can\n")
 		fmt.Fprintf(w, "        %s. Remove the grant unless the script needs it.\n", g.Holds.Exposure())
 	}
-	// The error is dropped: it is the same failure to anchor the shields that shieldErr
-	// carries, and the footer below reports it once in words rather than twice as an empty
-	// list - which is what the zero set yields.
-	shieldSet, _ := commandShieldSet()
-	readRefusals := gate.ShieldedReadProblems(shieldSet, resolvedRead)
-	writeGrantRefusals(w, readRefusals, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
+	// The shielded classes come from the caller's refusals rather than being asked again.
+	// An anchoring failure leaves them empty, and the footer below reports it once in words.
+	writeGrantRefusals(w, refused.ShieldedReads, gate.LoopedGrantProblems(resolvedRead, nil), gate.MountGrantProblems(resolvedRead, nil))
 	fmt.Fprintf(w, "write:        %s\n", orNone(p.Write))
 	writeResolvedGrants(w, p.Write, resolvedWrite)
 	if noteBreadth {
 		writeBroadGrantNotes(w, "write", resolvedWrite)
 	}
-	writeRefusals := gate.ShieldedWriteProblems(shieldSet, resolvedWrite)
-	writeGrantRefusals(w, writeRefusals, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
+	writeGrantRefusals(w, refused.ShieldedWrites, gate.LoopedGrantProblems(nil, resolvedWrite), gate.FileWriteGrantProblems(resolvedWrite),
 		gate.MountGrantProblems(nil, resolvedWrite), gate.RootWriteProblems(resolvedWrite),
-		// The reads too: an exact opt-in read grant means no mount point is carved for it.
-		gate.ShieldCarveProblems(shieldSet, resolvedRead, resolvedWrite))
+		// Asked of the reads too: an exact opt-in read grant means no mount point is carved
+		// for it.
+		refused.Carves)
 	fmt.Fprintf(w, "env:          %s\n", orNone(p.Env))
 	writeSandboxHome(w, p)
 	writeUnsetEnvNotes(w, p)

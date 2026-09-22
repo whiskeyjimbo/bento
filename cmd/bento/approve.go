@@ -75,7 +75,8 @@ func newApproveCmd() *cobra.Command {
 			// earlier bento - or by this one on a host whose shields anchor elsewhere -
 			// otherwise reports as approved for permissions run refuses outright, which is
 			// the disagreement between the gate and the enforcement this check exists to end.
-			if err := requireHonorableGrants(os.Stdout, resolved); err != nil {
+			refused, err := requireHonorableGrants(os.Stdout, resolved)
+			if err != nil {
 				return err
 			}
 			if err := requireStartableWorkdir(resolved); err != nil {
@@ -102,7 +103,7 @@ func newApproveCmd() *cobra.Command {
 			// printed one line made typing it the path of least resistance. The summary
 			// is validate's own, so there is one rendering of a policy rather than two
 			// that can drift.
-			writePolicySummary(os.Stdout, path, doc.Policy, resolved, nil, false)
+			writePolicySummary(os.Stdout, path, doc.Policy, resolved, refused, nil, false)
 			writeApprovalCallouts(os.Stdout, mt.RealPath, leafNamePath(path), doc.Policy, resolved, doc.Provenance.BlockedHosts, false)
 			// After the callouts, not before: the notice sends the reader back over everything
 			// above it, and the callouts are the part of the report a drift most needs reread.
@@ -198,9 +199,9 @@ func writeReapprovalNotice(w io.Writer, p *policy.Policy, approval trust.Approva
 // first step by the host it is stamped on. Nothing to do about it from here; what would
 // make it worse is a check added to the run's set and not to gate's, which is the drift
 // this function exists to catch.
-func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
+func requireHonorableGrants(w io.Writer, resolved *policy.Policy) (gate.RefusalSet, error) {
 	if resolved == nil {
-		return nil
+		return gate.RefusalSet{}, nil
 	}
 	// gate.Refusals answers four of its six classes off the manifest and the filesystem
 	// alone, so an unanchored host returns a set that is quietly short of the two shielded
@@ -222,9 +223,9 @@ func requireHonorableGrants(w io.Writer, resolved *policy.Policy) error {
 		fmt.Fprintf(w, "note: the shields a run derives from the checkout under a write grant - its git hook directory, its editor task files - are read off the host by the sandbox backend, so whether their mount points can be created under these grants was not checked here, and no refusal below covers that.\n")
 	}
 	if len(refused.Grants) == 0 {
-		return nil
+		return refused, nil
 	}
-	return fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(refused.Grants, "\n  "))
+	return refused, fmt.Errorf("not approved: the policy holds a grant run refuses before the script starts - approving it would stamp a permission that does not exist:\n  %s", strings.Join(refused.Grants, "\n  "))
 }
 
 // requireStartableWorkdir is requireHonorableGrants' sibling for the one host fact that
