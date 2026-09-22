@@ -187,10 +187,31 @@ func boundHostSeams(sb sandbox) sandbox {
 			return isDir(path), nil
 		})
 	}
+	// Memoized for the sandbox's life: one run asks the same few hundred paths tens of
+	// thousands of times (the deny-list, each grant, each shield's ancestors), and every
+	// ask walked the whole chain again - most of a run's startup. One answer per path is
+	// also the more honest one: the verdicts built from it then agree about the host
+	// rather than each seeing whatever a symlink said at its own instant. Only absolute
+	// paths, whose answer does not depend on the working directory, and only answers given
+	// while no mount has timed out, since a fallback is not an answer to keep.
+	var mu sync.Mutex
+	resolved := map[string]string{}
 	sb.resolve = func(path string) string {
-		return boundedSeam(sb, "the symlink resolution of "+path, path, func() (string, error) {
+		mu.Lock()
+		r, ok := resolved[path]
+		mu.Unlock()
+		if ok {
+			return r
+		}
+		r = boundedSeam(sb, "the symlink resolution of "+path, path, func() (string, error) {
 			return resolve(path), nil
 		})
+		if filepath.IsAbs(path) && sb.deadMount.expired() == nil {
+			mu.Lock()
+			resolved[path] = r
+			mu.Unlock()
+		}
+		return r
 	}
 	sb.listDir = func(path string) (names, links []string, ok bool) {
 		type listing struct {

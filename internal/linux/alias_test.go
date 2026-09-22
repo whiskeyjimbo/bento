@@ -1757,3 +1757,35 @@ func TestNewSandboxRefusesAnEntrypointThatDoesNotAnswer(t *testing.T) {
 		t.Errorf("newSandbox error = %v, want the expired entrypoint seam named", err)
 	}
 }
+
+// resolve is asked the same few hundred paths tens of thousands of times per run, and
+// answering each from the host again was most of bento's startup. The memo answers an
+// absolute path once; a relative one depends on the working directory, and an answer
+// given after a mount timed out is a fallback, so neither is kept.
+func TestTheResolveSeamIsAskedOncePerAbsolutePath(t *testing.T) {
+	calls := map[string]int{}
+	sb := boundHostSeams(sandbox{
+		deadMount: &deadMount{},
+		isDir:     func(string) bool { return true },
+		resolve:   func(p string) string { calls[p]++; return p },
+		listDir:   func(string) (names, links []string, ok bool) { return nil, nil, true },
+		exists:    func(string) bool { return true },
+		writable:  func(string) bool { return true },
+	})
+	for range 3 {
+		sb.resolve("/home/u/.config")
+		sb.resolve("rel/path")
+	}
+	if n := calls["/home/u/.config"]; n != 1 {
+		t.Errorf("an absolute path was resolved %d times, want once", n)
+	}
+	if n := calls["rel/path"]; n != 3 {
+		t.Errorf("a relative path was resolved %d times, want every time", n)
+	}
+	sb.deadMount.note(errDidNotAnswer)
+	sb.resolve("/after/expiry")
+	sb.resolve("/after/expiry")
+	if n := calls["/after/expiry"]; n != 2 {
+		t.Errorf("an answer given after a mount timed out was kept (%d calls, want 2)", n)
+	}
+}
