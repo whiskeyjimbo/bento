@@ -74,7 +74,10 @@ func newValidateCmd() *cobra.Command {
 			}
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
-			run := gate.Check(resolved)
+			// The summary below asks the same set, so the gate is handed the command's
+			// rather than walking its own.
+			shields, anchorErr := commandShieldSet()
+			run := gate.CheckAgainst(shields, anchorErr, resolved)
 			if resolved != nil {
 				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], resolved)...)
 			}

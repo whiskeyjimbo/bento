@@ -21,6 +21,7 @@ import (
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
+	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 	"github.com/whiskeyjimbo/bento/trust"
@@ -1732,5 +1733,39 @@ func TestValidateSaysWhyTheShieldsCouldNotBeAnchored(t *testing.T) {
 	writeRunnability(&buf, gate.Runnability{ShieldsUnknown: true, ShieldsUnknownReason: reason})
 	if !strings.Contains(buf.String(), reason) {
 		t.Errorf("validate reported the anchors unknown without the failure's own words, so the reader has to run doctor to learn what broke;\ngot:\n%s", buf.String())
+	}
+}
+
+// validate walks the shield set once: the gate's verdict and the summary's per-grant
+// refusals are asked of the command's one set, rather than gate.Check walking a second
+// copy the memo never sees - two full walks of the credential stores per validate. The
+// walk returns a sentinel anchoring failure, so a verdict computed off any other set
+// cannot carry its words.
+func TestValidateAssemblesTheShieldSetOnce(t *testing.T) {
+	const reason = "sentinel: the command's own shield set"
+	invalidateShieldSet()
+	t.Cleanup(invalidateShieldSet)
+	restore := assembleShieldSet
+	t.Cleanup(func() { assembleShieldSet = restore })
+	walks := 0
+	assembleShieldSet = func() (shield.Set, error) {
+		walks++
+		return shield.Set{}, errors.New(reason)
+	}
+	path := writeManifest(t, &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}, manifest.Provenance{})
+
+	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walks != 1 {
+		t.Errorf("validate walked the command's shield set %d times, want 1", walks)
+	}
+	var machine map[string]any
+	if err := json.Unmarshal([]byte(out), &machine); err != nil {
+		t.Fatalf("validate --json is not JSON (%v):\n%s", err, out)
+	}
+	if machine["shields_unknown_reason"] != reason {
+		t.Errorf("shields_unknown_reason = %v, want %q: the gate's verdict came from a shield set of its own, not the command's", machine["shields_unknown_reason"], reason)
 	}
 }

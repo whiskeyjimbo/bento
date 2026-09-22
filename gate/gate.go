@@ -146,7 +146,22 @@ type Runnability struct {
 // Passing the manifest's own spelling instead would stat a relative entrypoint against
 // whatever directory the caller happened to run from. Resolve into a copy: resolving an
 // approved manifest's policy in place makes it read as stale against its own stamp.
+//
+// The shield set is walked fresh for this one verdict; a caller that already holds one for
+// the same manifest passes it to CheckAgainst instead.
 func Check(resolved *policy.Policy) Runnability {
+	if resolved == nil {
+		return Runnability{Unresolved: true}
+	}
+	set, err := ShieldSet()
+	return CheckAgainst(set, err, resolved)
+}
+
+// CheckAgainst is Check over a shield set the caller already holds, with the error
+// ShieldSet raised beside it - the contract Refusals takes the set on, and for the same
+// reason: a CLI that also prints the refusals grant by grant walks the credential stores
+// once rather than once per question. Keeping the set fresh is then the caller's.
+func CheckAgainst(set shield.Set, anchorErr error, resolved *policy.Policy) Runnability {
 	if resolved == nil {
 		return Runnability{Unresolved: true}
 	}
@@ -171,13 +186,12 @@ func Check(resolved *policy.Policy) Runnability {
 	// looped, file-write, root-write and mount refusals are facts about the manifest and
 	// the filesystem that the shield set has no part in, so they are still answered
 	// against the zero set, as Refusals does and as validate's summary prints them.
-	set, err := shieldSet()
-	refused := Refusals(set, err, resolved)
+	refused := Refusals(set, anchorErr, resolved)
 	r.Refusals = refused.Grants
 	r.ShieldCarveUnknown = refused.CarveUnknown
-	if err != nil {
+	if anchorErr != nil {
 		r.ShieldsUnknown = true
-		r.ShieldsUnknownReason = err.Error()
+		r.ShieldsUnknownReason = anchorErr.Error()
 		return r
 	}
 	r.CredentialAliases, r.CredentialAliasesUnwalked, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
@@ -540,10 +554,6 @@ func MountGrantProblems(read, write []string) []string {
 	}
 	return problems
 }
-
-// shieldSet is the seam Check reads the shield set through, so a test can reach the
-// unanchored-host branch: making HomeAnchors fail for real needs a uid with no passwd home.
-var shieldSet = ShieldSet
 
 // ShieldSet is the run's shield set as far as the CLI can build it: the same anchors, the
 // same rules, the same symlink expansion and the same drops, from internal/shield - the

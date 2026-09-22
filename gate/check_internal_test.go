@@ -13,11 +13,7 @@ import (
 // part in, since validate's summary prints them REFUSED on that same host and --json
 // carrying none would read as a manifest with nothing to refuse.
 func TestCheckStillRefusesUnshieldedClassesWithoutAnchors(t *testing.T) {
-	saved := shieldSet
-	shieldSet = func() (shield.Set, error) { return shield.Set{}, errors.New("denylist: no usable home directory") }
-	t.Cleanup(func() { shieldSet = saved })
-
-	r := Check(&policy.Policy{Entrypoint: t.TempDir(), Write: []string{"/"}})
+	r := CheckAgainst(shield.Set{}, errors.New("denylist: no usable home directory"), &policy.Policy{Entrypoint: t.TempDir(), Write: []string{"/"}})
 	if !r.ShieldsUnknown {
 		t.Fatal("ShieldsUnknown = false on a host whose shield set errored")
 	}

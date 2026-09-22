@@ -390,11 +390,11 @@ var shieldSetCache struct {
 // one path that is not is profile's convergence loop, which clamps its proposal after each
 // round has executed the target - up to 25 times - so profileRound drops the set with
 // invalidateShieldSet and the next round walks fresh. A library can promise neither, which
-// is why gate.ShieldSet walks fresh - and why gate.Check's own walk is a second one this
-// cannot serve, which
-// costs validate 5ms (14ms to 20ms on the manifest above). Paid rather than reached
-// around with a set parameter on Check: an embedder would then be the one holding a
-// stale set, which is the bug this shape exists to remove.
+// is why gate.ShieldSet walks fresh, and why gate.Check walks its own. validate asks
+// gate.CheckAgainst with this set instead, so one command walks once: an embedder calling
+// Check still gets a fresh set, and only a caller that owns the lifetime - as this one
+// does - holds one. TestValidateAssemblesTheShieldSetOnce pins that validate is such a
+// caller.
 //
 // Keyed on the environment even so: the tests relocate HOME and the shield variables per
 // case in one process, and a cache that outlived that would answer the second case with
@@ -407,10 +407,14 @@ func commandShieldSet() (shield.Set, error) {
 	if !shieldSetCache.held || shieldSetCache.key != key {
 		shieldSetCache.held = true
 		shieldSetCache.key = key
-		shieldSetCache.set, shieldSetCache.err = gate.ShieldSet()
+		shieldSetCache.set, shieldSetCache.err = assembleShieldSet()
 	}
 	return shieldSetCache.set, shieldSetCache.err
 }
+
+// assembleShieldSet is the walk commandShieldSet memoizes, a variable so a test can count
+// the walks one command makes.
+var assembleShieldSet = gate.ShieldSet
 
 // invalidateShieldSet drops the memoized set, so the next ask walks the stores again. It
 // is held rather than compared because an empty environment is a legitimate key.
