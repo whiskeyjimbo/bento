@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1113,6 +1114,20 @@ func TestTunnelAnAnsweredUpstreamOutlivesTheFirstByteBound(t *testing.T) {
 	server.SetDeadline(time.Now().Add(10 * time.Second))
 	if n, err := io.ReadFull(server, make([]byte, chunks)); err != nil {
 		t.Fatalf("forwarded %d of %d bytes: an upstream that had answered was cut at the first-byte bound: %v", n, chunks, err)
+	}
+}
+
+// Each tunnel direction copies through a 32 KiB buffer. Allocated fresh per copy, that
+// is 64 KiB of garbage per connection, all of it churn once the tunnel ends.
+func TestCopyIdleReusesItsBuffer(t *testing.T) {
+	src := bytes.NewReader(nil)
+	payload := []byte("x")
+	extend := func() {}
+	if n := testing.AllocsPerRun(100, func() {
+		src.Reset(payload)
+		copyIdle(io.Discard, src, extend)
+	}); n != 0 {
+		t.Errorf("copyIdle allocated %v times per copy, want 0", n)
 	}
 }
 

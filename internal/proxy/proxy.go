@@ -1569,21 +1569,33 @@ func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.D
 // copyIdle copies src→dst, calling extend on every read so activity in this
 // direction keeps the tunnel's idle deadline fresh; an idle tunnel is torn down
 // when neither direction reads.
+//
+// The buffer goes back to copyBufs only on a normal return: a copy that panicked out of
+// a WithDialer conn's Read or Write may have left that conn holding it.
 func copyIdle(dst io.Writer, src io.Reader, extend func()) {
-	buf := make([]byte, 32*1024)
+	bp := copyBufs.Get().(*[]byte)
+	buf := *bp
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
 			extend()
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return
+				break
 			}
 		}
 		if err != nil {
-			return
+			break
 		}
 	}
+	copyBufs.Put(bp)
 }
+
+// copyBufs holds the tunnel copy buffers, so a connection reuses one an earlier tunnel
+// finished with rather than allocating 64 KiB per connection.
+var copyBufs = sync.Pool{New: func() any {
+	b := make([]byte, 32*1024)
+	return &b
+}}
 
 // halfClose signals EOF to the write side of c so the paired copy finishes
 // instead of hanging on a peer that will never send again. A conn with no
