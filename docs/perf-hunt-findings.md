@@ -67,8 +67,8 @@ Rank is scaling-on-a-hot-path first, then constant-on-a-hot-path by magnitude.
 
 | # | Finding | Class | file:line | Measured |
 |---|---------|-------|-----------|----------|
-| 1 | The alias budget bounds only half the scan: `aliasableCredentials` takes no budget, and the `len(want)==0` fast return is downstream of its walk | scaling, unbounded | `gate/alias_unix.go:143`, walk at `:197`, fast return at `:77` | 61,486 lstats in one `Check` on a 60k-entry anchor, 20% past `aliasBudget`, returning `want=0` |
-| 2 | The `Relocated` screen is O(defaults²) with an allocating inner loop, quadratic in the `Home` table | scaling | `denylist.go:1686` | 27,540 allocs on an ordinary dev env vs 110 on an empty one; 2x defaults = 2.76x allocs |
+| 1 | **The budget does not bound the scan.** Two halves, neither bounded: `aliasableCredentials` takes no budget at all and the `len(want)==0` fast return sits downstream of its walk; and the grant walk's shared allowance is charged for roots already visited, because dedup is exact-root equality | scaling, unbounded | `gate/alias_unix.go:143`, walk at `:197`, fast return at `:77`, dedup at `:88` | 61,486 lstats in one `Check` on a 60k-entry anchor, 20% past `aliasBudget`, returning `want=0`; nested grant charged another 202 entries already visited |
+| 2 | The `Relocated` screen is O(defaults²) with an allocating inner loop, quadratic in the `Home` table | scaling | `denylist.go:1686` | **doubling the defaults raised allocs 2.76x with emitted count held flat** - the controlled result, no env dependence. Illustration only: 27,540 allocs on the measurer's dev env vs 110 on an empty one, which depends on which relocation vars that box had set |
 | 3 | `Contains` re-resolves every rule per write verdict, ignoring the assembly-time memo | constant, hot | `verdict.go:179`, `:230` vs `rules.go:156` | 2,654 syscalls per call, ~8 calls per write grant ≈ 21k syscalls/grant |
 | 4 | `Probe` runs twice per run from identical inputs; the namespace half is unmemoized | repeat | `enforce/run.go:152` + `internal/linux/linux.go:116`; `probe.go:69` | a full bwrap fork+exec plus namespace build/teardown, every run |
 | 5 | A zero-limits manifest probes scope creation for a reading nothing reads | constant, hot | `probe.go:97-116` vs `run.go:461` | 7 execs + 2 D-Bus round trips; with #4, 9 of 14 execs on a zero-limits run are avoidable |
@@ -79,7 +79,6 @@ Rank is scaling-on-a-hot-path first, then constant-on-a-hot-path by magnitude.
 | 10 | `Contains` allocates on the common path: `Clean` + two `Split` per rule failing the byte test | constant, hot | `verdict.go:303` | 16,583 allocs per write verdict, 1,408 per read |
 | 11 | `effectiveABI` uncached | constant | `internal/landlock` | 12 `landlock_create_ruleset` per `Probe`, should be 2 |
 | 12 | `pathresolve.Existing` unmemoized across anchors, grants, rules | constant | `gate/alias_unix.go:87`, `:161`, `:172`, `gate/gate.go:199` | 107 resolves per `Check` = 735 syscalls, 3,393 allocs |
-| 13 | Nested grants double-charge the shared budget; dedup is exact-root equality | constant + correctness | `gate/alias_unix.go:88` | outer 20,203 entries, nested another 202 already visited |
 | 14 | `clamp.go` rebuilds `denylist.Home(root)` inside a per-grant loop | repeat | `cmd/bento/clamp.go:346` | 538 allocs per rebuild |
 | 15 | `bento profile` redoes `resolveBwrap`'s trust walk after `Probe` | repeat | `cmd/bento/profile.go:484` + `:65` | the other three call sites are memoized |
 
@@ -92,7 +91,13 @@ These are not perf items and should be filed as their own work.
   stopped=true` - on disk, granted, invisible. `CredentialAliasesPartial` does reach the
   operator (`cmd/bento/validate.go:354`), so it is not a silent clean bill, but one boolean
   cannot say which grants went unlooked-at, and coverage is order-dependent rather than
-  proportional. Finding 13 makes it worse by spending the allowance on entries already seen.
+  proportional. The double-charging half of finding 1 makes it worse by spending the
+  allowance on entries already seen.
+
+Why these two halves are one item and not two: both are "the budget does not bound the
+scan". Filed apart, the dedup gets fixed, the item closes green, and the unbounded anchor
+walk survives behind that checkmark - the carried-row failure this whole hunt exists to
+find, reproduced in the filing.
 - **The unhealthy-systemd cell is the worst on the probe path and invisible on a healthy
   machine.** `cacheProbe` deliberately does not memoize a non-answer, so on a busy or
   restarting user manager the whole limits probe repeats per `Probe` - finding 5's 7 wasted
