@@ -794,3 +794,24 @@ func TestDerivedWorkspaceRulesSkipAShieldAlreadyInForce(t *testing.T) {
 		t.Errorf("derived %+v, want only /w/notes/.mcp.json - /w/.claude is already in force", got)
 	}
 }
+
+// Two grants in one checkout derive one set of workspace shields, but the walk's findings
+// are keyed by the grant that walked them: a narrower grant listed first must not claim the
+// checkout and leave the broader grant's nested checkouts and deep config unshielded.
+func TestShieldRulesDoNotDependOnGrantOrder(t *testing.T) {
+	sb := testSandbox("/w/.git", "/w/src/x", "/w/n/.git", "/w/docs/.mcp.json")
+	sb.projectConfig = map[string][]denylist.Rule{"/w": {{Path: "/w/docs/.mcp.json", Deny: denylist.DenyWrite}}}
+	sb.nestedCheckouts = map[string][]string{"/w": {"/w/n"}}
+	broadFirst := rulePaths(shieldRules(sb, []string{"/w", "/w/src"}))
+	narrowFirst := rulePaths(shieldRules(sb, []string{"/w/src", "/w"}))
+	for _, want := range []string{"/w/docs/.mcp.json", "/w/n/.vscode"} {
+		if !slices.Contains(narrowFirst, want) {
+			t.Errorf("with the narrower grant first, %s is unshielded", want)
+		}
+	}
+	slices.Sort(broadFirst)
+	slices.Sort(narrowFirst)
+	if !slices.Equal(broadFirst, narrowFirst) {
+		t.Errorf("grant order changed the shields: %d with the broad grant first, %d with the narrow one", len(broadFirst), len(narrowFirst))
+	}
+}

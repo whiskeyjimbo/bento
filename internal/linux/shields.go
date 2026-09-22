@@ -180,12 +180,16 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// chain rather than a second gitDirShields descent through .git/modules - which is
 		// what a sandbox carrying no workspaceShieldCache would pay otherwise.
 		root := checkoutRoot(sb, w)
-		if seen[root] {
-			continue
+		if !seen[root] {
+			seen[root] = true
+			ws, _ := workspaceShields(sb, w)
+			rules = append(rules, ws...)
 		}
-		seen[root] = true
-		ws, _ := workspaceShields(sb, w)
-		rules = append(rules, ws...)
+		// Derived for every grant, repeat or not: the walk's findings are keyed by the
+		// grant that walked them, so a narrower grant listed first would otherwise claim
+		// the checkout and leave a broader one's nested checkouts and config unshielded.
+		// derivedWorkspaceRules drops what is already in force, so the overlap costs no
+		// duplicate mount.
 		rules = append(rules, derivedWorkspaceRules(sb, w, rules, seen)...)
 	}
 	return rules
