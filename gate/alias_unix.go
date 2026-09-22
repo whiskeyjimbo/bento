@@ -68,27 +68,33 @@ type fileID struct {
 // nothing could look at yields no credential and would otherwise render as a host holding
 // none.
 func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.CredentialAlias, bool) {
-	want, shielded, unread := aliasableCredentials(set, reads)
+	// One allowance for the whole answer, spent by both walks. The anchor scan runs first
+	// and is charged first: it is the half that decides whether there is anything to want,
+	// so a home whose stores are large would otherwise pay for every entry in them before
+	// the bound below could apply to anything.
+	budget := aliasBudget
+	want, shielded, unread, stoppedAnchors := aliasableCredentials(set, reads, &budget)
 	// Nothing to compare against, so no tree is walked. On an ordinary host this is the
 	// answer - a credential with one directory entry cannot be hardlink-aliased - and it
 	// is what keeps the walk off the granted trees, which can be a whole checkout. Not a
 	// clean bill where an anchor went unread: nothing was found there because nothing was
 	// looked at.
 	if len(want) == 0 {
-		return nil, unread
+		return nil, unread || stoppedAnchors
 	}
 	var out []enforce.CredentialAlias
-	// One budget for the whole answer rather than one per grant: what the caller waits for
-	// is the sum, and a manifest granting ten trees would otherwise pay ten times the bound.
-	budget := aliasBudget
-	partial := unread
-	seen := map[string]bool{}
+	partial := unread || stoppedAnchors
+	var seen []string
 	for _, g := range slices.Concat(reads, writes) {
 		root, _ := pathresolve.Existing(filepath.Clean(g))
-		if seen[root] {
+		// Covering rather than equal: read: ~ alongside read: ~/project walks the nested
+		// tree a second time for entries the enclosing walk already enumerated, and the
+		// budget is one allowance - what a repeat spends is taken from the grants behind it
+		// rather than from nothing. Compact below dedups the output; this dedups the scan.
+		if slices.ContainsFunc(seen, func(s string) bool { return policy.CoversResolved(s, root) }) {
 			continue
 		}
-		seen[root] = true
+		seen = append(seen, root)
 		found, stopped := aliasesUnder(root, want, &budget)
 		partial = partial || stopped
 		for _, a := range found {
@@ -118,8 +124,8 @@ func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.Creden
 	return slices.Compact(out), partial
 }
 
-// aliasBudget is how many directory entries the granted trees are walked for before the
-// answer is cut short. Cost tracks entries rather than bytes: on this host's warm cache a
+// aliasBudget is how many directory entries the scan walks before the answer is cut short:
+// the credential anchors and the granted trees together, not the grants alone. Cost tracks entries rather than bytes: on this host's warm cache a
 // 287k-entry module cache took `bento validate` from 40ms to 1.14s, so an entry is a few
 // microseconds warm and around five times that cold. The bound puts a walk that goes the
 // whole way at roughly 200ms warm - the cost of an answer a reader is waiting on, rather
@@ -140,7 +146,14 @@ const aliasBudget = 50_000
 // read past.
 // The third return says an anchor went unread - a walk error, or a stat that failed - so
 // the empty answer that follows is a could-not-look rather than an absence.
-func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, map[string]bool, bool) {
+//
+// budget is the caller's allowance, spent here on the same terms aliasesUnder spends it:
+// every entry the walk is handed costs one, and the fourth return says the scan stopped
+// short of the anchors' end. An anchor set is not small on a developer's home - a password
+// store or a browser profile runs to tens of thousands of entries - and this walk runs
+// before there is anything to want, so leaving it unbounded put the whole cost of a large
+// store in front of an answer that could still come back empty.
+func aliasableCredentials(set shield.Set, reads []string, budget *int) (map[fileID]string, map[string]bool, bool, bool) {
 	// A host with no anchors shields nothing at all, and Check has already said so: it
 	// asks ShieldSet for the same anchors, and an error there sets ShieldsUnknown and
 	// returns before credentialAliases, the one call site this has. So the
@@ -177,17 +190,25 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 
 	want := map[fileID]string{}
 	shielded := map[string]bool{}
-	seen := map[string]bool{}
-	var unread bool
+	var seen []string
+	var unread, stopped bool
 	for _, root := range roots {
 		// Covering rather than equal, as the backend asks it: an anchor NESTED in an
 		// opted-in store is opted in too, and skipping only the exact match would report an
 		// alias of a credential the run hands over deliberately - a finding the run does
 		// not refuse over, which is the one direction this must not go.
-		if seen[root] || slices.ContainsFunc(optIns, func(o string) bool { return policy.CoversResolved(o, root) }) {
+		//
+		// The same test serves the seen set: an anchor below one already walked holds
+		// nothing the enclosing walk did not enumerate, and charging the budget twice for
+		// it takes the difference out of the walks behind it.
+		if slices.ContainsFunc(seen, func(s string) bool { return policy.CoversResolved(s, root) }) ||
+			slices.ContainsFunc(optIns, func(o string) bool { return policy.CoversResolved(o, root) }) {
 			continue
 		}
-		seen[root] = true
+		seen = append(seen, root)
+		if stopped {
+			break
+		}
 		// Walked without following symlinks, so a symlink planted in a credential
 		// directory cannot redirect the walk or loop it. A link out of a store is reached
 		// as an anchor of its own instead, and only where the shield set already followed
@@ -204,6 +225,13 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 				}
 				return nil //nolint:nilerr // an anchor bento cannot walk yields no finding, reported partial rather than raised
 			}
+			// Charged before the entry is looked at, as aliasesUnder charges it, so the two
+			// halves spend the one allowance on the same terms.
+			if *budget <= 0 {
+				stopped = true
+				return fs.SkipAll
+			}
+			*budget--
 			// Skipped for the reason the backend skips it: a password store keeps its
 			// history as content-addressed blobs, and `git clone --local` hardlinks every
 			// one of them into the clone. Those links are the user's own copy, made
@@ -235,7 +263,7 @@ func aliasableCredentials(set shield.Set, reads []string) (map[fileID]string, ma
 			return nil
 		})
 	}
-	return want, shielded, unread
+	return want, shielded, unread, stopped
 }
 
 // aliasesUnder returns the files under a granted tree whose content is one of want's.
