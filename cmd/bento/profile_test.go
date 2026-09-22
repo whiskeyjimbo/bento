@@ -151,6 +151,28 @@ func TestForeignHomeShieldsWarnsButKeeps(t *testing.T) {
 // The ostree root must not warn about the profiler's OWN home, or a Silverblue host
 // prompts per-path on every grant it makes - the noise that turning the blind spot into
 // a warning would otherwise buy.
+// The foreign home's deny-list is the same for every grant under it, so building it per
+// grant cost a whole Home table - hundreds of allocations - for each grant a draft names
+// under another user's home. Two sizes, since one cannot tell a per-grant cost from a
+// fixed one.
+func TestForeignHomeShieldsBuildsEachHomesTableOnce(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	grants := func(n int) []string {
+		var out []string
+		for i := range n {
+			out = append(out, fmt.Sprintf("/home/realuser/project/d%d", i))
+		}
+		return out
+	}
+	few, many := grants(10), grants(40)
+	small := testing.AllocsPerRun(5, func() { foreignHomeShields(few) })
+	large := testing.AllocsPerRun(5, func() { foreignHomeShields(many) })
+	t.Logf("%.0f allocs at 10 grants, %.0f at 40", small, large)
+	if perGrant := (large - small) / 30; perGrant > 100 {
+		t.Errorf("each grant under a foreign home cost %.0f allocations (%.0f at 10 grants, %.0f at 40); the home's table is built once", perGrant, small, large)
+	}
+}
+
 func TestForeignHomeShieldsQuietOnAnOstreeOwnHome(t *testing.T) {
 	t.Setenv("HOME", "/var/home/u")
 

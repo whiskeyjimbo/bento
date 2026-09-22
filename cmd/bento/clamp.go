@@ -328,6 +328,9 @@ func foreignHomeShields(grants []string) []string {
 		lands, _ := pathresolve.Existing(self)
 		selves[lands] = true
 	}
+	// Keyed by the foreign home: every grant under one asks the same table, and building it
+	// is hundreds of allocations a time.
+	tables := map[string][]denylist.Rule{}
 	reaches := func(g string) bool {
 		// Judged where it LANDS as well as how it is spelled, the same as the clamps
 		// above: a link into another user's store (the target plants one in its own
@@ -343,7 +346,10 @@ func foreignHomeShields(grants []string) []string {
 			if !ok || selves[root] || selves[resolvedRoot] {
 				continue
 			}
-			for _, r := range denylist.Home(root) {
+			if _, built := tables[root]; !built {
+				tables[root] = denylist.Home(root)
+			}
+			for _, r := range tables[root] {
 				if spelling == r.Path || policy.CoversResolved(r.Path, spelling) || policy.CoversResolved(spelling, r.Path) {
 					return true
 				}
