@@ -552,3 +552,39 @@ func TestHookRunnerDirsResolvesEachGrantOncePerPass(t *testing.T) {
 		t.Errorf("eight times the write grants cost %.1fx the symlink resolutions (%d -> %d); each grant should be resolved once per pass, not once per grant it is compared against", ratio, small, large)
 	}
 }
+
+// gitIn runs real git in dir with GIT_* dropped, as hookRunnerDir does.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_")
+	})
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v: %s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// git answers relative to the directory it actually runs in, which is the grant with its
+// symlinks resolved. Joined lexically onto a grant spelled through a symlink, the answer's
+// ".." steps climb out of the link's parent instead and name a directory git never runs
+// hooks from - here one inside the checkout's own grant, so it reaches the report.
+func TestASymlinkedGrantResolvesItsHookDir(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "r")
+	if err := os.MkdirAll(filepath.Join(repo, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "init", "-q")
+	gitIn(t, repo, "config", "core.hooksPath", "a/hooks")
+	link := filepath.Join(repo, "lnk")
+	if err := os.Symlink(filepath.Join("a", "b"), link); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(resolved(repo), "a", "hooks")}
+	if got, unresolved := hookRunnerDirs([]string{link, repo}); !slices.Equal(got, want) || len(unresolved) != 0 {
+		t.Errorf("hookRunnerDirs = %v, unresolved %v; want %v", got, unresolved, want)
+	}
+}

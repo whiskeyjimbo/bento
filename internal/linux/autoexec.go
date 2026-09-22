@@ -124,7 +124,9 @@ var autoExecDirs = []string{
 //
 // resolvedWrites are the write grants already resolved, once per pass by the caller: this
 // runs once per grant, so resolving them here would cost a pass grants squared symlink
-// walks.
+// walks. grant is resolved too: git's relative answer is relative to the physical
+// directory it ran in, and joined onto a name spelled through a symlink its ".." steps
+// would climb out of the link's parent instead.
 func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 	// The deadline is this call's own rather than the run's: changed() asks again after
 	// the target, on the cancelled path too, and a cancelled run's context would fail
@@ -306,8 +308,8 @@ func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
 	for _, w := range writes {
 		resolvedWrites = append(resolvedWrites, resolved(w))
 	}
-	for _, w := range writes {
-		h, err := hookRunnerDir(w, resolvedWrites)
+	for i, w := range writes {
+		h, err := hookRunnerDir(resolvedWrites[i], resolvedWrites)
 		if err != nil {
 			unresolved = append(unresolved, w)
 			continue
