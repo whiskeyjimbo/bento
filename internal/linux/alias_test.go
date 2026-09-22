@@ -1793,3 +1793,46 @@ func TestTheResolveSeamIsAskedOncePerAbsolutePath(t *testing.T) {
 		t.Errorf("an answer given after a mount timed out was kept (%d calls, want 2)", n)
 	}
 }
+
+// BenchmarkHostAliasesUnder measures the hardlink half of the alias scan over a granted
+// tree: a walk of every entry on the credential's device, with an lstat per file. It grows
+// with the size of what is granted, which is what three earlier changes to it were about.
+func BenchmarkHostAliasesUnder(b *testing.B) {
+	root := b.TempDir()
+	cred := filepath.Join(root, "id_rsa")
+	if err := os.WriteFile(cred, []byte("k"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	for i := range 100 {
+		d := filepath.Join(root, "tree", fmt.Sprintf("d%d", i))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			b.Fatal(err)
+		}
+		for j := range 50 {
+			if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("f%d", j)), []byte("x"), 0o644); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	alias := filepath.Join(root, "tree", "d99", "copy")
+	if err := os.Link(cred, alias); err != nil {
+		b.Skipf("hard link unsupported here: %v", err)
+	}
+	id, err := hostStatID(cred)
+	if err != nil {
+		b.Fatal(err)
+	}
+	want := map[fileID]string{id: cred}
+	tree := filepath.Join(root, "tree")
+	// Checked once, outside the timing: a walk that stopped finding the alias would time a
+	// scan that no longer reaches the tree's end.
+	if found, err := hostAliasesUnder(tree, want); err != nil || len(found) != 1 || found[0].Path != alias {
+		b.Fatalf("the fixture's alias was not found: %v, %v", found, err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := hostAliasesUnder(tree, want); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

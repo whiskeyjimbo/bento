@@ -143,3 +143,35 @@ func TestIndexKeepsTheStrictestAtOnePath(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkIndex measures the index the credential hunt asks once per walked file: built
+// over a home's whole rule set, then queried at paths inside a store, beside one, and deep
+// in an unshielded project, which is the ordinary case. Measured through the hunt alone it
+// was credited with taking a real home from 5.9s to 1.8s; this is its own number.
+func BenchmarkIndex(b *testing.B) {
+	rules := append(Home("/home/u"), Runtime("/run/user/1000", "/home/u")...)
+	paths := []string{
+		"/home/u/.ssh/id_ed25519",
+		"/home/u/.ssh.bak",
+		"/home/u/src/github.com/org/project/internal/pkg/deep/file.go",
+	}
+	// Checked once, outside the timing: queries that all missed would time the cheap path.
+	ix := NewIndex(rules)
+	if _, ok := ix.Covers(paths[0]); !ok {
+		b.Fatalf("%s is not covered, so the benchmark is not querying a real home's rules", paths[0])
+	}
+	b.Run("new", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			NewIndex(rules)
+		}
+	})
+	b.Run("covers", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, p := range paths {
+				ix.Covers(p)
+			}
+		}
+	})
+}

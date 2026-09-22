@@ -3,8 +3,10 @@
 package gate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -48,5 +50,40 @@ func TestAliasWalkStopsOnItsBudget(t *testing.T) {
 	budget = 21
 	if _, stopped := aliasesUnder(root, want, &budget); stopped {
 		t.Errorf("a walk that ended exactly on its last entry is not partial; %d left", budget)
+	}
+}
+
+// BenchmarkAliasWalkBudget measures a walk the budget cuts short, which is the shape a
+// large grant takes on validate's default path: its cost is bounded by aliasBudget, not by
+// the tree, so this is the most one granted tree can cost validate.
+func BenchmarkAliasWalkBudget(b *testing.B) {
+	root := b.TempDir()
+	for i := range 60 {
+		d := filepath.Join(root, fmt.Sprintf("d%d", i))
+		if err := os.Mkdir(d, 0o755); err != nil {
+			b.Fatal(err)
+		}
+		for j := range aliasBudget / 59 {
+			if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("f%d", j)), nil, 0o600); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	// A wanted device, so the walk cannot prune the tree by device and spends the budget.
+	fi, err := os.Stat(root)
+	if err != nil {
+		b.Fatal(err)
+	}
+	want := map[fileID]string{{dev: uint64(fi.Sys().(*syscall.Stat_t).Dev)}: "/nowhere"}
+	// Checked once, outside the timing: a budget the tree fits inside would time the whole
+	// walk rather than the bounded one.
+	budget := aliasBudget
+	if _, stopped := aliasesUnder(root, want, &budget); !stopped {
+		b.Fatal("the walk finished inside its budget, so the benchmark is not measuring the stop")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		budget := aliasBudget
+		aliasesUnder(root, want, &budget)
 	}
 }
