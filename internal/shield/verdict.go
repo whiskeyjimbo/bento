@@ -176,7 +176,7 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// for: ~/.aws is a link into a farm directory the grant names, so the store itself
 		// sits inside the grant while neither spelling of the link's own name does. On the
 		// degraded tier that leaves the real credentials read-write.
-		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
+		loc := s.locOf(a.Rule.Path)
 		if s.covers(grant, a.Resolved) || s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveShield
 		}
@@ -227,7 +227,7 @@ func (s Set) Contains(grant string, kind Kind, optIns []string, workspace []deny
 		// pyenv relocated to another disk), the resolved path escapes while the NAME the
 		// host's $PATH walks through stays inside a writable tree, so the run replaces the
 		// link with a directory of planted shims. That is the plant this refuses.
-		loc := filepath.Join(s.fs.Resolve(filepath.Dir(a.Rule.Path)), filepath.Base(a.Rule.Path))
+		loc := s.locOf(a.Rule.Path)
 		if s.covers(grant, a.Resolved) || s.covers(grant, loc) || s.covers(grant, a.Rule.Path) {
 			return a.Rule, AboveWriteShield
 		}

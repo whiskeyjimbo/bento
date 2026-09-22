@@ -72,6 +72,12 @@ type Set struct {
 type mountTarget struct {
 	resolved string
 	ok       bool
+	// loc is the rule's other spelling: its parent resolved, its own name left literal.
+	// That is the planted-link case the write verdicts ask about - the shield's own entry
+	// in a granted directory, replaceable while the target it leads to lies outside. Fixed
+	// by the rule and the host exactly as resolved is, and kept here for the same reason:
+	// the write verdicts ask it of every rule, per grant.
+	loc string
 }
 
 // Applied is a rule paired with where its shield actually mounts. The rule is kept whole
@@ -156,7 +162,7 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	s.targets = make(map[string]mountTarget, len(s.rules))
 	for _, r := range s.rules {
 		rp, ok := s.target(r.Path)
-		s.targets[r.Path] = mountTarget{rp, ok}
+		s.targets[r.Path] = mountTarget{rp, ok, locate(fs, r.Path)}
 	}
 	s.applied = s.Mount(s.rules)
 	return s
@@ -239,6 +245,24 @@ func (s Set) Mount(rules []denylist.Rule) []Applied {
 // ($HOME=/home/u/.aws beside a passwd home of /home/u). Shieldable refuses it for equalling
 // an anchor, but the outer anchor's tree stays reachable, so it is not the swallow-
 // everything case - and unshielding it would open the credential store itself.
+// locate spells a rule the way the write verdicts ask it: the parent resolved, the final
+// component left literal. Where a shield's own name is a symlink out of a granted tree, the
+// resolved path escapes the grant while this spelling does not - so a run that may write the
+// granted directory can replace the link and have the shield mount somewhere it chose.
+func locate(fs FS, path string) string {
+	return filepath.Join(fs.Resolve(filepath.Dir(path)), filepath.Base(path))
+}
+
+// locOf is locate's answer for a rule of the assembled set, resolved once during Assemble.
+// A rule the set did not assemble - a workspace's own, appended by the backend - is not in
+// the memo and is spelled on the spot.
+func (s Set) locOf(path string) string {
+	if t, known := s.targets[path]; known {
+		return t.loc
+	}
+	return locate(s.fs, path)
+}
+
 func (s Set) target(literal string) (string, bool) {
 	rp := s.fs.Resolve(literal)
 	if rp == "/" {
