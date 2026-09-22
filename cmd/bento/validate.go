@@ -357,6 +357,11 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 		fmt.Fprintf(w, "        since it runs on every validate, or a credential store could not be read.\n")
 		fmt.Fprintf(w, "        Any alias listed above is real; there may be others. Narrow the grant to\n")
 		fmt.Fprintf(w, "        check a tree exhaustively.\n")
+		// Named because the budget is spent in grant order: the flag alone cannot say that
+		// the one grant holding an alias was the one never reached.
+		for _, g := range r.CredentialAliasesUnwalked {
+			fmt.Fprintf(w, "        not read to the end: %q\n", g)
+		}
 	}
 	// A property of the host rather than of the manifest, said here because the grants
 	// above are what a reader is weighing and this is the one thing about the shields that
@@ -685,6 +690,9 @@ type policyJSON struct {
 	// down - or from an anchor it could not read - and the two mean different things about
 	// an empty list.
 	CredentialAliasesPartial bool `json:"credential_aliases_partial,omitempty"`
+	// CredentialAliasesUnwalked names the grants the scan's budget ran out before, which is
+	// where a gate that wants the whole answer narrows or checks separately.
+	CredentialAliasesUnwalked []string `json:"credential_aliases_unwalked,omitempty"`
 	// UnshieldableRuntimeDir is XDG_RUNTIME_DIR as this host spells it when no shield can
 	// follow it there, and absent otherwise. The degraded rule set is byte-identical to a
 	// healthy host's - the same two rules, the same count, no refusal - so a gate reading
@@ -825,6 +833,7 @@ func (o *policyJSON) setRunnable(r gate.Runnability) {
 			o.CredentialAliases = append(o.CredentialAliases, credentialAliasJSON{Path: a.Path, Credential: a.Credential})
 		}
 		o.CredentialAliasesPartial = r.CredentialAliasesPartial
+		o.CredentialAliasesUnwalked = r.CredentialAliasesUnwalked
 	}
 	o.UnshieldableRuntimeDir = unshieldableRuntimeDir()
 	o.UnshieldableRelocations = unshieldableRelocations()

@@ -199,8 +199,9 @@ func TestWriteRunnabilitySurfacesEveryField(t *testing.T) {
 		CredentialAliases: []enforce.CredentialAlias{
 			{Path: "/backup/\x1b[2Kid_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
-		CredentialAliasesPartial: true,
-		ShieldCarveUnknown:       true,
+		CredentialAliasesPartial:  true,
+		CredentialAliasesUnwalked: []string{"/srv/\x1b[2Kmodule-cache"},
+		ShieldCarveUnknown:        true,
 	}
 	var out strings.Builder
 	writeRunnability(&out, printed)

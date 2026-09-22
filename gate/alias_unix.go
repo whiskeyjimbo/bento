@@ -67,36 +67,52 @@ type fileID struct {
 // not silently: an anchor that went unread reports the answer partial, since an anchor
 // nothing could look at yields no credential and would otherwise render as a host holding
 // none.
-func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.CredentialAlias, bool) {
-	// One allowance for the whole answer, spent by both walks. The anchor scan runs first
-	// and is charged first: it is the half that decides whether there is anything to want,
-	// so a home whose stores are large would otherwise pay for every entry in them before
-	// the bound below could apply to anything.
+//
+// The second return names the grants the allowance ran out before - in the spelling they
+// were passed in, since those are what a reader narrows - because the budget is spent in
+// grant order, and a lone flag cannot say that a manifest whose first grant is a module
+// cache scanned nothing behind it.
+func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.CredentialAlias, []string, bool) {
 	budget := aliasBudget
-	want, shielded, unread, stoppedAnchors := aliasableCredentials(set, reads, &budget)
+	return credentialAliasesWithin(set, reads, writes, &budget)
+}
+
+// credentialAliasesWithin is credentialAliases on an allowance the caller holds. budget is
+// the one allowance both walks spend, anchors first: they are the half that decides whether
+// there is anything to want, so a home whose stores are large would otherwise pay for every
+// entry in them before the bound could apply to anything.
+func credentialAliasesWithin(set shield.Set, reads, writes []string, budget *int) ([]enforce.CredentialAlias, []string, bool) {
+	want, shielded, unread, stoppedAnchors := aliasableCredentials(set, reads, budget)
+	grants := slices.Concat(reads, writes)
 	// Nothing to compare against, so no tree is walked. On an ordinary host this is the
 	// answer - a credential with one directory entry cannot be hardlink-aliased - and it
 	// is what keeps the walk off the granted trees, which can be a whole checkout. Not a
 	// clean bill where an anchor went unread: nothing was found there because nothing was
-	// looked at.
+	// looked at. And where the anchors ran the allowance out, every grant is unwalked -
+	// what they would have been compared against was never finished.
 	if len(want) == 0 {
-		return nil, unread || stoppedAnchors
+		if stoppedAnchors {
+			return nil, unwalked(grants, nil, nil), true
+		}
+		return nil, nil, unread
+	}
+	roots := make([]string, len(grants))
+	for i, g := range grants {
+		roots[i], _ = pathresolve.Existing(filepath.Clean(g))
 	}
 	var out []enforce.CredentialAlias
-	partial := unread || stoppedAnchors
-	var seen []string
-	for _, g := range slices.Concat(reads, writes) {
-		root, _ := pathresolve.Existing(filepath.Clean(g))
-		// Covering rather than equal: read: ~ alongside read: ~/project walks the nested
-		// tree a second time for entries the enclosing walk already enumerated, and the
-		// budget is one allowance - what a repeat spends is taken from the grants behind it
-		// rather than from nothing. Compact below dedups the output; this dedups the scan.
-		if slices.ContainsFunc(seen, func(s string) bool { return policy.CoversResolved(s, root) }) {
+	whole := map[string]bool{}
+	for i, root := range roots {
+		// A root another one covers is walked by that one, whichever the manifest lists
+		// first: read: ~/project beside read: ~ would otherwise enumerate the nested tree
+		// twice, and what a repeat spends comes out of the grants behind it. Equal roots
+		// keep the first. Compact below dedups the output; this dedups the scan.
+		if slices.ContainsFunc(roots, func(o string) bool { return o != root && policy.CoversResolved(o, root) }) ||
+			slices.Index(roots, root) < i {
 			continue
 		}
-		seen = append(seen, root)
-		found, stopped := aliasesUnder(root, want, &budget)
-		partial = partial || stopped
+		found, stopped := aliasesUnder(root, want, budget)
+		whole[root] = !stopped
 		for _, a := range found {
 			// A grant containing the credential itself walks over the shielded path,
 			// whose identity is by definition wanted. The shield covers that path; only a
@@ -120,8 +136,28 @@ func credentialAliases(set shield.Set, reads, writes []string) ([]enforce.Creden
 		}
 		return strings.Compare(a.Credential, b.Credential)
 	})
+	short := unwalked(grants, roots, whole)
 	// Overlapping grants (read: ~ alongside read: ~/project) walk the same file twice.
-	return slices.Compact(out), partial
+	return slices.Compact(out), short, unread || stoppedAnchors || len(short) > 0
+}
+
+// unwalked is the grants no walk read to the end: a grant is covered where its own root,
+// or one enclosing it, was walked whole. A grant nested under a walk that stopped is named
+// too, since the walk may have stopped before reaching it. Sorted and deduplicated, as a
+// grant can be both read and written.
+func unwalked(grants, roots []string, whole map[string]bool) []string {
+	var out []string
+	for i, g := range grants {
+		read := false
+		for w, done := range whole {
+			read = read || done && policy.CoversResolved(w, roots[i])
+		}
+		if !read {
+			out = append(out, g)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // aliasBudget is how many directory entries the scan walks before the answer is cut short:

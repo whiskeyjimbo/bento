@@ -95,6 +95,14 @@ type Runnability struct {
 	// for. Said out loud rather than left to the silence, which otherwise means the trees
 	// were read whole and nothing was found.
 	CredentialAliasesPartial bool
+	// CredentialAliasesUnwalked names the grants the entry budget ran out before, in the
+	// spelling the policy gave them. The budget is spent in grant order, so where it runs
+	// out is a fact about the manifest's ordering rather than about where aliases are
+	// likely to be, and a reader needs the names to narrow the right grant or check it on
+	// its own. Every grant is named where the credential anchors alone ran the budget
+	// out. Empty does not make the scan whole: an unread anchor sets
+	// CredentialAliasesPartial with every grant walked.
+	CredentialAliasesUnwalked []string
 	// Unresolved marks a question nothing here answered: the caller could not resolve the
 	// manifest's paths and signals that by passing a nil policy, so every field above is
 	// empty because none was asked. Reported as unknown rather than as a pass - that host
@@ -172,7 +180,7 @@ func Check(resolved *policy.Policy) Runnability {
 		r.ShieldsUnknownReason = err.Error()
 		return r
 	}
-	r.CredentialAliases, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
+	r.CredentialAliases, r.CredentialAliasesUnwalked, r.CredentialAliasesPartial = credentialAliases(set, resolved.Read, resolved.Write)
 	return r
 }
 

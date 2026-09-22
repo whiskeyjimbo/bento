@@ -1281,8 +1281,9 @@ func TestEveryRunnabilityFieldReachesTheUser(t *testing.T) {
 		CredentialAliases: []enforce.CredentialAlias{
 			{Path: "/backup/id_rsa", Credential: "/home/u/.ssh/id_rsa"},
 		},
-		CredentialAliasesPartial: true,
-		ShieldCarveUnknown:       true,
+		CredentialAliasesPartial:  true,
+		CredentialAliasesUnwalked: []string{"/srv/module-cache"},
+		ShieldCarveUnknown:        true,
 	}
 	render := func(r gate.Runnability) string {
 		var out strings.Builder

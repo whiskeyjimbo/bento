@@ -322,6 +322,9 @@ func writeRunnability(w io.Writer, r gate.Runnability) {
 	if r.CredentialAliasesPartial {
 		fmt.Fprintf(w, "embed: note: the scan for those second names did not cover everything - a granted tree ran past the scan's bound, or a credential store could not be read - so any listed above is real and there may be others\n")
 	}
+	for _, g := range r.CredentialAliasesUnwalked {
+		fmt.Fprintf(w, "embed: note: the scan for second names ran out before reading this grant to the end: %q\n", g)
+	}
 }
 
 // writeFailure is the failed run's report. res carries a populated Report even here,
