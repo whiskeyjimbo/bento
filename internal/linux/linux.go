@@ -1107,12 +1107,9 @@ func buildExtraDeny(denyPaths []string, sb sandbox) ([]denylist.Rule, error) {
 		// learns its deny cannot be shielded instead of having it accepted and then
 		// silently dropped - a shield over a home or one of its ancestors would take the
 		// whole grant surface with it, so there is nothing to enforce either way.
-		// It is a check at this instant, not a guarantee: denyArgs resolves again at
-		// compile time and drops silently what fails there, so a symlink component
-		// rewritten in between passes here and vanishes later. Closing that would mean
-		// resolving once and carrying the result, which costs the shield machinery its
-		// own late resolution of grants; the residue is an unenforced CALLER deny, never
-		// an exposure of anything bento shields itself.
+		// denyArgs sees the same answer at compile time: sb.resolve answers each absolute
+		// path once per run (TestTheResolveSeamIsAskedOncePerAbsolutePath), so a symlink
+		// rewritten after this check cannot make the deny vanish there.
 		if rp == "/dev/null" {
 			return nil, fmt.Errorf("deny path %q resolves to %q, which every program in the sandbox needs writable as its stream sink", p, rp)
 		}

@@ -1776,8 +1776,12 @@ func TestTheResolveSeamIsAskedOncePerAbsolutePath(t *testing.T) {
 		sb.resolve("/home/u/.config")
 		sb.resolve("rel/path")
 	}
+	// Every helper takes the sandbox by value; the copies must answer from one memo, or
+	// two verdicts about the same path could see two different hosts.
+	cp := sb
+	cp.resolve("/home/u/.config")
 	if n := calls["/home/u/.config"]; n != 1 {
-		t.Errorf("an absolute path was resolved %d times, want once", n)
+		t.Errorf("an absolute path was resolved %d times across copies of the sandbox, want once", n)
 	}
 	if n := calls["rel/path"]; n != 3 {
 		t.Errorf("a relative path was resolved %d times, want every time", n)
