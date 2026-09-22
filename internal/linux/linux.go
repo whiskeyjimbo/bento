@@ -113,7 +113,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// anchors this run's workspace shields on a repository that never existed.
 	reclaimStrandedShields(proc.Stderr)
 
-	report := e.Probe(ctx)
+	report := e.probed(ctx, opts)
 
 	bwrap, _, err := resolveBwrap()
 	if err != nil {

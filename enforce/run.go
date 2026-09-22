@@ -149,7 +149,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		}
 	}
 	wanted := requiredLayers(p, opts)
-	probed := e.Probe(ctx)
+	probed := probeFor(ctx, e, wanted)
 	required := probed.forLayers(wanted)
 	if err := composedAdmission(p, opts, probed, required); err != nil {
 		return Result{}, screenRemedies(err, p, opts, probed, required)
@@ -163,6 +163,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		RecordExec:         opts.RecordExec,
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
 		RunID:              opts.RunID,
+		Probed:             &probed,
 	})
 	res.Degraded = degraded
 
@@ -429,6 +430,23 @@ func (l Layer) ReportOnly() bool {
 // gate. A caller with no options passes the zero value.
 func RequiredLayers(p *policy.Policy, opts Options) []Layer {
 	return requiredLayers(p, opts)
+}
+
+// layerProber is a backend that can probe only the layers a run requires. A run's
+// admission, the report it returns and the backend's own reading all rest on that set, so
+// a layer outside it is measured for nothing: on Linux the three limits layers cost seven
+// execs and two round trips to the systemd user manager, which a manifest with no limits
+// - the commonest kind - never reads. Probe itself stays whole, because doctor reports
+// every layer whatever a manifest would ask for.
+type layerProber interface {
+	ProbeFor(ctx context.Context, layers []Layer) Report
+}
+
+func probeFor(ctx context.Context, e Enforcer, layers []Layer) Report {
+	if lp, ok := e.(layerProber); ok {
+		return lp.ProbeFor(ctx, layers)
+	}
+	return e.Probe(ctx)
 }
 
 // requiredLayers returns the layers a run actually depends on - what the policy

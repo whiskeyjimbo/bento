@@ -160,16 +160,19 @@ func cgroupPathOf(pid string) (string, bool) {
 // limitControllers pairs each limits layer with the cgroup file that carries its cap and
 // the manifest field that asks for it. Shared by the two readers of an attestation - the
 // report reconcile and profiling's refusal - so the two cannot drift on which controller
-// answers for which layer.
-var limitControllers = []struct {
+// answers for which layer. The probe reads it too, to tell a run that requires a limits
+// layer from one that does not.
+var limitControllers = []limitController{
+	{enforce.LayerLimitsMemory, func(l policy.Limits) bool { return l.Memory != "" }, "memory.max", "memory"},
+	{enforce.LayerLimitsPIDs, func(l policy.Limits) bool { return l.PIDs > 0 }, "pids.max", "pids"},
+	{enforce.LayerLimitsCPU, func(l policy.Limits) bool { return l.CPU != "" }, "cpu.max", "cpu"},
+}
+
+type limitController struct {
 	layer     enforce.Layer
 	requested func(policy.Limits) bool
 	file      string
 	name      string
-}{
-	{enforce.LayerLimitsMemory, func(l policy.Limits) bool { return l.Memory != "" }, "memory.max", "memory"},
-	{enforce.LayerLimitsPIDs, func(l policy.Limits) bool { return l.PIDs > 0 }, "pids.max", "pids"},
-	{enforce.LayerLimitsCPU, func(l policy.Limits) bool { return l.CPU != "" }, "cpu.max", "cpu"},
 }
 
 // noteScopeLimits reconciles the limits layers against what the scope's cgroup actually

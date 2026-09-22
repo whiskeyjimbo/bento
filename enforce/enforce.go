@@ -140,6 +140,16 @@ type RunOptions struct {
 	// here with a non-empty id has already been told a scope will be created. Whether
 	// the id is well-formed is settled there too.
 	RunID string
+
+	// Probed is the host probe the core took to admit this run, handed on so the backend
+	// reports from that reading rather than taking a second one moments later. A probe
+	// builds namespaces and asks the systemd user manager, so taking it twice doubled the
+	// cost of every launch, and on a manager too busy to answer it repeated the slowest
+	// part. Nil means the caller took none and the backend probes for itself.
+	//
+	// It may cover only the layers this run requires (see Run), so a backend must not read
+	// a layer from it that the policy did not ask for.
+	Probed *Report
 }
 
 // NetworkGate decides an egress host the manifest's allowlist does not permit.

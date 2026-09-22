@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,6 +62,25 @@ func degradedFencesOK() bool {
 // AppArmor restriction, container policies, and kernel builds all interact, and
 // the only trustworthy answer is an empirical one.
 func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
+	return e.probe(ctx, true)
+}
+
+// ProbeFor is Probe for a run that requires only layers, which enforce.Run asks instead of
+// Probe. The one reading it can skip is the limits one: seven execs and two round trips to
+// the systemd user manager, for three layers a manifest without limits never requires, and
+// on a manager too busy to answer the slowest part of the whole probe. Everything else is
+// measured as Probe measures it - the namespace canary backs both core layers, and the
+// report-only layers ride along on every run.
+func (e *Enforcer) ProbeFor(ctx context.Context, layers []enforce.Layer) enforce.Report {
+	return e.probe(ctx, slices.ContainsFunc(limitControllers, func(c limitController) bool {
+		return slices.Contains(layers, c.layer)
+	}))
+}
+
+// probe measures the host, and the limits layers only where limits is set. Unmeasured, they
+// are reported Unavailable rather than left out, for the reason Enforcer.Probe's contract
+// gives: an absent layer and an unknown one must read the same.
+func (e *Enforcer) probe(ctx context.Context, limits bool) enforce.Report {
 	var r enforce.Report
 
 	// bwrap's filesystem and network confinement both depend on standing up an
@@ -94,7 +114,10 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 		r.AddStatus(ls)
 	}
 
-	scopeOK, scopeReason := canCreateScope(ctx)
+	scopeOK, scopeReason := false, "not measured: this run requires no resource limits"
+	if limits {
+		scopeOK, scopeReason = canCreateScope(ctx)
+	}
 	// Default Unavailable, not the zero value (Enforced): delegation is measured only
 	// when a scope is creatable, and a host whose controllers were never read must not
 	// report a limit as enforced - admission would then admit an unenforceable cap.
@@ -119,6 +142,15 @@ func (e *Enforcer) Probe(ctx context.Context) enforce.Report {
 	r.AddStatus(autoExecReportLayer())
 
 	return r
+}
+
+// probed is the host reading a run reports from: the one enforce.Run took for admission
+// where it handed that on, and a fresh probe for a caller that took none.
+func (e *Enforcer) probed(ctx context.Context, opts enforce.RunOptions) enforce.Report {
+	if opts.Probed == nil {
+		return e.Probe(ctx)
+	}
+	return *opts.Probed
 }
 
 // autoExecReportLayer reports whether this host can answer where a write grant's

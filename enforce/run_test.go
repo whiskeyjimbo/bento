@@ -33,6 +33,10 @@ type fakeEnforcer struct {
 	gotDenyPaths     []string
 	gotReadOnlyPaths []string
 	gotRunID         string
+	// probes counts the calls to Probe, and gotProbed is the report Run was handed, so a
+	// test can assert the backend reports from the reading admission took.
+	probes    int
+	gotProbed *Report
 	// silentStage makes the fake return a stage that never attested its setup, which
 	// Run refuses. A backend that reached the target attests, so that is the default
 	// here rather than Result.Setup's zero value - otherwise every test that only
@@ -40,7 +44,10 @@ type fakeEnforcer struct {
 	silentStage bool
 }
 
-func (f *fakeEnforcer) Probe(context.Context) Report { return f.probe }
+func (f *fakeEnforcer) Probe(context.Context) Report {
+	f.probes++
+	return f.probe
+}
 
 func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opts RunOptions) (Result, error) {
 	f.ran = true
@@ -50,6 +57,7 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opt
 	f.gotDenyPaths = opts.DenyPaths
 	f.gotReadOnlyPaths = opts.ReadOnlyPaths
 	f.gotRunID = opts.RunID
+	f.gotProbed = opts.Probed
 	if opts.Gate != nil {
 		f.gotGate = opts.Gate(ctx, "example.com", "443")
 	}

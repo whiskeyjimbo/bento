@@ -32,7 +32,7 @@ import (
 // executables. It is the same source the bwrap binds draw on, so the two tiers grant
 // the same paths - the difference is the mechanism, not the policy.
 func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enforce.Process, opts enforce.RunOptions) (res enforce.Result, err error) {
-	report := e.degradedProbe(ctx)
+	report := e.degradedProbe(ctx, opts)
 
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
 	// seams) along with the entrypoint and interpreter. gated is false: the degraded
@@ -412,8 +412,8 @@ func exitStatusOf(st *os.ProcessState) (code int, signaled bool, sig int) {
 // Only these two layers. The exec and limits layers are measurements of the host that
 // hold on this tier too - the launcher installs the same seccomp filters and wraps the
 // same systemd scope - and are left as the probe found them.
-func (e *Enforcer) degradedProbe(ctx context.Context) enforce.Report {
-	r := e.Probe(ctx)
+func (e *Enforcer) degradedProbe(ctx context.Context, opts enforce.RunOptions) enforce.Report {
+	r := e.probed(ctx, opts)
 	// Rebuilt through filesystemLayer rather than patched, so this tier's verdict and its
 	// disclosure of what it does not confine are the same text the userns-blocked host
 	// gets - one account of the tier, not two that can drift.
