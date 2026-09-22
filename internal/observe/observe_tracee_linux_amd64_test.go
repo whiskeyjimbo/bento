@@ -35,6 +35,8 @@ import (
 //	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
 //	nullpath   N utimensat/futimesat calls with a NULL pathname.
 //	lostrename N renames with BOTH pathnames unmapped, from one call site.
+//	getpid     N getpid calls, which the decoder ignores.
+//	statabs    N newfstatat calls on one absolute pathname that exists.
 //	badhow     openat2 with a readable pathname but an unmapped open_how.
 //	plantpath  a sibling overwrites the victim thread's pathname buffer mid-syscall.
 //	execve     spawns via execve(2), the path the exec-block filter denies.
@@ -115,6 +117,25 @@ func TestObserveTraceeHelper(t *testing.T) {
 		// drop key that does not distinguish the two arguments reports it as one.
 		for range n {
 			_, _, _ = syscall.Syscall(syscall.SYS_RENAME, 0x1, 0x2, 0)
+		}
+	case "getpid":
+		// A syscall the decoder ignores, so all the tracer pays for it is the per-stop
+		// cost every syscall carries.
+		for range n {
+			_, _, _ = syscall.Syscall(syscall.SYS_GETPID, 0, 0, 0)
+		}
+	case "statabs":
+		// The same absolute, existing pathname every time: one pathname read per call,
+		// and every call after the first a dedup hit.
+		path, err := syscall.BytePtrFromString(os.Getenv("BENTO_OBSERVE_TRACEE_DIR"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "TRACEE_PATH_ERR", err)
+			os.Exit(9)
+		}
+		var st unix.Stat_t
+		for range n {
+			_, _, _ = syscall.Syscall6(unix.SYS_NEWFSTATAT, ^uintptr(99),
+				uintptr(unsafe.Pointer(path)), uintptr(unsafe.Pointer(&st)), 0, 0, 0)
 		}
 	case "nullpath":
 		// utimensat(fd, NULL, ...) and futimesat(fd, NULL, ...) - the kernel forms of
@@ -563,11 +584,10 @@ func plantProbeTarget(t *testing.T, dir string) string {
 
 // heldBy counts the pathnames a pid is still waiting on an exit stop to resolve. The
 // observer only ever releases them in bulk, so nothing in the package answers this.
-func heldBy(held map[string]heldPath, pid int) int {
+func heldBy(held map[stopID]heldPath, pid int) int {
 	n := 0
-	prefix := fmt.Sprintf("%d\x00", pid)
 	for key := range held {
-		if strings.HasPrefix(key, prefix) {
+		if key.pid == pid {
 			n++
 		}
 	}
@@ -794,29 +814,29 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		op   byte
-		held map[string]heldPath
+		held map[stopID]heldPath
 		want int
 	}{
-		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, map[string]heldPath{}, 0},
-		{"exit holding nothing", unix.PTRACE_SYSCALL_INFO_EXIT, map[string]heldPath{}, 0},
+		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, map[stopID]heldPath{}, 0},
+		{"exit holding nothing", unix.PTRACE_SYSCALL_INFO_EXIT, map[stopID]heldPath{}, 0},
 		{
 			"exit holding a pathname",
 			unix.PTRACE_SYSCALL_INFO_EXIT,
-			map[string]heldPath{stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			map[stopID]heldPath{stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
 			1,
 		},
 		{
 			// Another pid's pending probe says nothing about this one's stop.
 			"exit while a sibling holds a pathname",
 			unix.PTRACE_SYSCALL_INFO_EXIT,
-			map[string]heldPath{stopKey(dead+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			map[stopID]heldPath{stopKey(dead+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
 			0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var res Result
-			count, release, forget := dropOnce(map[string]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, forget, tc.held, map[int]bool{}, &res)
+			drops := dropOnce(map[dropID]bool{}, dead, &res.Dropped)
+			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, drops, tc.held, map[int]bool{}, &res)
 			if res.Dropped != tc.want {
 				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
 			}
@@ -834,14 +854,14 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 	if err := syscall.PtraceGetRegs(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
 		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
 	}
-	held := map[string]heldPath{
+	held := map[stopID]heldPath{
 		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}):   {path: "/etc/hosts", readOK: true},
 		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS}): {path: "/etc/passwd", readOK: true},
 	}
 
 	var res Result
-	count, release, forget := dropOnce(map[string]bool{}, dead, &res.Dropped)
-	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, count, release, forget, held, map[int]bool{}, &res)
+	drops := dropOnce(map[dropID]bool{}, dead, &res.Dropped)
+	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, drops, held, map[int]bool{}, &res)
 	res.Dropped += releaseHeldOf(held, dead)
 
 	if res.Dropped != 2 {
@@ -862,19 +882,19 @@ func TestAnUnreadableStopCountsItsHeldProbeOnce(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		held map[string]heldPath
+		held map[stopID]heldPath
 		want int
 	}{
-		{"holding nothing", map[string]heldPath{}, 0},
+		{"holding nothing", map[stopID]heldPath{}, 0},
 		{
 			"holding a pathname",
-			map[string]heldPath{stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			map[stopID]heldPath{stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
 			0,
 		},
 		{
 			// Another pid's pending probe is still waiting on a stop of its own.
 			"while a sibling holds a pathname",
-			map[string]heldPath{stopKey(pid+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			map[stopID]heldPath{stopKey(pid+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
 			1,
 		},
 	} {
@@ -902,16 +922,16 @@ func TestAnUnreadableStopCountsItsHeldProbeOnce(t *testing.T) {
 func TestAnUnreadableStopEndsItsPairsDedup(t *testing.T) {
 	const pid = 4242
 	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0xcafe}
-	drops := map[string]bool{}
-	held := map[string]heldPath{}
+	drops := map[dropID]bool{}
+	held := map[stopID]heldPath{}
 
 	var counted int
-	count, _, forget := dropOnce(drops, pid, &counted)
-	count(&regs, 0)
+	drop := dropOnce(drops, pid, &counted)
+	drop.count(&regs, 0)
 	// The exit stop of that pair is unreadable, so its release never runs.
-	counted += unreadableStopLoss(held, pid, forget)
+	counted += unreadableStopLoss(held, pid, drop.forget)
 	// The next iteration of the same call site: same pid, same syscall, same Rip.
-	count(&regs, 0)
+	drop.count(&regs, 0)
 
 	if counted != 3 {
 		t.Errorf("counted = %d, want 3 (a drop, the unreadable stop, then the next iteration's drop); 2 is the stranded key suppressing the second call site's loss", counted)
@@ -928,22 +948,22 @@ func TestNativeSyscallResolvesADeadThreadsPhantomStops(t *testing.T) {
 	if _, _, err := syscallInfo(dead); !errors.Is(err, syscall.ESRCH) {
 		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
 	}
-	holding := map[string]heldPath{
+	holding := map[stopID]heldPath{
 		stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true},
 	}
 
 	for _, tc := range []struct {
 		name string
 		seed []byte
-		held map[string]heldPath
+		held map[stopID]heldPath
 		want int
 	}{
-		{"at the entry stop after an exit stop", []byte{unix.PTRACE_SYSCALL_INFO_EXIT}, map[string]heldPath{}, 0},
-		{"at the exit stop after an entry stop, holding nothing", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, map[string]heldPath{}, 0},
+		{"at the entry stop after an exit stop", []byte{unix.PTRACE_SYSCALL_INFO_EXIT}, map[stopID]heldPath{}, 0},
+		{"at the exit stop after an entry stop, holding nothing", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, map[stopID]heldPath{}, 0},
 		{"at the exit stop after an entry stop, holding a pathname", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, holding, 1},
-		{"after the initial stop", []byte{unix.PTRACE_SYSCALL_INFO_NONE}, map[string]heldPath{}, 1},
-		{"after a seccomp stop", []byte{unix.PTRACE_SYSCALL_INFO_SECCOMP}, map[string]heldPath{}, 1},
-		{"with no parity recorded", nil, map[string]heldPath{}, 1},
+		{"after the initial stop", []byte{unix.PTRACE_SYSCALL_INFO_NONE}, map[stopID]heldPath{}, 1},
+		{"after a seccomp stop", []byte{unix.PTRACE_SYSCALL_INFO_SECCOMP}, map[stopID]heldPath{}, 1},
+		{"with no parity recorded", nil, map[stopID]heldPath{}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lastOp := map[int]byte{}
@@ -1226,13 +1246,13 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tracees := map[int]bool{leader: true, tc.old: true}
 			lastOp := map[int]byte{tc.old: unix.PTRACE_SYSCALL_INFO_ENTRY}
-			held := map[string]heldPath{}
+			held := map[stopID]heldPath{}
 			for _, pid := range []int{leader, tc.old} {
 				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT})] = heldPath{path: "/etc/hosts", readOK: true}
 				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_ACCESS})] = heldPath{path: "/etc/passwd", readOK: true}
 			}
 
-			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held, map[string]bool{}); lost != tc.wantLost {
+			if lost := forgetRetiredTid(leader, tc.old, tracees, lastOp, held, map[dropID]bool{}); lost != tc.wantLost {
 				t.Errorf("lost = %d, want %d - a pathname held by a thread that can never stop again is an observation no exit stop will ever resolve", lost, tc.wantLost)
 			}
 			if got := tracees[tc.old]; got != tc.wantKept {
@@ -1272,14 +1292,14 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0xdeadbeef}
 	tracees := map[int]bool{tid: true}
 	lastOp := map[int]byte{tid: unix.PTRACE_SYSCALL_INFO_ENTRY}
-	held := map[string]heldPath{stopKey(tid, &regs): {path: "/etc/shadow", readOK: true}}
+	held := map[stopID]heldPath{stopKey(tid, &regs): {path: "/etc/shadow", readOK: true}}
 	// The dead thread's in-flight drop key, left behind by a pair whose exit stop never
 	// reached its release. It was already counted; what it must not do is dedup away the
 	// NEXT thread's drop at the same call site.
-	drops := map[string]bool{}
+	drops := map[dropID]bool{}
 	var counted int
-	count, _, _ := dropOnce(drops, tid, &counted)
-	count(&regs, 0)
+	drop := dropOnce(drops, tid, &counted)
+	drop.count(&regs, 0)
 
 	if lost := forgetExitedTid(tid, tracees, lastOp, held, drops, map[int]bool{}); lost != 1 {
 		t.Errorf("lost = %d, want 1 - the probe's exit stop can never arrive, so whether it succeeded is unknowable", lost)
@@ -1299,7 +1319,7 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 		t.Errorf("recorded %q for a tid the kernel reused; a pathname left held is one the next thread's exit stop will claim", recorded)
 	}
 	counted = 0
-	count(&regs, 0)
+	drop.count(&regs, 0)
 	if counted != 1 {
 		t.Errorf("the reused tid's lost access counted %d, want 1 - a drop key the dead thread left in flight dedups it away, and Dropped is the one channel that tells the user the manifest is short", counted)
 	}
@@ -1471,5 +1491,63 @@ func TestTraceRecordsAConnectWhoseAddrlenHasAHighHalf(t *testing.T) {
 		t.Errorf("no access recorded for the connected socket %q; accesses: %v", sock, res.Accesses)
 	} else if a.Write {
 		t.Errorf("connect to %q recorded as a write, want a read", sock)
+	}
+}
+
+// tracerCost runs a tracee mode at two scales under the real observer and reports what
+// each extra tracee syscall cost the tracer: heap allocations, and read-family syscalls
+// (/proc/self/io's syscr). Differencing the two scales cancels everything that is paid once
+// per trace - the helper's startup, the root's exec images - so what is left is the per-call
+// constant, which at a million calls is the whole bill.
+//
+// Both counts are process-wide, which is sound only because nothing else in this test
+// binary runs during a trace: no test here is parallel, and Trace is single-flight.
+func tracerCost(t *testing.T, mode string) (mallocs, reads float64) {
+	t.Helper()
+	const small, large = 100, 10_000
+	dir := t.TempDir()
+	measure := func(n int) (mallocs, reads uint64) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		m0, r0 := ms.Mallocs, readSyscalls(t)
+		traceHelper(t, mode, dir, n)
+		runtime.ReadMemStats(&ms)
+		return ms.Mallocs - m0, readSyscalls(t) - r0
+	}
+	ms, rs := measure(small)
+	ml, rl := measure(large)
+	extra := float64(large - small)
+	mallocs, reads = (float64(ml)-float64(ms))/extra, (float64(rl)-float64(rs))/extra
+	t.Logf("%s: %.2f allocations, %.2f read syscalls per extra call", mode, mallocs, reads)
+	return mallocs, reads
+}
+
+// readSyscalls reports how many read-family syscalls this process has made.
+func readSyscalls(t *testing.T) uint64 {
+	t.Helper()
+	b, err := os.ReadFile("/proc/self/io")
+	if err != nil {
+		t.Skipf("no per-process I/O accounting to count reads with: %v", err)
+	}
+	for line := range strings.Lines(string(b)) {
+		if v, ok := strings.CutPrefix(line, "syscr: "); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				t.Fatalf("parsing syscr %q: %v", v, err)
+			}
+			return n
+		}
+	}
+	t.Fatalf("no syscr in /proc/self/io:\n%s", b)
+	return 0
+}
+
+// A syscall the decoder ignores must cost the tracer no allocation. Every syscall takes an
+// entry and an exit stop, so anything the per-stop bookkeeping allocates - a formatted key
+// built only to find an empty map, registers the compiler moves to the heap - is paid on
+// every syscall the target makes, file or not.
+func TestTraceAllocatesNothingPerIgnoredSyscall(t *testing.T) {
+	if mallocs, _ := tracerCost(t, "getpid"); mallocs >= 1 {
+		t.Errorf("%.2f allocations per ignored syscall, want < 1", mallocs)
 	}
 }

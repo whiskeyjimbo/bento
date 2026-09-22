@@ -279,12 +279,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// The in-flight entry/exit pairs dropOnce is deduplicating, kept apart from the
 	// recorded-path set above: entries here are released as each pair completes, and
 	// mixing the two lifetimes in one map is how a stale key goes unnoticed.
-	drops := map[string]bool{}
+	drops := map[dropID]bool{}
 	// Pathnames the entry stop of an existence syscall resolved, waiting for the exit
 	// stop's return value to say whether the call succeeded. Keyed and released per
 	// entry/exit pair like the drop counter, so a stop that is not this pair's - an
 	// rt_sigreturn landing between the two, say - cannot be mistaken for it.
-	held := map[string]heldPath{}
+	held := map[stopID]heldPath{}
 	// The op of each pid's last syscall stop that was read successfully - the parity a
 	// failed read has no op of its own to supply. See nextStop.
 	lastOp := map[int]byte{}
@@ -442,9 +442,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// foreign ABI and the amd64 table would misread it. Recording on both entry
 			// and exit is deduplicated, so no enter/exit bookkeeping beyond the drop
 			// counter's own.
-			count, release, forget := dropOnce(drops, wpid, &res.Dropped)
-			if op, native := nativeSyscall(wpid, lastOp, held, forget, &res.Dropped); native {
-				inspect(wpid, op, record, recordProbe, openResult, count, release, forget, held, execSpawn, &res)
+			drop := dropOnce(drops, wpid, &res.Dropped)
+			if op, native := nativeSyscall(wpid, lastOp, held, drop.forget, &res.Dropped); native {
+				inspect(wpid, op, record, recordProbe, openResult, drop, held, execSpawn, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -561,7 +561,7 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 //
 // This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
 // and passes here, and inspect drops it on the tag its syscall numbers carry.
-func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, forgetDrops func(), dropped *int) (op byte, native bool) {
+func nativeSyscall(pid int, lastOp map[int]byte, held map[stopID]heldPath, forgetDrops func(), dropped *int) (op byte, native bool) {
 	op, arch, err := syscallInfo(pid)
 	if err != nil {
 		// A read that failed says nothing about which stop this was, so the parity it
@@ -609,7 +609,7 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[string]heldPath, forge
 // failure this channel exists to prevent, so unknown must never mean "suppress". Nothing is
 // released there: what was lost is a stop of unknown kind, not the held pathnames, and those
 // are still the exit sweep's to count.
-func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
+func deadThreadLoss(op byte, held map[stopID]heldPath, pid int) int {
 	switch op {
 	case unix.PTRACE_SYSCALL_INFO_ENTRY:
 		return 0
@@ -643,7 +643,7 @@ func deadThreadLoss(op byte, held map[string]heldPath, pid int) int {
 // caller of forgetDropsOf, and its next iteration of the same libc call site rebuilds the
 // identical key. Left in place, that key suppresses every later drop at that site for the
 // life of the tracee.
-func unreadableStopLoss(held map[string]heldPath, pid int, forgetDrops func()) int {
+func unreadableStopLoss(held map[stopID]heldPath, pid int, forgetDrops func()) int {
 	releaseHeldOf(held, pid)
 	forgetDrops()
 	return 1
@@ -803,36 +803,60 @@ const dropSlots = 2
 // key on a tid the kernel is free to reuse, so forgetDropsOf sweeps it as the wait status
 // arrives. The first leaves it on a tid that is still very much alive and still looping
 // through the same call site, where every later iteration dedups against a key whose pair
-// ended - the undercount this channel exists to prevent, and why forget is returned
-// alongside: unreadableStopLoss sweeps the pid there, the same way it releases the
+// ended - the undercount this channel exists to prevent, and why the counter carries
+// a forget: unreadableStopLoss sweeps the pid there, the same way it releases the
 // pathname the pair was holding.
-func dropOnce(inFlight map[string]bool, pid int, n *int) (count func(*syscall.PtraceRegs, int), release func(*syscall.PtraceRegs), forget func()) {
-	key := func(regs *syscall.PtraceRegs, slot int) string {
-		return fmt.Sprintf("%s\x00%d", stopKey(pid, regs), slot)
-	}
-	count = func(regs *syscall.PtraceRegs, slot int) {
-		k := key(regs, slot)
-		if inFlight[k] {
-			return
-		}
-		inFlight[k] = true
-		*n++
-	}
-	release = func(regs *syscall.PtraceRegs) {
-		for slot := range dropSlots {
-			delete(inFlight, key(regs, slot))
-		}
-	}
-	forget = func() { forgetDropsOf(inFlight, pid) }
-	return count, release, forget
+//
+// It is a value with methods rather than a set of closures because it is built at every
+// stop of every syscall, file or not: closures capturing the pid escape to the heap, and
+// take the registers handed to them along.
+func dropOnce(inFlight map[dropID]bool, pid int, n *int) dropCounter {
+	return dropCounter{inFlight: inFlight, pid: pid, n: n}
 }
 
-// stopKey identifies one syscall's entry/exit pair: the tracee, plus the syscall's number
+// dropCounter is one stop's view of the in-flight drop set. See dropOnce.
+type dropCounter struct {
+	inFlight map[dropID]bool
+	pid      int
+	n        *int
+}
+
+// dropID is one pathname argument of one in-flight syscall pair.
+type dropID struct {
+	stop stopID
+	slot int
+}
+
+func (d dropCounter) count(regs *syscall.PtraceRegs, slot int) {
+	k := dropID{stopKey(d.pid, regs), slot}
+	if d.inFlight[k] {
+		return
+	}
+	d.inFlight[k] = true
+	*d.n++
+}
+
+func (d dropCounter) release(regs *syscall.PtraceRegs) {
+	for slot := range dropSlots {
+		delete(d.inFlight, dropID{stopKey(d.pid, regs), slot})
+	}
+}
+
+func (d dropCounter) forget() { forgetDropsOf(d.inFlight, d.pid) }
+
+// stopID identifies one syscall's entry/exit pair: the tracee, plus the syscall's number
 // and instruction pointer, which are identical at both stops. It is NOT unique across
 // calls - a libc call site issuing the same syscall in a loop repeats it every iteration -
-// so everything keyed on it must release the entry as the pair completes.
-func stopKey(pid int, regs *syscall.PtraceRegs) string {
-	return fmt.Sprintf("%d\x00%d\x00%d", pid, regs.Orig_rax, regs.Rip)
+// so everything keyed on it must release the entry as the pair completes. A struct rather
+// than a formatted string because an exit stop looks its pair up whether or not anything
+// is held, which is on every syscall the target makes.
+type stopID struct {
+	pid     int
+	nr, rip uint64
+}
+
+func stopKey(pid int, regs *syscall.PtraceRegs) stopID {
+	return stopID{pid: pid, nr: regs.Orig_rax, rip: regs.Rip}
 }
 
 // forgetRetiredTid drops every trace of the tid an execve retired, and reports how many
@@ -867,7 +891,7 @@ func stopKey(pid int, regs *syscall.PtraceRegs) string {
 // syscall stops alternate, so every pair the execer opened closed before its execve entry stop,
 // and there should be nothing left to release. It is swept rather than assumed empty because
 // the cost of being wrong is an uncounted access, which is what Dropped exists to prevent.
-func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool) int {
+func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[stopID]heldPath, drops map[dropID]bool) int {
 	if old == wpid {
 		return 0
 	}
@@ -896,7 +920,7 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // swept for the same reason and reports no loss: a tid that exited without reaching its exec
 // event ran no exec, and left behind it would answer for whatever thread the kernel hands the
 // tid to next - with exec: all as the price of being wrong.
-func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[string]heldPath, drops map[string]bool, execSpawn map[int]bool) int {
+func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[stopID]heldPath, drops map[dropID]bool, execSpawn map[int]bool) int {
 	delete(tracees, wpid)
 	delete(lastOp, wpid)
 	delete(execSpawn, wpid)
@@ -912,10 +936,9 @@ func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held m
 // new tracee along with the tid. The next thread's drop at the same call site then dedups
 // against a dead thread's and is never counted, which is the undercount this channel
 // exists to prevent. The sibling of releaseHeldOf, and keyed the same way.
-func forgetDropsOf(drops map[string]bool, pid int) {
-	prefix := fmt.Sprintf("%d\x00", pid)
+func forgetDropsOf(drops map[dropID]bool, pid int) {
 	for key := range drops {
-		if strings.HasPrefix(key, prefix) {
+		if key.stop.pid == pid {
 			delete(drops, key)
 		}
 	}
@@ -938,11 +961,10 @@ func forgetDropsOf(drops map[string]bool, pid int) {
 // as the syscall returns and the handler runs only after the tracer has resumed past it -
 // so this sweep normally finds a single entry. It is a sweep rather than a lookup because
 // the key cannot be rebuilt, not because several can be held.
-func releaseHeldOf(held map[string]heldPath, pid int) int {
-	prefix := fmt.Sprintf("%d\x00", pid)
+func releaseHeldOf(held map[stopID]heldPath, pid int) int {
 	lost := 0
 	for key, h := range held {
-		if !strings.HasPrefix(key, prefix) {
+		if key.pid != pid {
 			continue
 		}
 		delete(held, key)
@@ -977,7 +999,7 @@ type heldPath struct {
 }
 
 // existenceHeld counts the held pathnames whose loss is a lost access. See heldPath.
-func existenceHeld(held map[string]heldPath) int {
+func existenceHeld(held map[stopID]heldPath) int {
 	n := 0
 	for _, h := range held {
 		if !h.open {
@@ -993,7 +1015,7 @@ func existenceHeld(held map[string]heldPath) int {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), countDrop func(*syscall.PtraceRegs, int), releaseDrop func(*syscall.PtraceRegs), forgetDrops func(), held map[string]heldPath, execSpawn map[int]bool, res *Result) {
+func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), drops dropCounter, held map[stopID]heldPath, execSpawn map[int]bool, res *Result) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// No registers means no syscall number either, so this may not have been a file
@@ -1013,17 +1035,17 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 			res.Dropped += deadThreadLoss(op, held, pid)
 			return
 		}
-		res.Dropped += unreadableStopLoss(held, pid, forgetDrops)
+		res.Dropped += unreadableStopLoss(held, pid, drops.forget)
 		return
 	}
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
 	// dropOnce. Deferred so it runs after the decode below has had its chance to count.
 	atExit := op == unix.PTRACE_SYSCALL_INFO_EXIT
 	if atExit {
-		defer releaseDrop(&regs)
+		defer drops.release(&regs)
 	}
-	drop := func() { countDrop(&regs, 0) }
-	dropSlot := func(slot int) { countDrop(&regs, slot) }
+	drop := func() { drops.count(&regs, 0) }
+	dropSlot := func(slot int) { drops.count(&regs, slot) }
 	// A negative orig_rax is the kernel saying this stop reports no syscall number, not a
 	// syscall this decoder failed to read - so it is skipped silently rather than dropped.
 	// It arrives from rt_sigreturn, whose exit stop reports the RESTORED pre-signal
@@ -1247,7 +1269,7 @@ var undecodedPathSyscalls = map[uint64]bool{
 // recordHeldExistence can apply the filter against the return value at the exit stop.
 // Reading it at the exit stop instead - where the return value lives - is what let a
 // sibling sharing the address space plant a path the call never touched.
-func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[string]heldPath) {
+func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), drop func(), held map[stopID]heldPath) {
 	// chdir is recorded outright rather than held, because it moves the very anchor
 	// resolveAt reads back out of /proc: waiting for its exit stop would join a later
 	// relative pathname onto the directory the call just entered. That costs it the
@@ -1308,7 +1330,7 @@ func inspectExistence(pid int, regs *syscall.PtraceRegs, record func(string, boo
 // layer needs and the grant does not. Replaying the entry stop's pathname rather than
 // reading it again at the exit stop is what keeps a sibling sharing the address space from
 // swapping in a path the call never touched.
-func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path string) {
+func holdOpen(pid int, regs *syscall.PtraceRegs, held map[stopID]heldPath, path string) {
 	held[stopKey(pid, regs)] = heldPath{path: path, readOK: true, open: true}
 }
 
@@ -1321,7 +1343,7 @@ func holdOpen(pid int, regs *syscall.PtraceRegs, held map[string]heldPath, path 
 // because enforcement reproduces that exact answer. The filter is what keeps manifests
 // tight: a shell's PATH search misses hundreds of times per command, and recording those
 // probes would bury the paths the run actually needs.
-func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[string]heldPath) {
+func recordHeldExistence(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[stopID]heldPath) {
 	key := stopKey(pid, regs)
 	h, ok := held[key]
 	if !ok {
@@ -1765,7 +1787,7 @@ const unixPtraceExitKill = 0x00100000
 // is, which also settles the memfd case honestly: its link reads "… (deleted)", fdPath
 // refuses it, and a drop says the observation is short rather than naming a pseudo-path
 // the sandbox could never bind.
-func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr, emptyPath bool, held map[string]heldPath, drop func()) {
+func holdExecTarget(pid int, regs *syscall.PtraceRegs, dirfd int32, addr uintptr, emptyPath bool, held map[stopID]heldPath, drop func()) {
 	path, ok := readPathAt(pid, dirfd, addr)
 	if !ok {
 		drop()
@@ -1832,7 +1854,7 @@ func recordExecHeld(h heldPath, record func(string, bool)) int {
 // the sandbox, where a tool the host has and the run did not bind answers the same ENOENT
 // a search miss does; only the host can tell the two apart, and the read that gets it
 // mounted next round is the whole point of profiling it.
-func releaseHeldExec(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[string]heldPath) bool {
+func releaseHeldExec(pid int, regs *syscall.PtraceRegs, record func(string, bool), openResult func(string, bool), drop func(), held map[stopID]heldPath) bool {
 	key := stopKey(pid, regs)
 	h, ok := held[key]
 	if !ok || !h.exec {
@@ -1859,11 +1881,10 @@ func releaseHeldExec(pid int, regs *syscall.PtraceRegs, record func(string, bool
 // failed. It sweeps by tid for the same reason releaseHeldOf does, and every other way a
 // held exec can end (the tid dying, an unreadable stop) still counts it as the lost
 // observation it is.
-func recordExecOf(held map[string]heldPath, pid int, record func(string, bool)) int {
-	prefix := fmt.Sprintf("%d\x00", pid)
+func recordExecOf(held map[stopID]heldPath, pid int, record func(string, bool)) int {
 	lost := 0
 	for key, h := range held {
-		if !strings.HasPrefix(key, prefix) || !h.exec {
+		if key.pid != pid || !h.exec {
 			continue
 		}
 		delete(held, key)

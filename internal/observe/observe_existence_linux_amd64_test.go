@@ -219,7 +219,7 @@ func negErrno(errno syscall.Errno) uint64 {
 func TestHeldProbeCountsENOTDIRRatherThanSkippingIt(t *testing.T) {
 	const probed = "/etc/passwd/x"
 	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0x1000, Rax: negErrno(syscall.ENOTDIR)}
-	held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+	held := map[stopID]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
 
 	var recorded []string
 	dropped := 0
@@ -259,7 +259,7 @@ func TestHeldProbeSkipsENOMEMButNotEINVAL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const probed = "/etc/hosts"
 			regs := syscall.PtraceRegs{Orig_rax: unix.SYS_READLINK, Rip: 0x1000, Rax: negErrno(tc.errno)}
-			held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+			held := map[stopID]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
 
 			var recorded []string
 			dropped := 0
@@ -303,7 +303,7 @@ func TestHeldProbeSkipsTheRestartErrnos(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const probed = "/etc/hosts"
 			regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0x1000, Rax: uint64(tc.ret)}
-			held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+			held := map[stopID]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
 
 			var recorded []string
 			var answered []bool
@@ -342,7 +342,7 @@ func TestAnInterruptedProbeIsCountedRatherThanSkipped(t *testing.T) {
 	const probed = "/etc/hosts"
 	ret := -int64(syscall.EINTR) // the raw negative errno the exit stop carries
 	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0x1000, Rax: uint64(ret)}
-	held := map[string]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
+	held := map[stopID]heldPath{stopKey(1, &regs): {path: probed, readOK: true}}
 
 	var recorded []string
 	dropped := 0
@@ -372,7 +372,7 @@ func TestARestartedExecDoesNotClaimItsTargetResolved(t *testing.T) {
 	const target = "/opt/toolchain/bin/cc"
 	for _, ret := range []int64{-int64(errRestartNoIntr), -int64(syscall.EINTR)} {
 		regs := syscall.PtraceRegs{Orig_rax: unix.SYS_EXECVE, Rip: 0x2000, Rax: uint64(ret)}
-		held := map[string]heldPath{
+		held := map[stopID]heldPath{
 			stopKey(1, &regs): {path: target, readOK: true, exec: true, complete: true},
 		}
 
