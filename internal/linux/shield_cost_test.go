@@ -105,3 +105,48 @@ func TestShieldRulesMemoMissesAGrantCreatedSinceTheLastCall(t *testing.T) {
 		t.Error("after the grant's directory was created, its checkout's workspace shields are missing: the memo answered from before the mkdir")
 	}
 }
+
+// probeCounts wraps a sandbox's existence and directory probes to count each by path. Each
+// is a bounded host call - a goroutine and a timer in production - so the count is the
+// cost, and a path probed twice within one pass is one probe too many.
+func probeCounts(sb *sandbox) map[string]int {
+	counts := map[string]int{}
+	exists, isDir := sb.exists, sb.isDir
+	sb.exists = func(p string) bool { counts["exists "+p]++; return exists(p) }
+	sb.isDir = func(p string) bool { counts["isDir "+p]++; return isDir(p) }
+	return counts
+}
+
+// denyArgs asks after a rule's path in the exposure pass, in shieldNeeded and in
+// shieldMount. Nothing it does creates a path, so each probe has one answer for the call.
+func TestDenyArgsProbesEachPathOnce(t *testing.T) {
+	sb, _ := projectSandbox(100, 2)
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	shieldRules(sb, []string{"/w"})
+	counts := probeCounts(&sb)
+	denyArgs(sb, []string{"/w", "/home/u"}, []string{"/w"}, nil)
+	for probe, n := range counts {
+		if n > 1 {
+			t.Errorf("%s was asked %d times in one denyArgs", probe, n)
+		}
+	}
+}
+
+// A rule no grant reaches is skipped whatever the host says about its path, and deciding
+// that needs no host at all - so a shield outside every grant must cost no probe.
+func TestDenyArgsDoesNotProbeAShieldNoGrantReaches(t *testing.T) {
+	sb, _ := projectSandbox(10, 0)
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	shieldRules(sb, []string{"/w"})
+	counts := probeCounts(&sb)
+	denyArgs(sb, []string{"/w"}, []string{"/w"}, nil)
+	var outside int
+	for probe := range counts {
+		if strings.Contains(probe, " /home/u") {
+			outside++
+		}
+	}
+	if outside > 0 {
+		t.Errorf("denyArgs probed %d paths under the home, which no grant reaches", outside)
+	}
+}

@@ -565,6 +565,11 @@ const maxGitdirDepth = shield.MaxWalkDepth
 // it has no parent for.
 func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist.Rule) {
 	rules := shieldRules(sb, writes)
+	// Each rule's path is probed by the exposure pass, by shieldNeeded and again by
+	// shieldMount, and every probe is a bounded host call. Nothing in this function
+	// creates a path, so one answer per path holds for the whole call; the seams stay
+	// unmemoized on the sandbox because setup does create directories between calls.
+	sb.exists, sb.isDir = probedOnce(sb.exists), probedOnce(sb.isDir)
 
 	// Resolve and dedup first, so ancestry and ordering below compare real paths. A
 	// symlinked deny path, or a symlinked /home component, would otherwise slip past
@@ -627,7 +632,7 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	// becomes an empty tmpfs and a real file has no subtree, so both expose nothing.
 	var exposed []string
 	for _, r := range resolved {
-		if r.Deny == denylist.DenyWrite && sb.exists(r.Path) && sb.isDir(r.Path) && shieldNeeded(r, sb, grants, writes, optIns) {
+		if r.Deny == denylist.DenyWrite && shieldNeeded(r, sb, grants, writes, optIns) && sb.exists(r.Path) && sb.isDir(r.Path) {
 			exposed = append(exposed, r.Path)
 		}
 	}
@@ -665,8 +670,8 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 				continue
 			}
 			needed := shieldNeeded(r, sb, grants, writes, optIns)
-			if !needed && r.Deny == denylist.DenyAll && sb.exists(r.Path) &&
-				!slices.Contains(optIns, r.Path) && underExposed(r.Path) {
+			if !needed && r.Deny == denylist.DenyAll && !slices.Contains(optIns, r.Path) &&
+				underExposed(r.Path) && sb.exists(r.Path) {
 				needed = true
 			}
 			if !needed {
@@ -679,6 +684,19 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	emit(denylist.DenyWrite)
 	emit(denylist.DenyAll)
 	return append(pinShieldAncestors(sb, applied, writes), args...), applied
+}
+
+// probedOnce memoizes a host probe for the length of one pass that creates nothing.
+func probedOnce(probe func(string) bool) func(string) bool {
+	answers := map[string]bool{}
+	return func(p string) bool {
+		a, ok := answers[p]
+		if !ok {
+			a = probe(p)
+			answers[p] = a
+		}
+		return a
+	}
 }
 
 // pinShieldAncestors binds every directory strictly between a write grant and an applied
