@@ -4,13 +4,18 @@ package linux
 
 import (
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
+	"github.com/whiskeyjimbo/bento/policy"
 )
 
 // projectSandbox is a fake checkout at /w holding config project config entries and
@@ -220,5 +225,116 @@ func TestRedirectCheckTestsACheckoutsShieldsOnce(t *testing.T) {
 	one, three := check("/w"), check("/w", "/w/a", "/w/b")
 	if three > one+4 {
 		t.Errorf("three grants in one checkout cost %d resolves against %d for one: the checkout's shields were tested per grant", three, one)
+	}
+}
+
+// compile derives the shields in denyArgs and then asks after each applied one again, in
+// shieldChecks and shieldsApplied, beside the write grants' own checks. Nothing in compile
+// creates a path, so each probe has one answer for the whole call.
+func TestCompileProbesEachPathOnce(t *testing.T) {
+	sb, _ := projectSandbox(20, 2)
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	counts := probeCounts(&sb)
+	if _, _, err := compile(&policy.Policy{Write: []string{"/w"}}, enforce.Process{}, sb); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	t.Logf("%d probes for %d distinct", total, len(counts))
+	for probe, n := range counts {
+		if n > 1 {
+			t.Errorf("%s was asked %d times in one compile", probe, n)
+		}
+	}
+}
+
+// checkShieldsCarvable walks up from each mount point it finds to the deepest ancestor
+// that exists and asks whether that one is writable. Sibling mount points share those
+// ancestors, and the check creates nothing, so each probe has one answer for the call.
+func TestCheckShieldsCarvableProbesEachPathOnce(t *testing.T) {
+	sb, _ := projectSandbox(20, 2)
+	// The walk up stops at the first ancestor that exists, which the fake's leaf-only
+	// entries never name.
+	exists := sb.exists
+	sb.exists = func(p string) bool { return p == "/w" || exists(p) }
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	counts := probeCounts(&sb)
+	writable := sb.writable
+	sb.writable = func(p string) bool { counts["writable "+p]++; return writable(p) }
+	if err := checkShieldsCarvable(sb, []string{"/w"}, []string{"/w"}, nil); err != nil {
+		t.Fatalf("checkShieldsCarvable: %v", err)
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	t.Logf("%d probes for %d distinct", total, len(counts))
+	for probe, n := range counts {
+		if n > 1 {
+			t.Errorf("%s was asked %d times in one checkShieldsCarvable", probe, n)
+		}
+	}
+}
+
+// createdShields is also called on its own, after the launch has created the granted
+// directories, and its walk up from each absent mount point crosses the parents its
+// siblings cross. Nothing it does creates a path, so each probe has one answer for the call.
+func TestCreatedShieldsProbesEachPathOnce(t *testing.T) {
+	sb, _ := projectSandbox(20, 2)
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	counts := probeCounts(&sb)
+	createdShields(sb, []string{"/w"}, []string{"/w"}, nil)
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	t.Logf("%d probes for %d distinct", total, len(counts))
+	for probe, n := range counts {
+		if n > 1 {
+			t.Errorf("%s was asked %d times in one createdShields", probe, n)
+		}
+	}
+}
+
+// compile memoizes the existence and directory probes for its whole call, which holds only
+// while nothing it reaches creates a host path. The shields it derives name mount points
+// that are absent on the host until bwrap makes them, so a derivation that created one
+// early would turn a memoized "absent" into a wrong answer - and the launch does create
+// such paths, in the stages before compile, which is why the memo stops at its boundary.
+func TestCompileCreatesNoHostPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	checkout := filepath.Join(dir, "checkout")
+	for _, d := range []string{filepath.Join(dir, "home"), filepath.Join(checkout, ".git"), filepath.Join(checkout, "sub", ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entrypoint := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(entrypoint, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entrypoint, Write: []string{checkout}}
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, true)
+	if err != nil {
+		t.Fatalf("newSandbox: %v", err)
+	}
+	defer cleanup()
+	tree := func() []string {
+		var paths []string
+		if err := filepath.WalkDir(dir, func(path string, _ fs.DirEntry, err error) error {
+			paths = append(paths, path)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return paths
+	}
+	before := tree()
+	compileOrFail(t, p, sb)
+	if after := tree(); !slices.Equal(before, after) {
+		t.Errorf("compile changed the host tree:\nbefore %q\nafter  %q", before, after)
 	}
 }

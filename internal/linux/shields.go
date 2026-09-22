@@ -777,6 +777,8 @@ func shieldAncestors(sb sandbox, applied []denylist.Rule, writes []string) []str
 // already existing, and this returns only nonexistent paths, so bwrap never creates a
 // mount point for them and there is nothing to clean up.
 func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []string) {
+	// Sibling mount points share the parents walked below, and nothing here creates one.
+	sb.exists, sb.isDir = probedOnce(sb.exists), probedOnce(sb.isDir)
 	seen := map[string]bool{}
 	for _, a := range shields(sb).Mount(shieldRules(sb, writes)) {
 		r := a.Rule
@@ -819,6 +821,8 @@ func createdShields(sb sandbox, grants, writes, optIns []string) (dirs, files []
 // Writability, not ownership: /var/tmp is root-owned and world-writable, and a grant on
 // it carves its shields fine.
 func checkShieldsCarvable(sb sandbox, grants, writes, optIns []string) error {
+	// Sibling mount points walk up to the same ancestors, and nothing here creates one.
+	sb.exists, sb.isDir, sb.writable = probedOnce(sb.exists), probedOnce(sb.isDir), probedOnce(sb.writable)
 	dirs, files := createdShields(sb, grants, writes, optIns)
 	for _, mount := range slices.Concat(dirs, files) {
 		// bwrap makes the whole missing chain, so the directory that has to accept the

@@ -268,6 +268,10 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	if sb.observe && sb.applied {
 		return nil, nil, fmt.Errorf("linux: a run cannot be both profiled and reported on: the observation and applied-layer reports share descriptor %d", observeReportFD)
 	}
+	// denyArgs, the write grants' checks and the shield audit at the end each ask after
+	// the same paths. Nothing here creates one, so one answer per path holds for the call;
+	// across calls it would not, since the launch creates directories between stages.
+	sb.exists, sb.isDir = probedOnce(sb.exists), probedOnce(sb.isDir)
 	args := baseFlags()
 
 	// A profiling run uses the real HOME so the target probes its real credential
