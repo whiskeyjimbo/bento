@@ -483,7 +483,25 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 	}
 
 	args = append(args, sandboxBentoPath)
-	return append(args, launcher.EncodeLaunch(cfg)...), applied, nil
+	args = append(args, launcher.EncodeLaunch(cfg)...)
+	if err := checkBwrapArgCount(args); err != nil {
+		return nil, nil, err
+	}
+	return args, applied, nil
+}
+
+// bwrapMaxArgs is bubblewrap's own ceiling on its argument count (MAX_ARGS in
+// bubblewrap.c). Past it bwrap dies before reporting anything, which bento would then
+// misread as a launcher that never started.
+const bwrapMaxArgs = 9000
+
+// checkBwrapArgCount refuses a sandbox too large for bwrap to accept, naming the usual
+// cause: every git checkout under a write grant brings its own shields and pins.
+func checkBwrapArgCount(args []string) error {
+	if len(args) <= bwrapMaxArgs {
+		return nil
+	}
+	return fmt.Errorf("linux: this sandbox needs %d bubblewrap arguments and bubblewrap accepts at most %d; each git checkout under a write grant adds its own shields, so grant the checkouts that need writing rather than a directory holding many", len(args), bwrapMaxArgs)
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on

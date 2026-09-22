@@ -53,6 +53,10 @@ func newClaudeCodeHookCmd() *cobra.Command {
 			return claudeCodeHook(cmd.InOrStdin(), cmd.OutOrStdout(), args[0], self, allow)
 		},
 	}
+	// A flag error is answered like every other failure: a deny, not an error exit.
+	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return writeHookDecision(c.OutOrStdout(), "deny", fmt.Sprintf("bento hook claude-code is misconfigured: %v", err), nil)
+	})
 	cmd.Flags().BoolVar(&allow, "allow", false, "answer allow rather than ask, so sandboxed Bash calls run without Claude Code's prompt")
 	return cmd
 }

@@ -187,7 +187,7 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		ws, _ := workspaceShields(sb, w)
 		rules = append(rules, ws...)
 		for _, nested := range sb.nestedCheckouts[sb.resolve(w)] {
-			if seen[nested] {
+			if seen[nested] || insideDirShield(sb, rules, nested) {
 				continue
 			}
 			seen[nested] = true
@@ -198,10 +198,23 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	return rules
 }
 
+// insideDirShield reports whether path lies inside a directory one of rules shields. A
+// checkout there is already beyond the run's writes - Claude Code's worktrees under the
+// read-only .claude are the ordinary case - and shields of its own would need bwrap to
+// create their mount points inside a read-only mount, which aborts the run.
+func insideDirShield(sb sandbox, rules []denylist.Rule, path string) bool {
+	for _, r := range rules {
+		if r.Dir && policy.CoversResolved(sb.resolve(r.Path), path) {
+			return true
+		}
+	}
+	return false
+}
+
 // maxNestedCheckouts bounds nestedCheckouts. A .git entry is plantable under a write
 // grant, so without a bound a run's own preparation could turn thousands of decoys into
 // thousands of mounts; past it the run is refused rather than shielded short.
-const maxNestedCheckouts = 64
+const maxNestedCheckouts = 96
 
 // findNestedCheckouts walks a write grant for git checkouts below its enclosing one, by
 // name only - it never reads a .git entry's content, which is what keeps checkoutRoot's

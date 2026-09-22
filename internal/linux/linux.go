@@ -122,7 +122,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// A gate forces the egress stack up even with zero rules: a supervised run with
 	// no manifest network means "prompt on every host", so the proxy must exist for
 	// the gate to be consulted at all.
-	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, opts.DenyPaths, opts.ReadOnlyPaths)
+	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, opts.DenyPaths, opts.ReadOnlyPaths, true)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -904,7 +904,7 @@ var runDirBase = "/tmp"
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
-func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOnlyPaths []string) (sandbox, func(), error) {
+func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOnlyPaths []string, findCheckouts bool) (sandbox, func(), error) {
 	noop := func() {}
 
 	// Bounded, like the sandbox's own seams, except these run before the sandbox exists:
@@ -1020,10 +1020,12 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}
 
+	// findCheckouts is false for the degraded tier, which applies no shields, so the walk
+	// would cost O(tree) for nothing - and its bound would refuse a run it cannot protect.
 	sb.nestedCheckouts = map[string][]string{}
 	for _, w := range p.Write {
 		rw := sb.resolve(w)
-		if !sb.isDir(rw) {
+		if !findCheckouts || !sb.isDir(rw) {
 			continue
 		}
 		if _, done := sb.nestedCheckouts[rw]; done {

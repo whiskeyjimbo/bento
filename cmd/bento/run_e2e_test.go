@@ -415,3 +415,46 @@ func TestRunJSONCarriesExtraArgs(t *testing.T) {
 		t.Errorf("the verdict object does not carry the appended args:\n%s", lines[len(lines)-1])
 	}
 }
+
+// Claude Code keeps worktrees at .claude/worktrees/<n>, inside the read-only .claude
+// shield. A checkout found there is already out of the run's reach for writes, and giving
+// it shields of its own made bwrap try to create their mount points inside a read-only
+// mount - which killed every run on such a checkout.
+func TestANestedCheckoutInsideAShieldDoesNotBreakTheRun(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}})
+	dir := filepath.Dir(m)
+	for _, args := range [][]string{
+		{"init", "-q", dir},
+		{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", dir, "worktree", "add", "-q", filepath.Join(dir, ".claude", "worktrees", "wt1")},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", got, stderr)
+	}
+}
+
+// A write grant inside a nested checkout's shield is refused the way one inside the
+// enclosing checkout's is. Admitted, it was silently neutered: the shield's mount took
+// every write and the host file never appeared.
+func TestAWriteGrantInsideANestedCheckoutsShieldIsRefused(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{".", "vendor/lib/.vscode"}})
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(filepath.Dir(m), "vendor", "lib")).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := runCmd(t, m); err == nil || !strings.Contains(err.Error(), ".vscode") {
+		t.Fatalf("a write grant inside a nested checkout's .vscode shield was not refused naming it; got %v", err)
+	}
+}

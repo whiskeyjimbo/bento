@@ -1744,7 +1744,7 @@ func TestNewSandboxRefusesAnEntrypointThatDoesNotAnswer(t *testing.T) {
 	credentialWalkTimeout = 1 * time.Nanosecond
 	t.Cleanup(func() { credentialWalkTimeout = 30 * time.Second })
 
-	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil)
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, true)
 	cleanup()
 	if err == nil {
 		t.Fatal("newSandbox built a sandbox from an entrypoint the host never answered for")

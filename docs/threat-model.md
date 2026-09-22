@@ -175,18 +175,25 @@ not see an independent nested repo under the grant (a monorepo's inner
 The fence does cover a nested repo that exists when the run starts. Before launch
 bento walks each write grant for entries named `.git` - by name, never reading them,
 and without following symlinks - and gives every checkout it finds the same
-workspace shields the enclosing one gets. It refuses the run past 64 of them rather
-than mounting a planted forest, and refuses a walk it could not finish. The walk costs
-O(tree) once per run: about 10ms for a 6,000-entry checkout and 130ms for 320,000
-entries on a warm cache. The cost to legitimate work is the enclosing checkout's
-already: inside the run, a directory holding a nested repo cannot be renamed, and
-`rm -rf` of it stops at the shield mounts.
+workspace shields the enclosing one gets, except one inside a directory that is
+already shielded (Claude Code's worktrees under `.claude`), which writes cannot reach.
+The walk costs O(tree) once per run - a few milliseconds for an ordinary checkout,
+about half a second for 350,000 entries - and each checkout it finds adds its mounts,
+roughly 25ms apiece. Past 96 checkouts the run is refused rather than mounted
+short, and so is any sandbox bubblewrap's 9,000-argument ceiling cannot hold: grant
+the checkouts that need writing, not a directory full of them. The degraded tier
+applies no shields and skips the walk. The cost to legitimate work is the
+enclosing checkout's already: inside the run, a directory holding a nested repo
+cannot be renamed, and `rm -rf` of it stops at the shield mounts.
 
-A repo created during the run stays a fence residual, and nothing mounted before
-launch can reach it: `git init sub` inside the grant makes a `sub/.git/hooks` that
-exists only after the shields were set. It is inert until a developer runs git in
-`sub` on the host, which is the risk to know about when reviewing what a run left
-behind. Widening the *report* would surface such a hook after the fact; it would not
+Three shapes stay fence residuals. A repo created during the run: nothing mounted
+before launch can reach it, so `git init sub` inside the grant makes a `sub/.git/hooks`
+that exists only after the shields were set. A bare repository, which has no entry
+named `.git` - its `hooks/` sits at the top, and a host `git push` into it runs them.
+And a `.git` that is a symlink: the shield lands on its target, so the run can remove
+the link and `git init` a real `.git` in its place - true of the enclosing checkout
+too. Each is inert until a developer runs git in it on the host, which is the risk to
+know about when reviewing what a run left behind. Widening the *report* would surface such a hook after the fact; it would not
 stop one being planted. The in-tree hook-runner case cannot be fenced at
 all by construction - the hooks are ordinary project files under a write grant - so
 there the report is the only visibility there is, which is why it resolves

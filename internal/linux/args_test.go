@@ -703,7 +703,7 @@ func TestNewSandboxCarriesWorkdir(t *testing.T) {
 	if err := os.Mkdir(checkout, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sb, cleanup, err := newSandbox(&policy.Policy{Entrypoint: entrypoint, Workdir: checkout}, "bento-placeholder", false, nil, nil)
+	sb, cleanup, err := newSandbox(&policy.Policy{Entrypoint: entrypoint, Workdir: checkout}, "bento-placeholder", false, nil, nil, true)
 	if err != nil {
 		t.Fatalf("newSandbox: %v", err)
 	}
@@ -714,12 +714,23 @@ func TestNewSandboxCarriesWorkdir(t *testing.T) {
 	}
 
 	relative := &policy.Policy{Entrypoint: entrypoint, Workdir: "checkout"}
-	bad, cleanupBad, err := newSandbox(relative, "bento-placeholder", false, nil, nil)
+	bad, cleanupBad, err := newSandbox(relative, "bento-placeholder", false, nil, nil, true)
 	cleanupBad()
 	if err == nil {
 		t.Fatalf("newSandbox accepted a relative workdir and built a sandbox starting at %q", bad.workdir)
 	}
 	if !strings.Contains(err.Error(), "workdir") {
 		t.Errorf("the refusal %q does not name workdir", err)
+	}
+}
+
+// bwrap has a hard argument ceiling and dies past it without reporting, which bento
+// would read as a launcher that never started - and blame the embedder for.
+func TestCheckBwrapArgCount(t *testing.T) {
+	if err := checkBwrapArgCount(make([]string, bwrapMaxArgs)); err != nil {
+		t.Errorf("exactly the ceiling was refused: %v", err)
+	}
+	if err := checkBwrapArgCount(make([]string, bwrapMaxArgs+1)); err == nil {
+		t.Error("one past bubblewrap's ceiling was not refused")
 	}
 }

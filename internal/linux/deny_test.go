@@ -514,7 +514,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: store, Interpreter: "cat"}
 
-	_, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil)
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil, true)
 	if err == nil {
 		cleanup()
 		t.Fatal("an entrypoint inside a caller deny must be refused")
@@ -529,7 +529,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 	// untrusted manifest could read: its way past the one shield the embedder controls.
 	// OptIns excludes it, and this is what holds that.
 	optedIn := &policy.Policy{Entrypoint: store, Interpreter: "cat", Read: []string{store}}
-	if _, cleanupIn, err := newSandbox(optedIn, "bento-placeholder", false, []string{store}, nil); err == nil {
+	if _, cleanupIn, err := newSandbox(optedIn, "bento-placeholder", false, []string{store}, nil, true); err == nil {
 		cleanupIn()
 		t.Error("a read grant naming the caller's store must not opt the entrypoint past its deny")
 	}
@@ -540,7 +540,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
-	if _, cleanupOK, err := newSandbox(ok, "bento-placeholder", false, []string{store}, nil); err != nil {
+	if _, cleanupOK, err := newSandbox(ok, "bento-placeholder", false, []string{store}, nil, true); err != nil {
 		t.Errorf("an entrypoint outside the caller deny must be accepted: %v", err)
 	} else {
 		cleanupOK()
@@ -565,7 +565,7 @@ func TestEntrypointInsideABuiltInShieldRefused(t *testing.T) {
 	}
 
 	p := &policy.Policy{Entrypoint: key, Interpreter: "cat"}
-	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil)
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, true)
 	if err == nil {
 		cleanup()
 		t.Fatal("an entrypoint inside the ~/.ssh shield must be refused")
@@ -636,7 +636,7 @@ func TestCallerDenyOnAnUnreadableDirectoryRefusesTheLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,12 +662,12 @@ func TestNewSandboxRefusesAReadOnlyPathThatIsNotAFile(t *testing.T) {
 		"absent":      filepath.Join(dir, "absent.yaml"),
 		"relative":    "bento.yaml",
 	} {
-		if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{ro}); err == nil {
+		if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{ro}, true); err == nil {
 			cleanup()
 			t.Errorf("%s: newSandbox accepted %q as a read-only file", name, ro)
 		}
 	}
-	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{entry}); err != nil {
+	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{entry}, true); err != nil {
 		t.Errorf("an existing file must be accepted: %v", err)
 	} else {
 		cleanup()
@@ -717,5 +717,30 @@ func TestFindNestedCheckoutsRefusesPastTheBound(t *testing.T) {
 	}
 	if _, err := findNestedCheckouts(grant); err == nil {
 		t.Error("a grant holding more checkouts than the bound was walked without refusal")
+	}
+}
+
+// The degraded tier applies no shields, so it must not pay for the walk or be refused by
+// its bound: a tree over the bound is walked (and refused) only where shields follow.
+func TestNewSandboxWalksForCheckoutsOnlyWhereShieldsApply(t *testing.T) {
+	grant := t.TempDir()
+	entry := filepath.Join(grant, "run.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxNestedCheckouts + 1 {
+		if err := os.MkdirAll(filepath.Join(grant, fmt.Sprint(i), ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := &policy.Policy{Entrypoint: entry, Write: []string{grant}}
+	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, false); err != nil {
+		t.Errorf("the degraded tier's sandbox walked for checkouts: %v", err)
+	} else {
+		cleanup()
+	}
+	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, true); err == nil {
+		cleanup()
+		t.Error("a shielded tier's sandbox did not refuse a grant over the checkout bound")
 	}
 }

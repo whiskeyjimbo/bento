@@ -156,8 +156,18 @@ func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 // exits non-zero, which Claude Code treats as non-blocking - the original command then
 // runs unconfined, from a settings file that looks like it sandboxes everything.
 func TestHookMisconfiguredStillDenies(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no manifest":  nil,
+		"unknown flag": {"--alow", "m.yaml"},
+	} {
+		t.Run(name, func(t *testing.T) { hookDeniesWith(t, args) })
+	}
+}
+
+func hookDeniesWith(t *testing.T, args []string) {
+	t.Helper()
 	cmd := newClaudeCodeHookCmd()
-	cmd.SetArgs(nil)
+	cmd.SetArgs(args)
 	cmd.SetIn(strings.NewReader(`{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`))
 	var out strings.Builder
 	cmd.SetOut(&out)
