@@ -1298,7 +1298,7 @@ func Home(home string) []Rule {
 //
 // defaults are the anchor-relative rules for the same anchors (Home over each), needed
 // because a relocation landing under a rule that already hides the subtree must be
-// dropped rather than emitted - see underDenyAll.
+// dropped rather than emitted - see denyAllTrees.covers.
 func Relocated(defaults []Rule, anchors []string) []Rule {
 	var rules []Rule
 	// Both halves: the defaults, and what this pass has already emitted. It sees only what
@@ -1306,7 +1306,14 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// first, because its rules were part of defaults when Home emitted them, yet dirEnvs'
 	// whole-tree DenyAll can land on top of what it just emitted. The sweep at the end of
 	// this function is what closes that, once every encloser is known.
-	covered := func(p string) bool { return underDenyAll(p, defaults) || underDenyAll(p, rules) }
+	trees := newDenyAllTrees()
+	trees.add(defaults...)
+	indexed := 0
+	covered := func(p string) bool {
+		trees.add(rules[indexed:]...)
+		indexed = len(rules)
+		return trees.covers(p)
+	}
 	shieldable := func(p string) bool { return Shieldable(p, anchors) }
 	isDefault := func(p, rel string) bool { return isDefaultAt(p, rel, anchors) }
 	// The cleaned value of a variable that names a BASE other blocks hang a filename off,
@@ -1473,7 +1480,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 			continue
 		}
 		c := filepath.Clean(v)
-		// underDenyAll for the reason the fileEnvs loop above tests it: the def compare
+		// covered() for the reason the fileEnvs loop above tests it: the def compare
 		// only catches the DEFAULT spelling, so a target inside an already-hidden tree
 		// (a relocated store, or plain ~/.ssh) would get an interior rule that survives an
 		// opt-in on that tree and hands back a zero-byte file.
@@ -1611,7 +1618,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 	// writeOnlyDirEnvs, and this is the DenyWrite file between them. The CARGO_HOME split
 	// again, one variable further.
 	// Both defaults, unlike the auth.json row this sits beside: that one is DenyAll, and
-	// underDenyAll drops a restatement of one for it, while covered() cannot see a
+	// covered() drops a restatement of one for it, while covered() cannot see a
 	// DenyWrite duplicate at all - so a COMPOSER_HOME pointed at the legacy root would
 	// emit the same rule twice.
 	if c, ok := relocBase("COMPOSER_HOME"); ok {
@@ -1664,7 +1671,7 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 		// A row carries one default, and a tool can have two: composer prefers ~/.composer
 		// when it exists and takes ~/.config/composer otherwise, so COMPOSER_HOME pointed at
 		// the legacy root misses the isDefault compare above and restates a shield the
-		// defaults already carry. covered() cannot drop it - underDenyAll matches DenyAll
+		// defaults already carry. covered() cannot drop it - it matches DenyAll
 		// rules, and these are DenyWrite - so the restatement is recognized by its path.
 		p := filepath.Join(c, de.sub)
 		if slices.ContainsFunc(defaults, func(r Rule) bool { return r.Path == p }) {
@@ -1677,45 +1684,68 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 
 	// The rules an encloser emitted later than they were shields nothing further, and a
 	// DenyWrite or interior file rule among them survives an opt-in matching only the
-	// enclosing tree - see underDenyAll. Dropped here rather than by tightening covered(),
-	// which cannot see forward.
+	// enclosing tree - see denyAllTrees.covers. Dropped here rather than by tightening
+	// covered(), which cannot see forward.
 	// A fresh slice: the screen reads the whole rule set, so filtering in place would let an
 	// already-written entry stand in for an encloser the tail still has to be tested against.
+	trees.add(rules[indexed:]...)
 	kept := make([]Rule, 0, len(rules))
 	for _, r := range rules {
-		if !insideDenyAllTree(r.Path, defaults) && !insideDenyAllTree(r.Path, rules) {
+		if !trees.encloses(r.Path) {
 			kept = append(kept, r)
 		}
 	}
 	return kept
 }
 
-// insideDenyAllTree reports whether a DenyAll DIRECTORY rule strictly encloses p. It
-// ignores a rule at p itself, which is what lets a set be screened against itself without
-// a pair of equal paths cancelling each other out.
-func insideDenyAllTree(p string, rules []Rule) bool {
+// denyAllTrees is the DenyAll rules Relocated screens its output against, looked up by a
+// path's ancestors rather than scanned. The XDG restatement emits a rule per default under
+// a relocated base, so a scan per emitted rule over defaults and emitted alike is quadratic
+// in the Home table, which grows with every credential class added.
+//
+// It rests on rule paths being clean, which Index already requires of every rule this
+// package builds. The walk stops short of the root: a prefix test against "/"+"/" never
+// matched, and a DenyAll on the root is not a rule Shieldable lets through.
+type denyAllTrees struct {
+	// at holds every DenyAll rule's own path; dirs the directory rules among them, the only
+	// kind that reaches below itself.
+	at, dirs map[string]bool
+}
+
+func newDenyAllTrees() denyAllTrees {
+	return denyAllTrees{at: map[string]bool{}, dirs: map[string]bool{}}
+}
+
+func (t denyAllTrees) add(rules ...Rule) {
 	for _, r := range rules {
-		if r.Deny == DenyAll && r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator)) {
+		if r.Deny != DenyAll {
+			continue
+		}
+		t.at[r.Path] = true
+		if r.Dir {
+			t.dirs[r.Path] = true
+		}
+	}
+}
+
+// encloses reports whether a DenyAll DIRECTORY rule strictly encloses p. It ignores a rule
+// at p itself, which is what lets a set be screened against itself without a pair of equal
+// paths cancelling each other out.
+func (t denyAllTrees) encloses(p string) bool {
+	for dir := filepath.Dir(p); filepath.Dir(dir) != dir; dir = filepath.Dir(dir) {
+		if t.dirs[dir] {
 			return true
 		}
 	}
 	return false
 }
 
-// underDenyAll reports whether an already-emitted DenyAll rule covers p. A rule landing
-// there shields nothing further: it is redundant when it is another DenyAll, and when it
-// is a DenyWrite or an interior file rule it is worse than redundant, because it survives
-// an opt-in that matches only the enclosing rule.
-func underDenyAll(p string, rules []Rule) bool {
-	for _, r := range rules {
-		if r.Deny != DenyAll {
-			continue
-		}
-		if p == r.Path || (r.Dir && strings.HasPrefix(p, r.Path+string(filepath.Separator))) {
-			return true
-		}
-	}
-	return false
+// covers reports whether a DenyAll rule covers p. A rule landing there shields nothing
+// further: it is redundant when it is another DenyAll, and when it is a DenyWrite or an
+// interior file rule it is worse than redundant, because it survives an opt-in that
+// matches only the enclosing rule.
+func (t denyAllTrees) covers(p string) bool {
+	return t.at[p] || t.encloses(p)
 }
 
 // Runtime returns the mandatory rules for the host's runtime state directories.
