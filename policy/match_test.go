@@ -1,6 +1,10 @@
 package policy
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestAllows(t *testing.T) {
 	rules := []NetworkRule{
@@ -89,5 +93,51 @@ func TestHostMatchingIsTextualByConstruction(t *testing.T) {
 func TestAllowsLeavesTargetScreeningToItsCaller(t *testing.T) {
 	if !Allows([]NetworkRule{{Host: ".example.com", Port: "443"}}, "evil.com\x00.example.com", "443") {
 		t.Error("Allows now screens its input; update its documented precondition and the proxy's CONNECT parser comment to match")
+	}
+}
+
+// Allows runs on every CONNECT and a denied one scans every rule, so the sandbox can
+// repeat the scan at will. Folding the rule host per match allocated for any host over
+// the 32-byte small-string bound; the long uppercase and trailing-dot rules here keep a
+// fold that only skips already-lowercase patterns from passing.
+func TestAllowsDoesNotAllocatePerRule(t *testing.T) {
+	var rules []NetworkRule
+	for i := range 2000 {
+		host := fmt.Sprintf("service-%04d.internal-long-domain.example.com", i)
+		switch i % 3 {
+		case 1:
+			host = strings.ToUpper(host)
+		case 2:
+			host = "." + host + "."
+		}
+		rules = append(rules, NetworkRule{Host: host, Port: "443"})
+	}
+	if n := testing.AllocsPerRun(20, func() { Allows(rules, "denied.example", "443") }); n != 0 {
+		t.Errorf("Allows over %d rules allocated %v times per call, want 0", len(rules), n)
+	}
+}
+
+// matchHost folds the pattern in place rather than building a normalized copy, and the
+// two must agree on every edge the copy's TrimSuffix-then-switch order produced.
+func TestMatchHostAgreesWithNormalizedPattern(t *testing.T) {
+	patterns := []string{"*", "*.", ".", "..", ".Example.COM", ".example.com.", "API.Example.com.", "a.b", "10.0.0.1", "k.example.com"}
+	hosts := []string{"", ".", "api.example.com", "example.com", "x.example.com", "a.b", "10.0.0.1", "k.example.com", "K.example.com", "*"}
+	for _, p := range patterns {
+		for _, h := range hosts {
+			h = normalizeHost(h)
+			np := normalizeHost(p)
+			var want bool
+			switch {
+			case np == "*":
+				want = true
+			case strings.HasPrefix(np, "."):
+				want = strings.HasSuffix(h, np)
+			default:
+				want = np == h
+			}
+			if got := matchHost(p, h); got != want {
+				t.Errorf("matchHost(%q, %q) = %v, want %v", p, h, got, want)
+			}
+		}
 	}
 }

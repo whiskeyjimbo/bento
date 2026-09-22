@@ -87,17 +87,38 @@ func asciiLower(host string) string {
 // it denies rather than grants. Making this IP-aware would widen what a rule reaches
 // beyond what its author wrote.
 func matchHost(pattern, host string) bool {
-	// host is already normalized by Allows; normalize the pattern too so a rule
-	// written with uppercase (DNS is case-insensitive) matches the same targets.
-	pattern = normalizeHost(pattern)
+	// host is already normalized by Allows; the pattern is folded as it is compared, so
+	// a rule written with uppercase (DNS is case-insensitive) matches the same targets.
+	// Folding in place rather than through normalizeHost keeps a denied CONNECT, which
+	// scans every rule, from allocating per rule.
+	pattern = strings.TrimSuffix(pattern, ".")
 	switch {
 	case pattern == "*":
 		return true
 	case strings.HasPrefix(pattern, "."):
-		return strings.HasSuffix(host, pattern)
+		return len(host) >= len(pattern) && equalLowered(host[len(host)-len(pattern):], pattern)
 	default:
-		return pattern == host
+		return equalLowered(host, pattern)
 	}
+}
+
+// equalLowered reports whether lowered equals asciiLower(pattern). It folds only the
+// pattern, and only A-Z, for the reason normalizeHost gives: strings.EqualFold's Unicode
+// folding would let U+212A in a target match a rule's 'k'.
+func equalLowered(lowered, pattern string) bool {
+	if len(lowered) != len(pattern) {
+		return false
+	}
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if lowered[i] != c {
+			return false
+		}
+	}
+	return true
 }
 
 // matchPort applies one rule's port pattern to a connect target port.
