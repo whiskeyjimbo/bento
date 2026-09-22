@@ -1067,7 +1067,7 @@ func TestTunnelIdlesOutNoEarlierThanIdleAfterTheLastByte(t *testing.T) {
 	if _, err := io.WriteString(sandbox, "x"); err != nil {
 		t.Fatal(err)
 	}
-	// Late in the window the first write armed, so this read is skipped and leans on
+	// Late in the window tunnel's setup arm opened, so this read is skipped and leans on
 	// that arm. The timestamp precedes the write, so it bounds the read from below.
 	time.Sleep(slack * 7 / 10)
 	last := time.Now()

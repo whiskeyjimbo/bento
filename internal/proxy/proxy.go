@@ -1459,9 +1459,8 @@ const firstByteTimeout = 30 * time.Second
 // tunnel copies bytes both ways until either side closes or the tunnel goes idle.
 // The client side is read through clientR (which may hold buffered bytes); client
 // and upstream are the conns used to write, half-close, and bound idleness; idle
-// is how long the tunnel may sit with no traffic before it is torn down (at most idle/8
-// later), and
-// firstByte how long it may wait for upstream to say anything at all.
+// is how long the tunnel may sit with no traffic before it is torn down, up to idle/8
+// later; and firstByte how long it may wait for upstream to say anything at all.
 func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.Duration) {
 	// Traffic in either direction means the tunnel is active, so re-arm the idle
 	// deadline on BOTH conns. A long one-way transfer (a large upload with a silent
