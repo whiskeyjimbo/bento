@@ -181,3 +181,47 @@ correctness gain, not a timing one.
 
 Nothing here touches the probe/exec findings, the `Relocated` quadratic, or the
 `internal/linux` half of the shield memo row. Those are still open.
+
+## Results of the second batch, and corrections to the grids
+
+Every open finding above was worked to a verdict. Each fix carries a test that fails with
+the fix reverted; the evidence is on the bead named beside it.
+
+| finding | outcome | before -> after |
+|---|---|---|
+| `Relocated` quadratic screen (bv2-10m0a, bv2-5oxzr) | f0b1cc8: ancestor-lookup index over DenyAll paths | `BenchmarkRelocated` 3.01 ms -> 0.28 ms (10.7x), 6,097 -> 422 allocs |
+| `Contains` allocations (bv2-pul2g) | 2575e34: `covers` walks components with `strings.Cut` | read 291 -> 202 us, 1,408 -> 0 allocs; write 1.16 -> 0.75 ms, 5,460 -> 0 |
+| `internal/linux` half of the shield memo (bv2-aeemb) | c272f27: `insideDirShield` looks up ancestors | `BenchmarkWorkspaceShieldWalk` memo 98.8 -> 33.9 ms (2.9x) |
+| `verdict.go` workspace resolve via gate/clamp (bv2-aeemb) | dced93f: `shield.Host()` memoizes Resolve per FS | 16-grant write loop 77.4 -> 35.9 ms (2.2x) |
+| double `Probe`, zero-limits scope probe (bv2-d98r8) | af0664c: `RunOptions.Probed`, `ProbeFor` | execve 14 -> 5 (no limits), 17 -> 15 (limits); wall 74.4 -> 43.8 ms, 97.7 -> 87.7 ms |
+| gate anchor resolution (bv2-3qry2) | f9fc978: resolve through the shield set | `bento validate` 13,228 -> 11,728 stat/readlink/open/getdents |
+| clamp `Home(root)` per grant (bv2-3qry2) | 26641f5: one table per foreign home | 1,145 -> 69 allocs per grant |
+| alias budget test gaps, grant-order allowance (bv2-bxdcm, bv2-oqtpw) | deb4c98: order-independent dedup; unwalked grants named in `credential_aliases_unwalked` | correctness, not timing |
+
+Corrections to what the grids say:
+
+- **The `internal/linux` resolve counts in `perf-grid-shield.md` (308,544 / 154,845 /
+  103,758) are counts of a fake's `resolve` calls.** On a real run `sb.resolve` is
+  memoized per run (c6ed833), so those are map hits. Profiling the benchmark on the real
+  seams put 49% of CPU in `derivedWorkspaceRules`' `insideDirShield`, a findings x rules
+  scan. That was the cost, and it is what c272f27 fixed.
+- **The exec ledger in `perf-grid-probe-limits.md` is now 5 execs for a zero-limits run**
+  (bento, the bwrap canary and its `sh`, the real bwrap, the launcher), and 15 with limits.
+- **`BenchmarkWorkspaceShieldWalk` already reached `derivedWorkspaceRules`** (bd06af3)
+  when the grid said it did not. What was still wrong was a nil `statID` and an absent
+  home, fixed in b3958e3.
+
+Dropped from bv2-3qry2, with the reason:
+
+- `effectiveABI` uncached: 19 ABI queries per run, 316 us in total even under strace, under
+  0.7% of a launch. Not worth two seams around a kernel query.
+- `bento profile`'s second `resolveBwrap`: the cost is `trustLauncherPath`, the provenance
+  walk the section above rules out caching without a decided window.
+- `aliasesUnder` findings memory: already bounded, since each finding is a charged entry
+  under `aliasBudget`.
+- The root `identify` lstat: one syscall per grant, with no seam to count it.
+
+`TestRelocatedScalesLinearlyInTheDefaults` and
+`TestDerivedWorkspaceRulesScreenIsLinearInRulesAndFindings` are timed ratio tests (bound
+30x, green at about 12x and 9.5x, red at about 88x and 103x), since neither screen's work
+has a count seam. A ratio near the bound on a loaded runner is noise, not a regression.
