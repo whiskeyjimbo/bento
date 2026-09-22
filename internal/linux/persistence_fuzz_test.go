@@ -37,7 +37,7 @@ import (
 
 // persistenceSurface is one discovery-dimension repo shape the fuzzer may plant under the
 // grant. plant creates its real files and returns the paths that MUST end up non-writable;
-// the top-level Workspace shields (.git/hooks, .git/config, .vscode, .idea) are static -
+// the top-level Workspace shields (.git/hooks, .git/config, .vscode, .idea, .claude, .mcp.json) are static -
 // shielded whether present or absent - so they are not part of the masked menu.
 type persistenceSurface struct {
 	name  string
@@ -178,6 +178,8 @@ func checkPersistenceShielded(t *testing.T, mask int, rel string) {
 		filepath.Join(root, ".git", "config"),
 		filepath.Join(root, ".vscode"),
 		filepath.Join(root, ".idea"),
+		filepath.Join(root, ".claude"),
+		filepath.Join(root, ".mcp.json"),
 	)
 
 	grant := filepath.Join(root, rel)

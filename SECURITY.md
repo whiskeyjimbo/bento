@@ -77,8 +77,8 @@ In scope - any of these is a security bug, even without a working exploit:
   stores, and the runtime socket directory) - the sandbox replaces each with an
   empty stand-in, so any read of the real content is a failure.
 - A **write** shield is written or planted through: the persistence shields
-  (`.git/hooks`, `.git/config`, editor task files under `.vscode` / `.idea`) are
-  deliberately left readable so a build can consult them, but a write or a planted
+  (`.git/hooks`, `.git/config`, editor task files under `.vscode` / `.idea`, agent
+  config under `.claude` / `.mcp.json`) are deliberately left readable so a build can consult them, but a write or a planted
   file that reaches the real path is a failure. Reading these is by design, not a
   bug.
 - A grant exposes more than it names - a sibling directory, a symlink target

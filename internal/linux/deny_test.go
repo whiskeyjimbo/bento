@@ -190,12 +190,12 @@ func TestRelocatedDenyWriteRefusesWriteUnderIt(t *testing.T) {
 // exposure under test).
 func populateWorkspaceTargets(t *testing.T, dir string) {
 	t.Helper()
-	for _, d := range []string{filepath.Join(dir, ".git", "hooks"), filepath.Join(dir, ".vscode"), filepath.Join(dir, ".idea")} {
+	for _, d := range []string{filepath.Join(dir, ".git", "hooks"), filepath.Join(dir, ".vscode"), filepath.Join(dir, ".idea"), filepath.Join(dir, ".claude")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, f := range []string{filepath.Join(dir, ".git", "config"), filepath.Join(dir, ".git", "config.worktree")} {
+	for _, f := range []string{filepath.Join(dir, ".git", "config"), filepath.Join(dir, ".git", "config.worktree"), filepath.Join(dir, ".mcp.json")} {
 		if err := os.WriteFile(f, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}

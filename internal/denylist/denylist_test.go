@@ -326,6 +326,30 @@ func TestWorkspaceShieldsEditorConfigDirs(t *testing.T) {
 	}
 }
 
+// An agent's project config is the same persistence class as an editor's: a checkout's
+// .claude/settings.json declares hooks Claude Code runs on the host at the next session, and
+// .mcp.json names MCP server commands it launches. Shielded like .vscode, with .claude whole
+// so no sibling (settings.local.json, a hook script beside it) is left plantable.
+func TestWorkspaceShieldsAgentConfig(t *testing.T) {
+	byPath := make(map[string]Rule)
+	for _, r := range Workspace("/w") {
+		byPath[r.Path] = r
+	}
+	for _, want := range []Rule{
+		{Path: "/w/.claude", Deny: DenyWrite, Dir: true},
+		{Path: "/w/.mcp.json", Deny: DenyWrite},
+	} {
+		got, ok := byPath[want.Path]
+		if !ok {
+			t.Errorf("%s is not shielded", want.Path)
+			continue
+		}
+		if got.Deny != want.Deny || got.Dir != want.Dir {
+			t.Errorf("%s: got Deny=%v Dir=%v, want Deny=%v Dir=%v", want.Path, got.Deny, got.Dir, want.Deny, want.Dir)
+		}
+	}
+}
+
 // The host's runtime directory holds its services' control sockets (the docker
 // daemon, the session bus, gpg-agent). Connecting to one is a read-write channel
 // to that service no matter how the path is mounted - a read-only bind does not

@@ -1854,6 +1854,12 @@ func Workspace(dir string) []Rule {
 		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
 		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
 		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
+		// An agent's project config: .claude/settings{,.local}.json declare hooks Claude
+		// Code runs on the host, and .mcp.json names server commands it launches. .claude is
+		// taken whole for the editor-dir reason above. Residual: Claude Code keeps worktrees
+		// under .claude/worktrees, so an agent confined by bento cannot create one there.
+		{Path: join(".claude"), Deny: DenyWrite, Dir: true},
+		{Path: join(".mcp.json"), Deny: DenyWrite},
 		// config{,.toml} here names a rustc-wrapper, linker or target runner the host
 		// execs on the developer's next cargo command - the ~/.cargo/config.toml case one
 		// level in, and the one toolchain surface with no approval record that an agent
