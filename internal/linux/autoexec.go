@@ -132,6 +132,65 @@ var autoExecDirs = []string{
 // directory it ran in, and joined onto a name spelled through a symlink its ".." steps
 // would climb out of the link's parent instead.
 func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
+	a, err := askGitHooks(grant)
+	if err != nil {
+		return "", err
+	}
+	dir := a.hooks
+	// Inside a git directory git has no prefix to make a relative answer relative to, so it
+	// hands back core.hooksPath as configured, and that is relative to where hooks run -
+	// the git directory of a bare repository, the work tree of any other - not to the grant.
+	// Joining it onto the grant would also make the answer depend on which grant under one
+	// git directory asked first, which hookRunnerDirs' sharing relies on it not doing.
+	if !filepath.IsAbs(dir) && a.insideGitDir {
+		switch {
+		case a.bare:
+			dir = filepath.Join(a.gitDir, dir)
+		// From inside the git directory git cannot name the work tree ("this operation must
+		// be run in a work tree"); a directory named .git is its parent's, so git is asked
+		// again from there, where it answers as it does for any grant in the checkout.
+		case filepath.Base(a.gitDir) == ".git":
+			top := filepath.Dir(a.gitDir)
+			b, err := askGitHooks(top)
+			if err != nil {
+				return "", err
+			}
+			if b.insideGitDir {
+				return "", fmt.Errorf("git directory %s: its parent %s is inside a git directory too, so the work tree its hooks run from cannot be named", a.gitDir, top)
+			}
+			dir = b.hooks
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(top, dir)
+			}
+		// A linked worktree's or a submodule's git directory, whose work tree is recorded
+		// somewhere git does not report from here. Unresolved rather than guessed.
+		default:
+			return "", fmt.Errorf("grant %s is inside git directory %s, whose work tree git cannot name from there, so a relative core.hooksPath %q has no directory to be relative to", grant, a.gitDir, dir)
+		}
+	} else if !filepath.IsAbs(dir) {
+		dir = filepath.Join(grant, dir)
+	}
+	dir = resolved(dir)
+	for _, w := range resolvedWrites {
+		rel, err := filepath.Rel(w, dir)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return dir, nil
+		}
+	}
+	return "", nil
+}
+
+// gitHooksAnswer is what git reports from one directory: its hooks path as git spells it
+// there, and where that directory sits relative to the repository.
+type gitHooksAnswer struct {
+	hooks        string
+	insideGitDir bool
+	bare         bool
+	gitDir       string
+}
+
+// askGitHooks runs the one rev-parse hookRunnerDir reads, in dir.
+func askGitHooks(dir string) (gitHooksAnswer, error) {
 	// The deadline is this call's own rather than the run's: changed() asks again after
 	// the target, on the cancelled path too, and a cancelled run's context would fail
 	// every resolution there and report the answer unseeable when it was merely late to
@@ -139,8 +198,8 @@ func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 	// where cmd.Output() otherwise blocks for as long as git does.
 	ctx, cancel := context.WithTimeout(context.Background(), hookResolveTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "hooks")
-	cmd.Dir = grant
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-git-dir", "--is-bare-repository", "--absolute-git-dir", "--git-path", "hooks")
+	cmd.Dir = dir
 	// Without this the deadline above bounds nothing, for probeWaitDelay's reason: Output
 	// waits for the pipe, and a git wedged on the dead mount this bound exists for ignores
 	// the kill in uninterruptible sleep while still holding it.
@@ -158,23 +217,18 @@ func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 	// first: the parent is Background and noteProbeDeadline's live-parent test is free.
 	noteProbeDeadline(context.Background(), ctx)
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse --git-path hooks in %s: %w", grant, err)
+		return gitHooksAnswer{}, fmt.Errorf("git rev-parse --git-path hooks in %s: %w", dir, err)
 	}
-	dir := strings.TrimSpace(string(out))
-	if dir == "" {
-		return "", nil
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 4 {
+		return gitHooksAnswer{}, fmt.Errorf("git rev-parse in %s: want 4 lines, got %q", dir, out)
 	}
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(grant, dir)
-	}
-	dir = resolved(dir)
-	for _, w := range resolvedWrites {
-		rel, err := filepath.Rel(w, dir)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-			return dir, nil
-		}
-	}
-	return "", nil
+	return gitHooksAnswer{
+		insideGitDir: lines[0] == "true",
+		bare:         lines[1] == "true",
+		gitDir:       lines[2],
+		hooks:        lines[3],
+	}, nil
 }
 
 // resolved is EvalSymlinks with the path itself as the answer when it cannot be walked.
