@@ -100,3 +100,28 @@ predate round 1 and are finding 1.
 Unfiltered `strace -f` on `bento run` deadlocked twice inside the launcher's Landlock
 `restrict_self` (TSYNC waiting on a traced thread). `strace -f --seccomp-bpf` avoided it on
 every run. Use it for any future launch measurement.
+
+## Filed
+
+One bead per finding, labelled `perf-hunt-2026-09-22`. The git-exec dedup under finding 1
+is its own bead because its risk is different; it is linked `discovered-from` the resolve
+fix so neither closes the other.
+
+| finding | bead | pri |
+|---|---|---|
+| 1 resolve write grants once per hook pass | bv2-dj2tp | P1 |
+| 1 (follow-on) one hook-dir git exec per checkout | bv2-yqn9r | P3 |
+| 2 stop only on decoded syscalls (RET_TRACE) | bv2-6rdnk | P2 |
+| 3 no key formatting on an empty exit stop | bv2-jibyv | P2 |
+| 4 validate: shield set and refusals once | bv2-0otom | P2 |
+| 5 validate: probe only the manifest's layers | bv2-65vx4 | P2 |
+| 6 read tracee paths without the netpoller | bv2-b7aq6 | P2 |
+| 7 memoize host checks and repeated derivations | bv2-cxgn0 | P2 |
+| 8 re-arm tunnel deadlines once per slack window | bv2-itrte | P2 |
+| 9 normalize rule hosts once | bv2-eywkz | P2 |
+| 10 gate carve: reachability before stat | bv2-ched5 | P3 |
+| 11 drop GETREGS where syscall info suffices | bv2-7ocw0 | P3 |
+| 12 parse IP-literal rules once | bv2-2ns5e | P3 |
+| 13 refuse an over-long argv before preflight | bv2-7xznp | P4 |
+| 14 pool tunnel copy buffers | bv2-eq9k5 | P4 |
+| 15 check seen before building the dedup key | bv2-nd0y5 | P4 |
