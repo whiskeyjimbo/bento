@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -185,8 +186,56 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		seen[root] = true
 		ws, _ := workspaceShields(sb, w)
 		rules = append(rules, ws...)
+		for _, nested := range sb.nestedCheckouts[sb.resolve(w)] {
+			if seen[nested] {
+				continue
+			}
+			seen[nested] = true
+			ns, _ := workspaceShields(sb, nested)
+			rules = append(rules, ns...)
+		}
 	}
 	return rules
+}
+
+// maxNestedCheckouts bounds nestedCheckouts. A .git entry is plantable under a write
+// grant, so without a bound a run's own preparation could turn thousands of decoys into
+// thousands of mounts; past it the run is refused rather than shielded short.
+const maxNestedCheckouts = 64
+
+// findNestedCheckouts walks a write grant for git checkouts below its enclosing one, by
+// name only - it never reads a .git entry's content, which is what keeps checkoutRoot's
+// decoy argument true here too. Symlinks are not followed, so the walk stays inside the
+// grant. A subtree it cannot read is one the run cannot read either, as in the alias scan,
+// so it is skipped; any other error is refused, since a walk that broke has not shown the
+// grant holds no checkout.
+func findNestedCheckouts(grant string) ([]string, error) {
+	var found []string
+	err := filepath.WalkDir(grant, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
+				return nil
+			}
+			return err
+		}
+		if d.Name() != ".git" {
+			return nil
+		}
+		if dir := filepath.Dir(p); dir != grant {
+			found = append(found, dir)
+			if len(found) > maxNestedCheckouts {
+				return fmt.Errorf("more than %d git checkouts below the write grant %s; bento shields each one, and will not mount that many - grant the checkouts that need writing instead", maxNestedCheckouts, grant)
+			}
+		}
+		if d.IsDir() {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("linux: looking for git checkouts under %s: %w", grant, err)
+	}
+	return found, nil
 }
 
 // workspaceShields is the code-execution surface of the checkout a write grant lands
@@ -265,9 +314,11 @@ func checkoutRoot(sb sandbox, dir string) string {
 // planted where none existed, and core.hooksPath there redirects the next commit in
 // that worktree.
 //
+// Independent checkouts further down the grant are not this function's: newSandbox finds
+// them by name (findNestedCheckouts) and shieldRules gives each its own workspace shields.
+//
 // Not covered, because a concrete-path deny-list cannot express them (a documented
-// residual): independent nested repos created anywhere under the grant,
-// repos created during the run, in-tree hook runners (husky, core.hooksPath
+// residual): repos created during the run, in-tree hook runners (husky, core.hooksPath
 // pointing at a tracked directory) whose hooks are ordinary project files, and the
 // gitfile of a linked worktree or submodule that sits INSIDE the granted checkout.
 //
@@ -276,9 +327,10 @@ func checkoutRoot(sb sandbox, dir string) string {
 // under a granted main checkout, dir/.git is a real directory, so the walk takes this
 // branch and dir/<wt>/.git stays writable - a run can repoint it at a gitdir it
 // fabricates elsewhere under the grant, and the developer's next git command in that
-// worktree runs those hooks. Finding the worktrees to shield means reading
-// .git/worktrees/<n>/gitdir for a path, which is content, and checkoutRoot's whole
-// safety rests on never reading content. The shape is the nested-repo residual above.
+// worktree runs those hooks. findNestedCheckouts does find such a gitfile by name and
+// shields it in place (WorkspaceGitfile's rules), so it cannot be repointed; what stays
+// open is only the gitdir a fabricated pointer would name, which is under the grant and
+// has to be planted during the run - the created-during-the-run residual above.
 func gitDirShields(sb sandbox, dir string) []denylist.Rule {
 	gitDir := filepath.Join(dir, ".git")
 	var rules []denylist.Rule

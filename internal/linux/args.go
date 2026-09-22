@@ -186,6 +186,11 @@ type sandbox struct {
 	// by value: a map made lazily would live in one copy and be invisible to every other
 	// call site. A test literal leaves it nil, where the walk simply runs each time.
 	workspaceShieldCache map[string][]denylist.Rule
+	// nestedCheckouts maps each resolved write grant to the git checkouts below it - every
+	// directory holding an entry named .git, other than the grant's own enclosing
+	// checkout. Found once, in newSandbox, where a walk that cannot finish can refuse the
+	// run; shieldRules gives each the workspace shields its enclosing checkout gets.
+	nestedCheckouts map[string][]string
 	// shieldCache memoizes the run's assembled shield set. Assembling it walks every
 	// DenyAll credential/history/persistence store on the host - isDir/listDir/resolve per
 	// entry - and the set is reached roughly ten times per compile: the mount emission from

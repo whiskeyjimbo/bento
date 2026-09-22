@@ -5,8 +5,10 @@ package linux
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -669,5 +671,51 @@ func TestNewSandboxRefusesAReadOnlyPathThatIsNotAFile(t *testing.T) {
 		t.Errorf("an existing file must be accepted: %v", err)
 	} else {
 		cleanup()
+	}
+}
+
+// findNestedCheckouts finds a checkout by the NAME .git, directory or file (a linked
+// worktree or submodule working tree), never looks inside one, stays inside the grant,
+// and leaves out the grant's own checkout, which workspaceShields already anchors.
+func TestFindNestedCheckouts(t *testing.T) {
+	grant := t.TempDir()
+	outside := t.TempDir()
+	for _, d := range []string{".git/modules/x/.git", "vendor/lib/.git", "a/b/wt", filepath.Join(outside, "repo/.git")} {
+		p := d
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(grant, d)
+		}
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(grant, "a/b/wt/.git"), []byte("gitdir: /elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(grant, "link")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findNestedCheckouts(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	want := []string{filepath.Join(grant, "a/b/wt"), filepath.Join(grant, "vendor/lib")}
+	if !slices.Equal(got, want) {
+		t.Errorf("found %q, want %q", got, want)
+	}
+}
+
+// A .git entry is plantable under a write grant, so the count is bounded: past it the
+// run is refused, never shielded short and never mounted thousands of times over.
+func TestFindNestedCheckoutsRefusesPastTheBound(t *testing.T) {
+	grant := t.TempDir()
+	for i := range maxNestedCheckouts + 1 {
+		if err := os.MkdirAll(filepath.Join(grant, fmt.Sprint(i), ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := findNestedCheckouts(grant); err == nil {
+		t.Error("a grant holding more checkouts than the bound was walked without refusal")
 	}
 }

@@ -1020,6 +1020,25 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 		sb.proxySocket = filepath.Join(dir, "proxy.sock")
 	}
 
+	sb.nestedCheckouts = map[string][]string{}
+	for _, w := range p.Write {
+		rw := sb.resolve(w)
+		if !sb.isDir(rw) {
+			continue
+		}
+		if _, done := sb.nestedCheckouts[rw]; done {
+			continue
+		}
+		found, err := bounded("the search of "+rw+" for git checkouts", func() ([]string, error) {
+			return findNestedCheckouts(rw)
+		})
+		if err != nil {
+			cleanup()
+			return sandbox{}, noop, err
+		}
+		sb.nestedCheckouts[rw] = found
+	}
+
 	// Caller-supplied deny paths join the built-in deny-list. Built here, after the
 	// resolve/stat seams are set, so the shield-cleanup defer in Profile sees them.
 	if sb.extraDeny, err = buildExtraDeny(denyPaths, sb); err != nil {

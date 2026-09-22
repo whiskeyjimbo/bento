@@ -350,3 +350,39 @@ exit 0
 		}
 	}
 }
+
+// Workspace shields anchored only at the checkout enclosing each write grant, so a git
+// repository further down - a vendored repo, a monorepo's sub-checkout - kept a writable
+// .git/hooks, and a hook planted there ran on the host at the next commit in it.
+func TestANestedCheckoutsHooksAreShielded(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+
+	m := writeRunnableManifest(t, "echo planted > vendor/lib/.git/hooks/pre-commit; echo planted > vendor/lib/.git/config; echo planted > wt/.git; exit 0\n", &policy.Policy{
+		Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."},
+	})
+	nested := filepath.Join(filepath.Dir(m), "vendor", "lib")
+	if out, err := exec.Command("git", "init", "-q", nested).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// A linked worktree's .git is a pointer file; repointing it at a gitdir the run
+	// fabricates runs that gitdir's hooks at the next git command in the worktree.
+	wt := filepath.Join(filepath.Dir(m), "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d:\n%s", got, stderr)
+	}
+	for _, p := range []string{"vendor/lib/.git/hooks/pre-commit", "vendor/lib/.git/config", "wt/.git"} {
+		if b, _ := os.ReadFile(filepath.Join(filepath.Dir(m), p)); strings.Contains(string(b), "planted") {
+			t.Errorf("%s was planted on the host through the write grant above it", p)
+		}
+	}
+}

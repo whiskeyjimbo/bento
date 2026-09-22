@@ -168,20 +168,26 @@ that directory joins the one-level list when it lands inside a write grant. It i
 same fixed cost as the named directories, not a walk: `gitDirShields` DenyWrites
 `.git/config` and every `config.worktree`, so the value cannot move mid-run.
 
-**The report is a hint, not a fence, and it is deliberately not exhaustive.** Two
-things it does not see: an independent nested repo under the grant (a monorepo's
-inner `package.json`), and a repo created during the run. Covering them means
-walking the granted tree instead of stating a fixed set of
-paths, which costs O(tree) twice per run and gives up the property that makes the
-report readable - short enough to print whole. That trade buys a better *hint* and no
-fence at all, which is the whole reason it is not taken: what the report names has
-never been what the shields cover.
+**The report is a hint, not a fence, and it is deliberately not exhaustive.** It does
+not see an independent nested repo under the grant (a monorepo's inner
+`package.json`), or a repo created during the run.
 
-These same two are fence residuals too, and the report is not what would close them.
-`gitDirShields` says so in its own terms: a nested repo created anywhere under the
-grant keeps a `.git/hooks` the workspace shields do not reach, because those anchor at
-the enclosing checkout. Widening the *report* would surface such a hook after the fact;
-it would not stop one being planted. The in-tree hook-runner case cannot be fenced at
+The fence does cover a nested repo that exists when the run starts. Before launch
+bento walks each write grant for entries named `.git` - by name, never reading them,
+and without following symlinks - and gives every checkout it finds the same
+workspace shields the enclosing one gets. It refuses the run past 64 of them rather
+than mounting a planted forest, and refuses a walk it could not finish. The walk costs
+O(tree) once per run: about 10ms for a 6,000-entry checkout and 130ms for 320,000
+entries on a warm cache. The cost to legitimate work is the enclosing checkout's
+already: inside the run, a directory holding a nested repo cannot be renamed, and
+`rm -rf` of it stops at the shield mounts.
+
+A repo created during the run stays a fence residual, and nothing mounted before
+launch can reach it: `git init sub` inside the grant makes a `sub/.git/hooks` that
+exists only after the shields were set. It is inert until a developer runs git in
+`sub` on the host, which is the risk to know about when reviewing what a run left
+behind. Widening the *report* would surface such a hook after the fact; it would not
+stop one being planted. The in-tree hook-runner case cannot be fenced at
 all by construction - the hooks are ordinary project files under a write grant - so
 there the report is the only visibility there is, which is why it resolves
 `core.hooksPath` rather than guessing at the directory's name.
