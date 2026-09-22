@@ -56,11 +56,22 @@ type Set struct {
 	// able to talk its way out of. The rule is kept beside the resolved path because that
 	// sentence names the caller's own spelling.
 	extraDeny []Applied
+	// targets are where each of rules mounts, as target answered it during assembly, keyed
+	// by the rule's path. Mount is asked again for the whole set on every derivation of a
+	// run's shields, and resolving several hundred rules per ask is what it cost before
+	// this existed. Written only in Assemble, so a Set passed by value stays safe to share.
+	targets map[string]mountTarget
 	// truncatedStores are the credential stores the link expansion could not walk whole -
 	// stopped by MaxWalkDepth or by a directory read that did not complete - by the path
 	// the deny-list spelled them. A store in here is expanded only as far as the walk
 	// reached, so a farm target it links out to beyond that carries no shield of its own.
 	truncatedStores []string
+}
+
+// mountTarget is one answer of target: where a rule's shield mounts, and whether it does.
+type mountTarget struct {
+	resolved string
+	ok       bool
 }
 
 // Applied is a rule paired with where its shield actually mounts. The rule is kept whole
@@ -140,6 +151,11 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// says the shield has no opt-in, rather than naming a dotfile the caller never
 	// mentioned.
 	s.rules = append(append(slices.Clone(base), extraDeny...), links...)
+	s.targets = make(map[string]mountTarget, len(s.rules))
+	for _, r := range s.rules {
+		rp, ok := s.target(r.Path)
+		s.targets[r.Path] = mountTarget{rp, ok}
+	}
 	s.applied = s.Mount(s.rules)
 	return s
 }
@@ -190,8 +206,12 @@ func (s Set) TruncatedStores() []string { return s.truncatedStores }
 func (s Set) Mount(rules []denylist.Rule) []Applied {
 	var out []Applied
 	for _, r := range rules {
-		if rp, ok := s.target(r.Path); ok {
-			out = append(out, Applied{Rule: r, Resolved: rp})
+		t, known := s.targets[r.Path]
+		if !known {
+			t.resolved, t.ok = s.target(r.Path)
+		}
+		if t.ok {
+			out = append(out, Applied{Rule: r, Resolved: t.resolved})
 		}
 	}
 	return out
