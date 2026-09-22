@@ -126,15 +126,18 @@ func TestHookAllowIsOptIn(t *testing.T) {
 func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 	noOptIn := agentPolicy()
 	noOptIn.ExtraArgs = false
+	wide := agentPolicy()
+	wide.Write = []string{".."}
 	for name, tc := range map[string]struct {
 		manifest, payload, reason string
 	}{
-		"unapproved manifest": {writeAgentManifest(t, agentPolicy(), false), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "approv"},
-		"no extra_args":       {writeAgentManifest(t, noOptIn, true), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "extra_args"},
-		"missing manifest":    {filepath.Join(t.TempDir(), "absent.yaml"), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "absent.yaml"},
-		"malformed payload":   {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":`, "payload"},
-		"no cwd":              {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "cwd"},
-		"no command":          {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{}}`, "command"},
+		"unapproved manifest":  {writeAgentManifest(t, agentPolicy(), false), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "approv"},
+		"replaceable manifest": {writeAgentManifest(t, wide, true), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "renamed"},
+		"no extra_args":        {writeAgentManifest(t, noOptIn, true), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "extra_args"},
+		"missing manifest":     {filepath.Join(t.TempDir(), "absent.yaml"), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, "absent.yaml"},
+		"malformed payload":    {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":`, "payload"},
+		"no cwd":               {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "cwd"},
+		"no command":           {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{}}`, "command"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, raw := runHook(t, tc.manifest, tc.payload, true)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -754,6 +755,11 @@ func admitTier(p *policy.Policy, opts Options, probed, required Report) error {
 		}
 		for _, ro := range opts.ReadOnlyPaths {
 			for _, w := range p.Write {
+				// ro arrives symlink-resolved, so the grant has to be compared the way the
+				// sandbox would bind it.
+				if r, err := filepath.EvalSymlinks(w); err == nil {
+					w = r
+				}
 				if policy.CoversResolved(w, ro) {
 					return &Refusal{
 						Report: required,

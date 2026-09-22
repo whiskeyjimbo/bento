@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/whiskeyjimbo/bento/gate"
 )
 
 func newHookCmd() *cobra.Command {
@@ -77,14 +79,21 @@ func claudeCodeHook(in io.Reader, out io.Writer, manifestPath, bentoPath string,
 	if err != nil {
 		return writeHookDecision(out, "deny", fmt.Sprintf("bento: %v", err), nil)
 	}
-	// Checked here as well as by the run itself, so the agent reads why at once instead of
-	// a run that refuses after the user already approved the prompt.
+	// The run's refusals that depend on the manifest alone, asked here too so the agent
+	// reads why at once instead of a run that refuses after the user approved the prompt.
 	doc, _, err := loadDocument(abs)
 	if err == nil {
 		err = requireApproval(doc, false)
 	}
 	if err == nil && !doc.Policy.ExtraArgs {
 		err = errors.New("the manifest does not set extra_args: true, so it cannot run a command it was not written with")
+	}
+	if err == nil {
+		if resolved := resolvedGrants(doc.Policy, abs); resolved == nil {
+			err = errors.New("its grants could not be resolved on this host")
+		} else if problems := gate.ManifestProblems(abs, resolved); len(problems) > 0 {
+			err = errors.New(strings.Join(problems, "; "))
+		}
 	}
 	if err != nil {
 		return writeHookDecision(out, "deny", fmt.Sprintf("bento: %s: %v", abs, err), nil)

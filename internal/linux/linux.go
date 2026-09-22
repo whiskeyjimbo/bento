@@ -94,6 +94,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		}
 		for _, ro := range opts.ReadOnlyPaths {
 			for _, w := range p.Write {
+				// ro arrives symlink-resolved, so the grant has to be compared the way the
+				// sandbox would bind it.
+				if r, err := filepath.EvalSymlinks(w); err == nil {
+					w = r
+				}
 				if policy.CoversResolved(w, ro) {
 					return enforce.Result{}, fmt.Errorf("linux: %s cannot be kept read-only by the degraded tier under the write grant %q: it has no mount namespace", ro, w)
 				}

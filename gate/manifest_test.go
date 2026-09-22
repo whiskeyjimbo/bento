@@ -34,6 +34,16 @@ func TestManifestProblemsNamesEveryWayAroundTheBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := filepath.Join(t.TempDir(), "elsewhere")
+	// A symlinked DIRECTORY on the way to the manifest, in a tree a write grant covers
+	// that is not an ancestor of the manifest's real directory.
+	side := filepath.Join(root, "side")
+	if err := os.Mkdir(side, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, filepath.Join(side, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	viaDir := filepath.Join(side, "alias", "m.yaml")
 
 	for name, tc := range map[string]struct {
 		given       string
@@ -41,13 +51,15 @@ func TestManifestProblemsNamesEveryWayAroundTheBind(t *testing.T) {
 		hardlink    bool
 		want        string
 	}{
-		"write grant at its directory":             {given: m, write: []string{sub}},
-		"read grant at its directory under write":  {given: m, read: []string{sub}, write: []string{root}, want: "renamed"},
-		"write grants at and above its directory":  {given: m, write: []string{sub, root}, want: "renamed"},
-		"no write grant reaches it":                {given: m, write: []string{other}},
-		"directory renameable under a wider write": {given: m, write: []string{root}, want: "renamed"},
-		"named through a symlink":                  {given: link, write: []string{sub}, want: "symlink"},
-		"another hard link":                        {given: m, write: []string{sub}, hardlink: true, want: "hard link"},
+		"write grant at its directory":                   {given: m, write: []string{sub}},
+		"read grant at its directory under write":        {given: m, read: []string{sub}, write: []string{root}, want: "renamed"},
+		"write grants at and above its directory":        {given: m, write: []string{sub, root}, want: "renamed"},
+		"no write grant reaches it":                      {given: m, write: []string{other}},
+		"directory renameable under a wider write":       {given: m, write: []string{root}, want: "renamed"},
+		"named through a symlink":                        {given: link, write: []string{sub}, want: "symlink"},
+		"through a symlinked directory":                  {given: viaDir, write: []string{sub, side}, want: "symlink"},
+		"through a symlinked directory no grant reaches": {given: viaDir, write: []string{sub}},
+		"another hard link":                              {given: m, write: []string{sub}, hardlink: true, want: "hard link"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if tc.hardlink {

@@ -2,6 +2,7 @@ package gate
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/whiskeyjimbo/bento/policy"
@@ -30,18 +31,25 @@ func ManifestProblems(path string, resolved *policy.Policy) []string {
 	if err != nil {
 		return []string{fmt.Sprintf("manifest %q: %v", path, err)}
 	}
-	// The name as given, with only its directory resolved: that is the entry a run could
-	// unlink, which for a symlink is the link and not what it points at.
-	named := abs
-	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-		named = filepath.Join(dir, filepath.Base(abs))
-	}
 	writable := func(p string) bool {
 		return len(writeGrantsCovering(resolved, p)) > 0
 	}
 	var problems []string
-	if named != real && writable(named) {
-		problems = append(problems, fmt.Sprintf("manifest %q is named through a symlink a write grant can replace; run it by its real path %q", path, real))
+	// Every symlink on the way to the manifest, the leaf and every directory above it, is
+	// an entry a run could swing to a manifest of its own for the next run by this name,
+	// wherever it lives. The bind protects only the file the links lead to today.
+	for p := abs; p != filepath.Dir(p); p = filepath.Dir(p) {
+		fi, err := os.Lstat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		at := p
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+			at = filepath.Join(dir, filepath.Base(p))
+		}
+		if writable(at) {
+			problems = append(problems, fmt.Sprintf("manifest %q is named through the symlink %q, which a write grant can replace; run it by its real path %q", path, p, real))
+		}
 	}
 	if !writable(real) {
 		return problems

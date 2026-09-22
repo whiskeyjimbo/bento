@@ -644,3 +644,30 @@ func TestCallerDenyOnAnUnreadableDirectoryRefusesTheLaunch(t *testing.T) {
 		t.Fatalf("credentialFiles over an unreadable caller deny = %v, want a refusal naming %q", err, store)
 	}
 }
+
+// A read-only path is one file bound over itself. A directory would need DenyPaths'
+// refusals, and an absent path would be created as a host artifact, so newSandbox
+// refuses both rather than binding something other than what the caller named.
+func TestNewSandboxRefusesAReadOnlyPathThatIsNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &policy.Policy{Entrypoint: entry, Write: []string{dir}}
+	for name, ro := range map[string]string{
+		"a directory": dir,
+		"absent":      filepath.Join(dir, "absent.yaml"),
+		"relative":    "bento.yaml",
+	} {
+		if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{ro}); err == nil {
+			cleanup()
+			t.Errorf("%s: newSandbox accepted %q as a read-only file", name, ro)
+		}
+	}
+	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, []string{entry}); err != nil {
+		t.Errorf("an existing file must be accepted: %v", err)
+	} else {
+		cleanup()
+	}
+}

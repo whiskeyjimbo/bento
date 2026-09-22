@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -1896,19 +1898,28 @@ func TestRunForwardsReadOnlyPaths(t *testing.T) {
 // be writable there: refused. Outside every write grant nothing can write it anyway, so the
 // same option must not cost a degraded run whose manifest sits elsewhere.
 func TestDegradedTierRefusesReadOnlyPathsUnderAWriteGrant(t *testing.T) {
+	// A grant spelled through a symlink covers the resolved path it binds, and the read-only
+	// path arrives resolved, so the comparison has to resolve the grant too.
+	real := t.TempDir()
+	viaLink := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, viaLink); err != nil {
+		t.Fatal(err)
+	}
 	for name, tc := range map[string]struct {
 		write  []string
+		ro     string
 		refuse bool
 	}{
-		"under a write grant": {[]string{"/w"}, true},
-		"outside every grant": {[]string{"/out"}, false},
+		"under a write grant":                {[]string{"/w"}, "/w/bento.yaml", true},
+		"under a write grant through a link": {[]string{viaLink}, filepath.Join(real, "bento.yaml"), true},
+		"outside every grant":                {[]string{"/out"}, "/w/bento.yaml", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeEnforcer{}
 			f.probe.Add(LayerFilesystem, Degraded, "no user namespaces")
 			p := validPolicy()
 			p.Write = tc.write
-			_, err := Run(context.Background(), f, p, Process{}, Options{AllowDegraded: true, ReadOnlyPaths: []string{"/w/bento.yaml"}})
+			_, err := Run(context.Background(), f, p, Process{}, Options{AllowDegraded: true, ReadOnlyPaths: []string{tc.ro}})
 			var refusal *Refusal
 			if got := errors.As(err, &refusal); got != tc.refuse {
 				t.Fatalf("refused = %v (err %v), want %v", got, err, tc.refuse)
