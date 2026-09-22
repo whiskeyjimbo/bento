@@ -4,6 +4,7 @@ package linux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -507,5 +508,47 @@ func TestTheAutoExecReportLayerReportsAHostWithNoGit(t *testing.T) {
 	}
 	if !reported {
 		t.Error("Probe reported no auto-exec-report layer, so doctor's table has no row for it and a host with no git still reads as clean")
+	}
+}
+
+// Every grant's hook directory is tested for containment against every write grant, and
+// resolving the grants inside that test made one pass cost W^2 symlink resolutions - 14,520
+// at 240 grants under one checkout, most of a launch's stats. The grants are resolved once
+// per pass, so eight times the grants must cost about eight times the resolutions. The
+// hook directory sits under no grant, which is the shape that runs the containment test to
+// the end: a match on an early grant would stop it and hide the cost.
+func TestHookRunnerDirsResolvesEachGrantOncePerPass(t *testing.T) {
+	shim := t.TempDir()
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\necho "+hooks+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	calls := 0
+	real := evalSymlinks
+	evalSymlinks = func(p string) (string, error) { calls++; return real(p) }
+	t.Cleanup(func() { evalSymlinks = real })
+
+	checkout := t.TempDir()
+	resolutions := func(n int) int {
+		var writes []string
+		for i := range n {
+			w := filepath.Join(checkout, fmt.Sprintf("g%d", i))
+			if err := os.MkdirAll(w, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writes = append(writes, w)
+		}
+		calls = 0
+		got, unresolved := hookRunnerDirs(writes)
+		if len(got) != 0 || len(unresolved) != 0 {
+			t.Fatalf("hookRunnerDirs = %v, unresolved %v; the fixture needs a hook directory under no grant", got, unresolved)
+		}
+		return calls
+	}
+	small, large := resolutions(8), resolutions(64)
+	t.Logf("symlink resolutions per pass: %d at 8 grants, %d at 64", small, large)
+	if ratio := float64(large) / float64(small); ratio > 8.5 {
+		t.Errorf("eight times the write grants cost %.1fx the symlink resolutions (%d -> %d); each grant should be resolved once per pass, not once per grant it is compared against", ratio, small, large)
 	}
 }

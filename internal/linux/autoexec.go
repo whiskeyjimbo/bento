@@ -121,7 +121,11 @@ var autoExecDirs = []string{
 // answer does not mean the grant has no hook directory, it means this run cannot see the
 // one it has, and an empty report from such a host would otherwise read exactly like an
 // empty report from a clean one.
-func hookRunnerDir(grant string, writes []string) (string, error) {
+//
+// resolvedWrites are the write grants already resolved, once per pass by the caller: this
+// runs once per grant, and resolving them here made a pass cost grants squared symlink
+// walks.
+func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 	// The deadline is this call's own rather than the run's: changed() asks again after
 	// the target, on the cancelled path too, and a cancelled run's context would fail
 	// every resolution there and report the answer unseeable when it was merely late to
@@ -158,8 +162,8 @@ func hookRunnerDir(grant string, writes []string) (string, error) {
 		dir = filepath.Join(grant, dir)
 	}
 	dir = resolved(dir)
-	for _, w := range writes {
-		rel, err := filepath.Rel(resolved(w), dir)
+	for _, w := range resolvedWrites {
+		rel, err := filepath.Rel(w, dir)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
 			return dir, nil
 		}
@@ -298,8 +302,12 @@ func baselineAutoExec(writes []string) autoExecBaseline {
 // unresolved names the grants git could not answer for, so the caller can say the report
 // is short rather than let a host where git failed read like a clean one.
 func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
+	resolvedWrites := make([]string, 0, len(writes))
 	for _, w := range writes {
-		h, err := hookRunnerDir(w, writes)
+		resolvedWrites = append(resolvedWrites, resolved(w))
+	}
+	for _, w := range writes {
+		h, err := hookRunnerDir(w, resolvedWrites)
 		if err != nil {
 			unresolved = append(unresolved, w)
 			continue
