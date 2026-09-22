@@ -169,6 +169,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 			shieldRecord.Close()
 		}
 	}()
+	if err := preflight.createShieldAncestors(sb); err != nil {
+		return enforce.Result{}, err
+	}
 
 	// When the policy allows egress (or a gate supervises it), run the allowlist
 	// proxy on the sandbox's unix socket for the lifetime of the run. The sandbox
@@ -701,6 +704,23 @@ type preflighted struct {
 // run, so the caller can remove them afterwards.
 func (pf preflighted) createdShields(sb sandbox) (dirs, files []string) {
 	return createdShields(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, shield.Targets(pf.optIns))
+}
+
+// createShieldAncestors makes the directories pinShieldAncestors binds that do not exist
+// yet. Each is an absent directory inside a write grant above an absent shield target,
+// which createdShields already lists, so the removal after the run covers it - call this
+// only once that list is recorded.
+func (pf preflighted) createShieldAncestors(sb sandbox) error {
+	_, applied := denyArgs(sb, exposedPaths(sb, pf.reads, pf.writes), pf.writes, shield.Targets(pf.optIns))
+	for _, d := range shieldAncestors(sb, applied, pf.writes) {
+		if sb.exists(d) {
+			continue
+		}
+		if err := os.Mkdir(d, 0o700); err != nil {
+			return fmt.Errorf("linux: creating %s so it can be pinned above its shield: %w", d, err)
+		}
+	}
+	return nil
 }
 
 // preflightGrants decides everything that can refuse a run and then prepares the host

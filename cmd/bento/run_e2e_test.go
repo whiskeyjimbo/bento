@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -308,5 +309,44 @@ exit 0
 	}
 	if _, err := os.Stat(m); err != nil {
 		t.Errorf("the manifest is gone from where it was approved: %v", err)
+	}
+}
+
+// A shield is a bind over one path, and the kernel refuses to rename a mount point but
+// not a directory above one: renaming .git carried the .git/hooks bind away with it, and
+// a fresh .git/hooks/pre-commit landed on the host to run at the developer's next commit.
+// Every directory between a write grant and a shield has to hold still for the shield
+// to mean anything - including one the shield itself had to create, like an absent .cargo.
+func TestRenamingAShieldsParentDoesNotReachTheHost(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+
+	script := `touch .git/objects/written || exit 6
+mv .git .git.old 2>/dev/null && mkdir -p .git/hooks && echo planted > .git/hooks/pre-commit
+mv .cargo .cargo.old 2>/dev/null; mkdir -p .cargo && echo planted > .cargo/config.toml
+exit 0
+`
+	m := writeRunnableManifest(t, script, &policy.Policy{
+		Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}, Exec: policy.ExecAll,
+	})
+	dir := filepath.Dir(m)
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d (6: the pin left .git unwritable, which the grant made writable):\n%s", got, stderr)
+	}
+	// .cargo did not exist before the run; the pin had to create it, and the run's
+	// shield cleanup must take it away again.
+	if _, err := os.Lstat(filepath.Join(dir, ".cargo")); err == nil {
+		t.Error("the run left a .cargo directory on the host that it created to pin")
+	}
+	for _, p := range []string{".git/hooks/pre-commit", ".cargo/config.toml"} {
+		if b, _ := os.ReadFile(filepath.Join(dir, p)); strings.Contains(string(b), "planted") {
+			t.Errorf("%s was planted on the host by renaming the directory above its shield", p)
+		}
 	}
 }

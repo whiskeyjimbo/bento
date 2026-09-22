@@ -161,6 +161,9 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 			shieldRecord.Close()
 		}
 	}()
+	if err := preflight.createShieldAncestors(sb); err != nil {
+		return profile.Observation{}, err
+	}
 
 	// Inside the run's own 0700 directory rather than shared /tmp, and read back below
 	// through this handle rather than by path: between the child exiting and a re-open,

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -522,7 +523,53 @@ func denyArgs(sb sandbox, grants, writes, optIns []string) ([]string, []denylist
 	}
 	emit(denylist.DenyWrite)
 	emit(denylist.DenyAll)
-	return args, applied
+	return append(pinShieldAncestors(sb, applied, writes), args...), applied
+}
+
+// pinShieldAncestors binds every directory strictly between a write grant and an applied
+// shield onto itself. A shield is a mount, and the kernel refuses to rename a mount point
+// but not a directory above one: without this, `mv .git .git.old` carries the .git/hooks
+// bind away inside it, and a fresh .git/hooks/pre-commit lands on the host to run at the
+// developer's next commit. Each pin is a read-write bind, so the directory stays as
+// writable as its grant made it - only its name holds still.
+//
+// Emitted before the shields. bwrap re-applies a bind's flags to every mount beneath it,
+// so a read-write pin taken over a read-only shield would make the shield writable again.
+// And bwrap refuses a bind whose source is absent when it starts, so a directory that
+// does not exist yet - .cargo, above an absent .cargo/config.toml - is created before
+// launch by createShieldAncestors.
+func pinShieldAncestors(sb sandbox, applied []denylist.Rule, writes []string) []string {
+	var args []string
+	for _, d := range shieldAncestors(sb, applied, writes) {
+		args = append(args, "--bind", d, d)
+	}
+	return args
+}
+
+// shieldAncestors is every directory strictly between a write grant and one of the
+// applied shields, outermost first so each pin lands inside the one above it and the
+// order does not depend on map iteration.
+func shieldAncestors(sb sandbox, applied []denylist.Rule, writes []string) []string {
+	roots := make([]string, 0, len(writes))
+	for _, w := range writes {
+		roots = append(roots, sb.resolve(w))
+	}
+	set := map[string]bool{}
+	for _, r := range applied {
+		for _, root := range roots {
+			if !policy.CoversResolved(root, r.Path) {
+				continue
+			}
+			for d := filepath.Dir(r.Path); d != root && policy.CoversResolved(root, d); d = filepath.Dir(d) {
+				set[d] = true
+			}
+		}
+	}
+	out := slices.Collect(maps.Keys(set))
+	slices.SortFunc(out, func(a, b string) int {
+		return cmp.Or(cmp.Compare(strings.Count(a, "/"), strings.Count(b, "/")), strings.Compare(a, b))
+	})
+	return out
 }
 
 // createdShields returns the host paths bwrap will create for this run's shield mount
