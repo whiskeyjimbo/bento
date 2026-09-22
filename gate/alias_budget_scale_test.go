@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/shield"
@@ -34,6 +35,17 @@ func budgetHome(t *testing.T) (root, key string) {
 	return root, key
 }
 
+// hostSet is the set Check builds, over whatever HOME the test has set: the scan resolves
+// through it, so a zero set has nothing to resolve with.
+func hostSet(t *testing.T) shield.Set {
+	t.Helper()
+	set, err := ShieldSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
 func fill(t *testing.T, dir string, n int) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -53,7 +65,7 @@ func spent(t *testing.T, reads []string) int {
 	t.Helper()
 	const plenty = 1 << 30
 	budget := plenty
-	credentialAliasesWithin(shield.Set{}, reads, nil, &budget)
+	credentialAliasesWithin(hostSet(t), reads, nil, &budget)
 	return plenty - budget
 }
 
@@ -101,7 +113,7 @@ func TestTheAnchorWalkIsBoundedAtAnySize(t *testing.T) {
 			fill(t, filepath.Join(root, "home", ".gnupg"), tc.n)
 
 			budget := 100
-			_, short, partial := credentialAliasesWithin(shield.Set{}, []string{grant}, nil, &budget)
+			_, short, partial := credentialAliasesWithin(hostSet(t), []string{grant}, nil, &budget)
 			if budget != 0 {
 				t.Errorf("a %d-entry store left %d of a 100-entry allowance; the walk must stop on it", tc.n, budget)
 			}
@@ -128,7 +140,7 @@ func TestTheGrantsTheBudgetRanOutBeforeAreNamed(t *testing.T) {
 	anchors := spent(t, nil)
 
 	scan := func(budget int, reads ...string) (int, []string) {
-		found, short, _ := credentialAliasesWithin(shield.Set{}, reads, nil, &budget)
+		found, short, _ := credentialAliasesWithin(hostSet(t), reads, nil, &budget)
 		return len(found), short
 	}
 	if found, short := scan(anchors+50, cache, backup); found != 0 || !slices.Equal(short, []string{backup, cache}) {
@@ -139,5 +151,41 @@ func TestTheGrantsTheBudgetRanOutBeforeAreNamed(t *testing.T) {
 	}
 	if found, short := scan(anchors+1000, cache, backup); found != 1 || len(short) != 0 {
 		t.Errorf("an allowance both trees fit inside leaves nothing unwalked; found %d, unwalked %v", found, short)
+	}
+}
+
+// The scan anchors where the shield set says a store lands, so it resolves through the
+// set's own FS rather than asking the host a second time: the two answering differently is
+// the divergence internal/shield exists to prevent, and the set has already resolved most
+// of the anchors while assembling. An FS that relocates ~/.ssh is only honored by a scan
+// that asks it.
+func TestTheAliasScanResolvesAsTheShieldSetDoes(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	elsewhere := filepath.Join(root, "elsewhere", ".ssh")
+	fill(t, home, 0)
+	fill(t, elsewhere, 0)
+	key := filepath.Join(elsewhere, "id_ed25519")
+	if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(key, key+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	fs := shield.Host()
+	hostResolve := fs.Resolve
+	fs.Resolve = func(p string) string {
+		if rest, ok := strings.CutPrefix(p, filepath.Join(home, ".ssh")); ok {
+			return elsewhere + rest
+		}
+		return hostResolve(p)
+	}
+	set := shield.Assemble(fs, []string{home}, filepath.Join(root, "run"), nil)
+
+	budget := 1 << 30
+	want, _, _, _ := aliasableCredentials(set, nil, &budget)
+	if len(want) == 0 {
+		t.Error("the scan did not anchor on the store where the shield set's FS puts it")
 	}
 }

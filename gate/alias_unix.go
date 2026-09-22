@@ -12,7 +12,6 @@ import (
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
-	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 	"github.com/whiskeyjimbo/bento/internal/shield"
 	"github.com/whiskeyjimbo/bento/policy"
 )
@@ -39,9 +38,13 @@ type fileID struct {
 // manifest names. A subset, so it can miss an alias the run finds and never invent one -
 // and the grants are what a reader of this answer can act on anyway.
 //
-// It costs a walk of the credential anchors on every Check - 2.5ms on a developer home,
-// which took `bento validate` from 20ms to 22.5ms - and a walk of the granted trees only
-// where that first walk found a credential carrying a second directory entry. That gate is
+// It costs resolving and walking the credential anchors on every Check - 2.5ms on a
+// developer home, which took `bento validate` from 20ms to 22.5ms, and more of it the
+// resolution than the walk: on the measured host the walk was 178 entries while resolving
+// the anchor list was 735 syscalls. So the anchors resolve through the shield set, whose
+// FS already answered the ones it names while assembling. Beyond that, a walk of the
+// granted trees only where the first walk found a credential carrying a second directory
+// entry. That gate is
 // the backend's too, and on a host with no such credential no grant is walked at all.
 //
 // Where it IS open, the granted trees are walked whole, and the cost is set by the number
@@ -98,7 +101,7 @@ func credentialAliasesWithin(set shield.Set, reads, writes []string, budget *int
 	}
 	roots := make([]string, len(grants))
 	for i, g := range grants {
-		roots[i], _ = pathresolve.Existing(filepath.Clean(g))
+		roots[i] = set.Resolve(filepath.Clean(g))
 	}
 	var out []enforce.CredentialAlias
 	whole := map[string]bool{}
@@ -120,8 +123,8 @@ func credentialAliasesWithin(set shield.Set, reads, writes []string, budget *int
 			//
 			// The comparison is by string, across two walks rooted differently - shielded
 			// from the anchor, a.Path from the grant - so it holds on two properties.
-			// Both roots are canonicalized before the walk (pathresolve.Existing above and
-			// at the anchor roots), and WalkDir descends only into a real directory, so
+			// Both roots are canonicalized before the walk (set.Resolve above and at the
+			// anchor roots), and WalkDir descends only into a real directory, so
 			// every component below either root is one too and the two walks spell the
 			// same file identically. Break either and this suppression misses, reporting a
 			// shielded credential as an alias of itself.
@@ -200,15 +203,13 @@ func aliasableCredentials(set shield.Set, reads []string, budget *int) (map[file
 	homes, _ := denylist.HomeAnchors()
 	roots := make([]string, 0, 128)
 	for _, a := range denylist.AliasAnchors(homes...) {
-		resolved, _ := pathresolve.Existing(a)
-		roots = append(roots, resolved)
+		roots = append(roots, set.Resolve(a))
 	}
 	// A hidden FILE rule is an anchor too: it is named because it holds a secret, and a
 	// single file is cheap to stat.
 	for _, r := range set.Rules() {
 		if r.Deny == denylist.DenyAll && !r.Dir {
-			resolved, _ := pathresolve.Existing(r.Path)
-			roots = append(roots, resolved)
+			roots = append(roots, set.Resolve(r.Path))
 		}
 	}
 	// A hidden DIRECTORY anchors only where the anchor list names it - except from these
@@ -218,8 +219,7 @@ func aliasableCredentials(set shield.Set, reads []string, budget *int) (map[file
 	// its own name, and nothing covers the half of one moved out from inside it.
 	for _, r := range slices.Concat(set.CallerDenies(), set.CredentialLinks()) {
 		if r.Deny == denylist.DenyAll && r.Dir {
-			resolved, _ := pathresolve.Existing(r.Path)
-			roots = append(roots, resolved)
+			roots = append(roots, set.Resolve(r.Path))
 		}
 	}
 	optIns := shield.Targets(set.OptIns(reads))

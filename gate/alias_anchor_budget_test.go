@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/whiskeyjimbo/bento/internal/shield"
 )
 
 // The anchor scan is the half of the credential-alias walk the budget did not reach: it
@@ -29,7 +27,7 @@ func TestAnchorWalkStopsOnItsBudget(t *testing.T) {
 	}
 
 	budget := 5
-	_, _, _, stopped := aliasableCredentials(shield.Set{}, nil, &budget)
+	_, _, _, stopped := aliasableCredentials(hostSet(t), nil, &budget)
 	if !stopped {
 		t.Error("an anchor holding more entries than the budget must be reported as stopped short")
 	}
