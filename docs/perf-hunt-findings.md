@@ -123,3 +123,55 @@ find, reproduced in the filing.
 - `cmd/bento/clamp.go`'s `Contains` call sites (`:99`, `:131`, ~2,160 resolves per write
   grant with no `shieldCache`, plus an unmemoized `Assemble` at `:566`) - read, not
   measured, so treat those numbers as derived.
+
+## Perf diff of the two fixes applied so far
+
+Base `9f80de6` against `aa5e915`, both built from a clean worktree, measured serially with
+nothing else running. Protocol matches the one `bv2-3pl4a` already established for this
+repo: `hyperfine -w 3 -r 20`, plus `strace -f -c` for the counts.
+
+Fixes in the diff: the gate anchor-walk bound (`76d98c5`) and the shield `loc` memo
+(`aa5e915`).
+
+### The default workload shows nothing
+
+`bento validate examples/agent/agent.manifest.yaml` - one read grant, one write grant:
+
+| | base | head |
+|---|---|---|
+| syscalls (stat + readlink) | 15,851 | 15,849 |
+| wall | 59.1 ms ± 6.3 | 62.7 ms ± 2.6 |
+
+Two syscalls apart, and wall time is a wash inside the error bars - if anything very
+slightly worse, which is the memo's cost showing: `Assemble` now resolves each rule's
+literal spelling once whether or not a write verdict ever asks for it. With one write
+grant there is no second ask to amortize it over.
+
+This is the result the hunt predicted and the reason the grid exists. A profiler pointed at
+this workload would have found nothing here, twice.
+
+### At 24 write grants it is the whole cost
+
+Same binaries, a manifest granting 24 write trees:
+
+| | base | head | |
+|---|---|---|---|
+| `newfstatat` | 81,866 | 13,141 | -84% |
+| `readlinkat` | 21,173 | 4,935 | -77% |
+| total | 103,039 | 18,076 | **5.7x fewer** |
+| wall | 246.2 ms ± 9.5 | 163.0 ms ± 6.6 | **1.51x ± 0.08 faster** |
+| system time | 76.7 ms | 32.2 ms | -58% |
+
+The shape is the point: the saving is per write grant, so it is invisible at one and
+dominant at two dozen. 84,963 syscalls removed from a single `validate`.
+
+### What this does not measure
+
+The gate anchor bound contributes nothing to either column above - the measuring host's
+credential anchors are far inside the 50k allowance, which is the correct behaviour for a
+bound rather than a speedup. Its effect shows only on a home whose stores exceed the
+budget, and what it changes there is that the answer stops and says so, which is a
+correctness gain, not a timing one.
+
+Nothing here touches the probe/exec findings, the `Relocated` quadratic, or the
+`internal/linux` half of the shield memo row. Those are still open.
