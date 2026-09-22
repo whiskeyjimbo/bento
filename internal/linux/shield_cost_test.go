@@ -150,3 +150,20 @@ func TestDenyArgsDoesNotProbeAShieldNoGrantReaches(t *testing.T) {
 		t.Errorf("denyArgs probed %d paths under the home, which no grant reaches", outside)
 	}
 }
+
+// Every derivation starts from the assembled set's own rules, and the memo keeps what each
+// derivation built. Appending onto the set's slice would write into capacity another
+// memoized answer already shares, handing one grant set another's workspace shields.
+func TestShieldRulesMemoKeepsEachAnswerApart(t *testing.T) {
+	sb := testSandbox("/w/.git/HEAD", "/w/x", "/v/.git/HEAD", "/v/x")
+	sb.shieldCache = &shieldMemo{}
+	sb.workspaceShieldCache = map[string][]denylist.Rule{}
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	want := slices.Clone(rulePaths(shieldRules(sb, []string{"/w"})))
+	shieldRules(sb, []string{"/v"})
+	for _, p := range rulePaths(shieldRules(sb, []string{"/w"})) {
+		if !slices.Contains(want, p) {
+			t.Fatalf("after deriving /v's shields, the memoized answer for /w holds %s", p)
+		}
+	}
+}

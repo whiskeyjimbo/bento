@@ -189,7 +189,8 @@ type sandbox struct {
 	// shieldRulesCache memoizes shieldRules for one run, keyed per call on each write
 	// grant's kind and checkout anchor as the host answers them at that call - see
 	// shieldRules for why the key is not the grants alone. denyArgs and createdShields
-	// each reach it from compile and from the launch preflight, all with the same grants.
+	// each reach it from compile and from the launch preflight; checkShieldsCarvable asks
+	// before prepareWriteDirs, which is the one ask whose key can differ from the rest.
 	// The rules hold the assembled shield set, so it is allocated with shieldCache, once
 	// the caller's denies are final; nil in a test literal, where the rules are simply
 	// derived each time.

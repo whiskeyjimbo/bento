@@ -150,7 +150,9 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 	// an expanded link both cover a grant, the refusal names the caller's own path and
 	// says the shield has no opt-in, rather than naming a dotfile the caller never
 	// mentioned.
-	s.rules = append(append(slices.Clone(base), extraDeny...), links...)
+	// Clipped, so a caller appending to Rules - the backend adds each workspace's rules
+	// to it - always copies rather than writing into capacity another caller shares.
+	s.rules = slices.Clip(append(append(slices.Clone(base), extraDeny...), links...))
 	s.targets = make(map[string]mountTarget, len(s.rules))
 	for _, r := range s.rules {
 		rp, ok := s.target(r.Path)
