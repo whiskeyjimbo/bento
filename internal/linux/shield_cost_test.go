@@ -4,6 +4,9 @@ package linux
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
@@ -64,5 +67,41 @@ func TestDerivedWorkspaceRulesWithNothingFoundResolvesNothing(t *testing.T) {
 	sb, n := projectSandbox(0, 0)
 	if got := resolvesOf(sb, n, func() { derivedWorkspaceRules(sb, "/w", shields(sb).Rules(), map[string]bool{}) }); got > 2 {
 		t.Errorf("a grant with nothing below it cost %d resolves", got)
+	}
+}
+
+// denyArgs and createdShields both derive the run's shields, from compile and again from
+// the launch preflight, with the same grants each time. After the first derivation the
+// rest must be answered without redoing it.
+func TestShieldRulesIsDerivedOncePerRun(t *testing.T) {
+	sb, n := projectSandbox(10, 2)
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	writes := []string{"/w", "/w/src"}
+	shieldRules(sb, writes)
+	if got := resolvesOf(sb, n, func() { shieldRules(sb, writes) }); got != 0 {
+		t.Errorf("a second shieldRules with the same grants cost %d resolves", got)
+	}
+}
+
+// The memo must not outlive what its answer was read from. checkShieldsCarvable derives
+// the shields before prepareWriteDirs creates the granted directories, and a grant absent
+// then is a checkout directory after: keyed on the grants alone, the memo would hand
+// denyArgs the answer from before the mkdir, and the new directory's hooks and editor
+// config would go unshielded under a write grant.
+func TestShieldRulesMemoMissesAGrantCreatedSinceTheLastCall(t *testing.T) {
+	files := map[string]bool{"/w/.git": true}
+	sb := testSandbox()
+	sb.exists = func(p string) bool { return files[p] }
+	sb.isDir = func(p string) bool {
+		return slices.ContainsFunc(slices.Collect(maps.Keys(files)), func(f string) bool { return strings.HasPrefix(f, p+"/") })
+	}
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
+	writes := []string{"/w/build"}
+	if slices.Contains(rulePaths(shieldRules(sb, writes)), "/w/.vscode") {
+		t.Fatal("an absent grant already derived workspace shields, so this cannot show the miss")
+	}
+	files["/w/build/out"] = true
+	if !slices.Contains(rulePaths(shieldRules(sb, writes)), "/w/.vscode") {
+		t.Error("after the grant's directory was created, its checkout's workspace shields are missing: the memo answered from before the mkdir")
 	}
 }

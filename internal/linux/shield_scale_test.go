@@ -111,6 +111,7 @@ func workspaceBenchSandbox(tb testing.TB, root string, memo bool) sandbox {
 	if memo {
 		sb.workspaceShieldCache = map[string][]denylist.Rule{}
 		sb.shieldCache = &shieldMemo{}
+		sb.shieldRulesCache = map[string][]denylist.Rule{}
 	}
 	return sb
 }

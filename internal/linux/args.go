@@ -186,6 +186,14 @@ type sandbox struct {
 	// by value: a map made lazily would live in one copy and be invisible to every other
 	// call site. A test literal leaves it nil, where the walk simply runs each time.
 	workspaceShieldCache map[string][]denylist.Rule
+	// shieldRulesCache memoizes shieldRules for one run, keyed per call on each write
+	// grant's kind and checkout anchor as the host answers them at that call - see
+	// shieldRules for why the key is not the grants alone. denyArgs and createdShields
+	// each reach it from compile and from the launch preflight, all with the same grants.
+	// The rules hold the assembled shield set, so it is allocated with shieldCache, once
+	// the caller's denies are final; nil in a test literal, where the rules are simply
+	// derived each time.
+	shieldRulesCache map[string][]denylist.Rule
 	// nestedCheckouts maps each resolved write grant to the git checkouts below it - every
 	// directory holding an entry named .git, other than the grant's own enclosing
 	// checkout. Found once, in newSandbox, where a walk that cannot finish can refuse the

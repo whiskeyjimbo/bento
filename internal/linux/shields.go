@@ -160,8 +160,14 @@ func shields(sb sandbox) shield.Set {
 // keeps denyArgs and createdShields enforcing and cleaning up the exact same
 // set - a divergence would either leak a host artifact or leave a path unshielded.
 func shieldRules(sb sandbox, writes []string) []denylist.Rule {
-	rules := shields(sb).Rules()
-	seen := map[string]bool{}
+	// The key is recomputed on every call, as workspaceShieldCache's is, because what it
+	// stands for moves within a run: checkShieldsCarvable asks before prepareWriteDirs
+	// creates the granted directories, and a grant that was absent then is a checkout
+	// with shields of its own after. Each grant's kind and anchor are exactly what the
+	// derivation below reads from the host, so a mkdir that changes either is a miss.
+	type grant struct{ w, root string }
+	var grants []grant
+	var key strings.Builder
 	for _, w := range writes {
 		// Workspace shields (git hooks, editor tasks) only make sense for a project
 		// directory. A write grant that is a plain file - or a path that does not
@@ -171,6 +177,16 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		if !sb.isDir(w) {
 			continue
 		}
+		root := checkoutRoot(sb, w)
+		grants = append(grants, grant{w, root})
+		key.WriteString(w + "\x00" + root + "\x00")
+	}
+	if rules, ok := sb.shieldRulesCache[key.String()]; ok {
+		return rules
+	}
+	rules := shields(sb).Rules()
+	seen := map[string]bool{}
+	for _, g := range grants {
 		// One checkout derives one set of shields however many grants land in it, and
 		// that is settled here rather than in each consumer: denyArgs collapses repeats
 		// on its resolved-shield key and createdShields has no such key, so a duplicate
@@ -179,10 +195,9 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// The root is asked for BEFORE the shields, so a repeat costs a walk up the parent
 		// chain rather than a second gitDirShields descent through .git/modules - which is
 		// what a sandbox carrying no workspaceShieldCache would pay otherwise.
-		root := checkoutRoot(sb, w)
-		if !seen[root] {
-			seen[root] = true
-			ws, _ := workspaceShields(sb, w)
+		if !seen[g.root] {
+			seen[g.root] = true
+			ws, _ := workspaceShields(sb, g.w)
 			rules = append(rules, ws...)
 		}
 		// Derived for every grant, repeat or not: the walk's findings are keyed by the
@@ -190,7 +205,12 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// the checkout and leave a broader one's nested checkouts and config unshielded.
 		// derivedWorkspaceRules drops what is already in force, so the overlap costs no
 		// duplicate mount.
-		rules = append(rules, derivedWorkspaceRules(sb, w, rules, seen)...)
+		rules = append(rules, derivedWorkspaceRules(sb, g.w, rules, seen)...)
+	}
+	// Clipped so a caller appending to the cached slice cannot write into another's.
+	rules = slices.Clip(rules)
+	if sb.shieldRulesCache != nil {
+		sb.shieldRulesCache[key.String()] = rules
 	}
 	return rules
 }

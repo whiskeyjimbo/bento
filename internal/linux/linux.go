@@ -1066,6 +1066,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 	// assembled set, denies included, so warming it any earlier would hand every later
 	// question a set the caller's shields never reached - and it would do it silently.
 	sb.shieldCache = &shieldMemo{}
+	sb.shieldRulesCache = map[string][]denylist.Rule{}
 
 	// compile re-binds the entrypoint and the interpreter read-only AFTER the
 	// deny-list, so either one can carry a fully-shielded file into the sandbox
