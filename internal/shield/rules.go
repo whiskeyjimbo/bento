@@ -169,6 +169,7 @@ func Assemble(fs FS, homes []string, runtimeDir string, extraDeny []denylist.Rul
 }
 
 // Resolve answers as the set resolved its own rules, through the FS it was assembled on.
+// Only an assembled set has one: the zero Set cannot be asked.
 func (s Set) Resolve(path string) string { return s.fs.Resolve(path) }
 
 // Shields is the set as the enforcer mounts it, for the callers that have to emit or

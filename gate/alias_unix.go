@@ -38,14 +38,14 @@ type fileID struct {
 // manifest names. A subset, so it can miss an alias the run finds and never invent one -
 // and the grants are what a reader of this answer can act on anyway.
 //
-// It costs resolving and walking the credential anchors on every Check - 2.5ms on a
-// developer home, which took `bento validate` from 20ms to 22.5ms, and more of it the
-// resolution than the walk: on the measured host the walk was 178 entries while resolving
+// It costs resolving and walking the credential anchors on every Check. That was 2.5ms on
+// a developer home when first measured, taking `bento validate` from 20ms to 22.5ms, and
+// more of it was the resolution than the walk: the walk was 178 entries while resolving
 // the anchor list was 735 syscalls. So the anchors resolve through the shield set, whose
 // FS already answered the ones it names while assembling. Beyond that, a walk of the
 // granted trees only where the first walk found a credential carrying a second directory
-// entry. That gate is
-// the backend's too, and on a host with no such credential no grant is walked at all.
+// entry. That gate is the backend's too, and on a host with no such credential no grant is
+// walked at all.
 //
 // Where it IS open, the granted trees are walked whole, and the cost is set by the number
 // of directory entries rather than by bytes. On a host holding one hardlinked key,

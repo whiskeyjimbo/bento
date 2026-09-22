@@ -157,8 +157,8 @@ func TestTheGrantsTheBudgetRanOutBeforeAreNamed(t *testing.T) {
 // The scan anchors where the shield set says a store lands, so it resolves through the
 // set's own FS rather than asking the host a second time: the two answering differently is
 // the divergence internal/shield exists to prevent, and the set has already resolved most
-// of the anchors while assembling. An FS that relocates ~/.ssh is only honored by a scan
-// that asks it.
+// of the anchors while assembling. An FS that relocates ~/.ssh, and a read grant, is only
+// honored by a scan that asks it - on both sides of the comparison.
 func TestTheAliasScanResolvesAsTheShieldSetDoes(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
@@ -172,12 +172,21 @@ func TestTheAliasScanResolvesAsTheShieldSetDoes(t *testing.T) {
 	if err := os.Link(key, key+".bak"); err != nil {
 		t.Fatal(err)
 	}
+	backup := filepath.Join(root, "backup")
+	fill(t, backup, 0)
+	if err := os.Link(key, filepath.Join(backup, "id_ed25519")); err != nil {
+		t.Fatal(err)
+	}
+	granted := filepath.Join(root, "granted")
 	t.Setenv("HOME", home)
 	fs := shield.Host()
 	hostResolve := fs.Resolve
 	fs.Resolve = func(p string) string {
 		if rest, ok := strings.CutPrefix(p, filepath.Join(home, ".ssh")); ok {
 			return elsewhere + rest
+		}
+		if p == granted {
+			return backup
 		}
 		return hostResolve(p)
 	}
@@ -187,6 +196,11 @@ func TestTheAliasScanResolvesAsTheShieldSetDoes(t *testing.T) {
 	want, _, _, _ := aliasableCredentials(set, nil, &budget)
 	if len(want) == 0 {
 		t.Error("the scan did not anchor on the store where the shield set's FS puts it")
+	}
+	budget = 1 << 30
+	found, _, _ := credentialAliasesWithin(set, []string{granted}, nil, &budget)
+	if len(found) != 1 {
+		t.Errorf("the grant was not walked where the shield set's FS puts it; found %v", found)
 	}
 }
 
@@ -205,6 +219,6 @@ func TestCheckStopsItsScanAtAliasBudget(t *testing.T) {
 	}
 	_, short, partial := credentialAliases(hostSet(t), []string{big}, nil)
 	if !partial || !slices.Equal(short, []string{big}) {
-		t.Errorf("a tree of %d entries under a %d-entry budget must come back partial with the grant named; got %v (partial %v)", (aliasBudget/1000+1)*1001, aliasBudget, short, partial)
+		t.Errorf("a tree of %d entries under a %d-entry budget must come back partial with the grant named; got %v (partial %v)", (aliasBudget/1000+1)*1001+1, aliasBudget, short, partial)
 	}
 }
