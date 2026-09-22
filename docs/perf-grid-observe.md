@@ -220,8 +220,10 @@ to preserve - **verify each in ptrace(2) / seccomp(2)**:
 - held entries (`holdOpen`, `inspectExistence`, `holdExecTarget`) still need their exit stop;
 - a tracee's own filter returning ERRNO, KILL or USER_NOTIF outranks TRACE, so those calls
   stop being visible - today they are seen at entry;
-- the filter must be installed before the target's first decoded syscall (the launcher
-  already installs `BlockIoUring` pre-fork, so there is a slot), and `undecodedPathSyscalls`
+- the filter must be installed before the target's first decoded syscall, and
+  `BlockIoUring`'s pre-fork install is not a slot for it: that filter goes on TSYNC in the
+  launcher, which is the tracer, and a RET_TRACE filter there ENOSYSes the tracer's own
+  decoded syscalls and the TRACEME'd child's execve (see bv2-6rdnk's design note); `undecodedPathSyscalls`
   and `nullPathnameOK` must be in the traced set;
 - `TestTraceCountsEveryLostAccessOnce`, `TestTraceDoesNotCountHandledSignalsAsLostAccesses`
   and the exec / retired-tid tests stay green.
