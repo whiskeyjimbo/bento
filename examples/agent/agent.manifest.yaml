@@ -1,0 +1,10 @@
+# Runs one shell command per invocation, handed over by `bento hook claude-code` (or
+# any wrapper) as `bento run agent.manifest.yaml -- '<command>'`. Put it at the root of
+# the checkout the agent works in: the grants are relative to this file.
+entrypoint: /bin/sh
+args: [-c]
+extra_args: true
+workdir: .
+read: ["."]
+write: ["."]
+exec: all

@@ -209,7 +209,7 @@ func newRootCmd() *cobra.Command {
 	// inherited, so this marks an unknown flag anywhere in the tree.
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
 	root.AddCommand(newDoctorCmd(), newValidateCmd(), newApproveCmd())
-	root.AddCommand(newRunCmd(), newProfileCmd(), newVersionCmd())
+	root.AddCommand(newRunCmd(), newProfileCmd(), newHookCmd(), newVersionCmd())
 	checkJSONRefusalShapes(root)
 	return root
 }

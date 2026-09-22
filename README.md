@@ -276,6 +276,22 @@ narrow grants, a broad home grant with the credential shields still holding,
 per-host egress, and the hardening tier. See its
 [README](examples/probe/README.md) for a five-minute tour.
 
+### Confining an AI agent's shell
+
+An agent that runs shell commands runs them with everything you can reach. Put an
+approved `/bin/sh -c` manifest with `extra_args: true` at the root of the checkout,
+and each command runs under it:
+
+```sh
+bento run agent.manifest.yaml -- "$COMMAND"
+```
+
+For Claude Code, `bento hook claude-code <manifest>` is a `PreToolUse` hook that does
+the rewriting for every Bash tool call. It confines the shell only - Claude Code's
+built-in file and web tools do not go through it. See
+[`examples/agent`](examples/agent/README.md) for the manifest, the settings snippet and
+what it does not cover.
+
 ---
 
 ## Security & Threat Model
@@ -575,6 +591,7 @@ func main() {
 Explore the [`examples/`](examples/) directory for complete, runnable reference code:
 
 - **[`examples/embed`](examples/embed)**: In-process execution with an interactive `NetworkGate` supervisor that prompts human approval for undeclared egress.
+- **[`examples/agent`](examples/agent)**: A Claude Code hook that runs each of an agent's shell commands under one approved manifest.
 - **[`examples/supervise`](examples/supervise)**: Full 2-act interactive wrapper demonstrating trial profiling for filesystem access and live proxy gating for network egress.
 
 ### Live Network Gates vs. Filesystem Approvals

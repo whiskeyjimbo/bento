@@ -95,6 +95,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeNSSCaveat"}, fixture: "doctor", marker: "Built against libc NSS", key: "libc_nss_passwd_lookup"},
 	{writers: []string{"writeDroppedRelocations"}, fixture: "doctor", marker: "move a store where the shields cannot reach", key: "unshieldable_relocations"},
 	{writers: []string{"writeDegradedSummary"}, exempt: "D6: the refused/reported/host-only split is decided by layers[] tier and layer"},
+	{writers: []string{"writeHookDecision"}, exempt: "its output is already machine-readable: a Claude Code PreToolUse hook reply, and the hook has no --json because it has no human mode"},
 	{writers: []string{"writeCoreShortfall"}, exempt: "D6: it restates layers[].reason for the core layers that refuse every run, which layers[] tier and state already decide"},
 	{writers: []string{"writeNestedAnchors"}, fixture: "doctor-relocated", marker: "sits inside", key: "nested_anchors"},
 	{writers: []string{"writeRelocatedShields"}, fixture: "doctor-relocated", marker: "move a shield off its default path", key: "relocated_shields"},
