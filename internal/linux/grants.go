@@ -209,15 +209,22 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 // unconditional walk exists to remove. So the refusal stays whole and the sentence says
 // what is actually true of a link the scan merely could not see behind.
 func checkWorkspaceShieldNotRedirected(sb sandbox, writes []string) error {
+	// Deduplicated on the checkout as shieldRules is: grants sharing one share its
+	// shields, which need testing once.
+	seen, nested := map[string]bool{}, map[string]bool{}
 	for _, w := range writes {
 		if w == "/" || !sb.isDir(w) {
 			continue
 		}
-		ws, _ := workspaceShields(sb, w)
+		ws, root := workspaceShields(sb, w)
 		// The nested checkouts' shields bind the same way, so they are held to the same
 		// test - asked of exactly the set shieldRules will apply.
-		ws = append(ws, derivedWorkspaceRules(sb, w, slices.Concat(shields(sb).Rules(), ws), map[string]bool{})...)
-		for _, r := range ws {
+		derived := derivedWorkspaceRules(sb, w, slices.Concat(shields(sb).Rules(), ws), nested)
+		if seen[root] {
+			ws = nil
+		}
+		seen[root] = true
+		for _, r := range slices.Concat(ws, derived) {
 			if real := sb.resolve(r.Path); real != r.Path {
 				return fmt.Errorf("write grant %q shields %q, but a symlinked directory component redirects it to %q: the shield would bind on the target while the host keeps walking the link's own name, which stays writable inside the grant. A link covering part of a relocated git store is refused for the same reason, since the scan cannot see whether a gitdir lies behind it without walking a tree the run controls. Remove the symlink; or, where it is holding a relocated store the checkout needs, replace it with a bind mount so the path resolves to itself; or move the checkout out from under the grant", w, r.Path, real)
 			}

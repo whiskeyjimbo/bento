@@ -167,3 +167,25 @@ func TestShieldRulesMemoKeepsEachAnswerApart(t *testing.T) {
 		}
 	}
 }
+
+// Grants that share a checkout share its workspace shields, so the redirect check has one
+// set to test however many of them there are.
+func TestRedirectCheckTestsACheckoutsShieldsOnce(t *testing.T) {
+	sb := testSandbox("/w/.git", "/w/.git/HEAD", "/w/a/x", "/w/b/x")
+	sb.shieldCache = &shieldMemo{}
+	sb.workspaceShieldCache = map[string][]denylist.Rule{}
+	resolves := new(int)
+	resolve := sb.resolve
+	sb.resolve = func(p string) string { *resolves++; return resolve(p) }
+	check := func(writes ...string) int {
+		return resolvesOf(sb, resolves, func() {
+			if err := checkWorkspaceShieldNotRedirected(sb, writes); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	one, three := check("/w"), check("/w", "/w/a", "/w/b")
+	if three > one+4 {
+		t.Errorf("three grants in one checkout cost %d resolves against %d for one: the checkout's shields were tested per grant", three, one)
+	}
+}
