@@ -95,6 +95,7 @@ func credentialAliasesWithin(set shield.Set, reads, writes []string, budget *int
 	// what they would have been compared against was never finished.
 	if len(want) == 0 {
 		if stoppedAnchors {
+			// No root was walked whole, so every grant is named and roots is never read.
 			return nil, unwalked(grants, nil, nil), true
 		}
 		return nil, nil, unread

@@ -148,7 +148,10 @@ type RunOptions struct {
 	// part. Nil means the caller took none and the backend probes for itself.
 	//
 	// It may cover only the layers this run requires (see Run), so a backend must not read
-	// a layer from it that the policy did not ask for.
+	// a layer from it that the policy did not ask for. And it must be this host's reading,
+	// taken by this process for this run: the backend reports from it as measured, and
+	// only lowers a layer the launcher attests it could not apply - a report carried over
+	// from another host or boot can attest a filter no launch was asked to install.
 	Probed *Report
 }
 
