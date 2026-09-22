@@ -588,3 +588,146 @@ func TestASymlinkedGrantResolvesItsHookDir(t *testing.T) {
 		t.Errorf("hookRunnerDirs = %v, unresolved %v; want %v", got, unresolved, want)
 	}
 }
+
+// Grants inside one checkout share one git answer, so a pass asks git once for them rather
+// than once each: 240 write grants in a checkout were 240 execs for a single directory.
+func TestHookRunnerDirsAsksGitOncePerCheckout(t *testing.T) {
+	shim := t.TempDir()
+	count := filepath.Join(t.TempDir(), "count")
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	script := "#!/bin/sh\necho >>" + count + "\necho " + hooks + "\n"
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	checkout := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var writes []string
+	for i := range 8 {
+		w := filepath.Join(checkout, fmt.Sprintf("g%d", i), "deeper")
+		if err := os.MkdirAll(w, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writes = append(writes, w)
+	}
+	hookRunnerDirs(writes)
+	out, err := os.ReadFile(count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execs := strings.Count(string(out), "\n"); execs != 1 {
+		t.Errorf("hookRunnerDirs ran git %d times for %d grants in one checkout, want 1", execs, len(writes))
+	}
+}
+
+// Sharing an answer is only sound where git itself would give the same one, and git's
+// discovery stops at the first .git of any kind on the way up. Each case puts a second
+// repository between a grant and the checkout around it - a nested checkout, a linked
+// worktree's .git file, a submodule's .git file, a bare repository, a .git file whose
+// repository sets core.worktree to the enclosing directory - and the inner hook directory inside a grant,
+// so a shared answer that is wrong still survives containment and shows. The oracle is
+// real git asked once per grant.
+func TestHookRunnerDirsAgreesWithGitPerGrant(t *testing.T) {
+	// distinct is how many hook directories git names, which the fixture has to reach for a
+	// wrong shared answer to be visible at all.
+	type fixture struct {
+		distinct int
+		build    func(t *testing.T, root string) []string
+	}
+	cases := map[string]fixture{
+		"relative hooksPath at different depths": {1, func(t *testing.T, root string) []string {
+			gitIn(t, root, "init", "-q")
+			gitIn(t, root, "config", "core.hooksPath", "tools/hooks")
+			return mkdirs(t, root, ".", "a/b/c", "d")
+		}},
+		"nested checkout": {2, func(t *testing.T, root string) []string {
+			gitIn(t, root, "init", "-q")
+			grants := mkdirs(t, root, ".", "x", "inner/y")
+			gitIn(t, filepath.Join(root, "inner"), "init", "-q")
+			return grants
+		}},
+		"linked worktree": {2, func(t *testing.T, root string) []string {
+			gitIn(t, root, "init", "-q")
+			m := filepath.Join(root, "m")
+			if err := os.Mkdir(m, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			gitIn(t, m, "init", "-q")
+			gitIn(t, m, "commit", "-q", "--allow-empty", "-m", "init")
+			gitIn(t, m, "worktree", "add", "-q", filepath.Join(root, "wt"))
+			return mkdirs(t, root, ".", "x", "wt/sub")
+		}},
+		"submodule": {2, func(t *testing.T, root string) []string {
+			upstream := t.TempDir()
+			gitIn(t, upstream, "init", "-q")
+			gitIn(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+			gitIn(t, root, "init", "-q")
+			gitIn(t, root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
+			return mkdirs(t, root, ".", "x", "sub/d")
+		}},
+		"bare repository": {2, func(t *testing.T, root string) []string {
+			gitIn(t, root, "init", "-q")
+			gitIn(t, root, "init", "-q", "--bare", filepath.Join(root, "b.git"))
+			return mkdirs(t, root, ".", "x", "b.git/objects")
+		}},
+		"core.worktree": {2, func(t *testing.T, root string) []string {
+			gitIn(t, root, "init", "-q")
+			gd := filepath.Join(root, "gd")
+			gitIn(t, root, "init", "-q", "--bare", gd)
+			gitIn(t, gd, "config", "core.bare", "false")
+			gitIn(t, gd, "config", "core.worktree", root)
+			grants := mkdirs(t, root, ".", "y", "w/x")
+			if err := os.WriteFile(filepath.Join(root, "w", ".git"), []byte("gitdir: "+gd+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return grants
+		}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			grants := c.build(t, t.TempDir())
+			var resolvedWrites, want []string
+			for _, g := range grants {
+				resolvedWrites = append(resolvedWrites, resolved(g))
+			}
+			for _, g := range resolvedWrites {
+				dir := gitIn(t, g, "rev-parse", "--git-path", "hooks")
+				if !filepath.IsAbs(dir) {
+					dir = filepath.Join(g, dir)
+				}
+				dir = resolved(dir)
+				for _, w := range resolvedWrites {
+					if rel, err := filepath.Rel(w, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+						if !slices.Contains(want, dir) {
+							want = append(want, dir)
+						}
+						break
+					}
+				}
+			}
+			if len(want) != c.distinct {
+				t.Fatalf("git names %v, want %d directories; the fixture no longer puts each one in scope", want, c.distinct)
+			}
+			got, unresolved := hookRunnerDirs(grants)
+			if !slices.Equal(got, want) || len(unresolved) != 0 {
+				t.Errorf("hookRunnerDirs = %v, unresolved %v; git asked per grant says %v", got, unresolved, want)
+			}
+		})
+	}
+}
+
+// mkdirs creates each path under root and returns them absolute.
+func mkdirs(t *testing.T, root string, paths ...string) []string {
+	t.Helper()
+	var out []string
+	for _, p := range paths {
+		d := filepath.Join(root, p)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, d)
+	}
+	return out
+}

@@ -4,12 +4,15 @@ package linux
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -77,7 +80,8 @@ var autoExecDirs = []string{
 // The value that matters is the one git itself computes - relative to the checkout,
 // overridden per linked worktree, or absolute and pointing at another repo entirely -
 // so this asks git rather than parsing .git/config, which gets the worktree and relative
-// cases wrong. It is a fixed cost, not a tree walk: one resolution per grant.
+// cases wrong. It is a fixed cost, not a tree walk: one resolution per checkout the grants
+// sit in, which hookRunnerDirs shares among them.
 //
 // Running git against the grant is not a way in for the run. Only the BASELINE resolves
 // it, and the after-snapshot walks that answer - see autoExecBaseline, which is where the
@@ -303,22 +307,85 @@ func baselineAutoExec(writes []string) autoExecBaseline {
 // order follows the grants, so two snapshots of one run list them alike.
 // unresolved names the grants git could not answer for, so the caller can say the report
 // is short rather than let a host where git failed read like a clean one.
+//
+// git is asked once per gitDiscoveryStop rather than once per grant: many grants in one
+// checkout are one answer, and each ask is an exec. The answer shared is the finished one,
+// absolute and already tested for containment against every grant, so no part of it
+// depends on which grant asked.
 func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
 	resolvedWrites := make([]string, 0, len(writes))
 	for _, w := range writes {
 		resolvedWrites = append(resolvedWrites, resolved(w))
 	}
+	type answer struct {
+		dir string
+		err error
+	}
+	asked := map[string]answer{}
 	for i, w := range writes {
-		h, err := hookRunnerDir(resolvedWrites[i], resolvedWrites)
-		if err != nil {
+		stop := gitDiscoveryStop(resolvedWrites[i])
+		a, ok := asked[stop]
+		if stop == "" || !ok {
+			a.dir, a.err = hookRunnerDir(resolvedWrites[i], resolvedWrites)
+			if stop != "" {
+				asked[stop] = a
+			}
+		}
+		if a.err != nil {
 			unresolved = append(unresolved, w)
 			continue
 		}
-		if h != "" && !slices.Contains(hooks, h) {
-			hooks = append(hooks, h)
+		if a.dir != "" && !slices.Contains(hooks, a.dir) {
+			hooks = append(hooks, a.dir)
 		}
 	}
 	return hooks, unresolved
+}
+
+// gitDiscoveryStop is the first directory at or above dir where git's own discovery could
+// stop, or "" where this cannot say. Two grants with the same one reach it through
+// directories git passes over, and from it upward their walks are the same walk, so git
+// answers both from the same repository and the same configuration.
+//
+// What stops git on the way up is a .git entry of any kind (a directory, a worktree's or
+// submodule's gitfile, one git will reject), a directory it takes for a bare repository,
+// which needs a HEAD, and a change of filesystem. Any entry of either name is a stop here,
+// valid or not, which only ever costs an extra ask; a filesystem change, or anything the
+// walk cannot stat, gives up and leaves the grant to be asked on its own. GIT_DIR and
+// GIT_CEILING_DIRECTORIES would move discovery too, and hookRunnerDir drops every GIT_*.
+//
+// Under the walks' bound, for resolved's reason: a mount that stopped answering blocks
+// the lstat, and an expiry lands on the grant being asked on its own, which is bounded.
+func gitDiscoveryStop(dir string) string {
+	stop, err := bounded("the git discovery walk from "+dir, func() (string, error) {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return "", err
+		}
+		dev := fi.Sys().(*syscall.Stat_t).Dev
+		for {
+			for _, marker := range []string{".git", "HEAD"} {
+				if _, err := os.Lstat(filepath.Join(dir, marker)); err == nil {
+					return dir, nil
+				} else if !errors.Is(err, fs.ErrNotExist) {
+					return "", err
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return dir, nil
+			}
+			fi, err := os.Stat(parent)
+			if err != nil || fi.Sys().(*syscall.Stat_t).Dev != dev {
+				return "", err
+			}
+			dir = parent
+		}
+	})
+	if err != nil {
+		return ""
+	}
+	return stop
 }
 
 // redirectedHooks names a hook directory the run itself put in play - the answer git gives
