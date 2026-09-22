@@ -25,6 +25,13 @@ func TestMountReusesTheSetsResolvedRules(t *testing.T) {
 	if resolves != 0 {
 		t.Errorf("mounting the assembled set again cost %d resolves", resolves)
 	}
+	// The backend appends a workspace's rules onto this slice and memoizes what comes
+	// back. Spare capacity here would put two of those answers in one array, so the set
+	// keeps none - asserted directly, because whether a clone happens to leave any
+	// depends on how the allocator rounds the rule count.
+	if rules := s.Rules(); cap(rules) != len(rules) {
+		t.Errorf("Rules has %d of spare capacity, which an appending caller writes into", cap(rules)-len(rules))
+	}
 	resolves = 0
 	s.Mount(append(s.Rules(), denylist.Rule{Path: "/w/.git/hooks", Deny: denylist.DenyWrite, Dir: true}))
 	if resolves != 1 {

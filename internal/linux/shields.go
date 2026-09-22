@@ -163,8 +163,9 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 	// The key is recomputed on every call, as workspaceShieldCache's is, because what it
 	// stands for moves within a run: checkShieldsCarvable asks before prepareWriteDirs
 	// creates the granted directories, and a grant that was absent then is a checkout
-	// with shields of its own after. Each grant's kind and anchor are exactly what the
-	// derivation below reads from the host, so a mkdir that changes either is a miss.
+	// with shields of its own after. Each grant's kind and anchor are what the derivation
+	// below reads from the host beyond what workspaceShieldCache already keys on the
+	// root, so a mkdir that changes either is a miss.
 	type grant struct{ w, root string }
 	var grants []grant
 	var key strings.Builder
@@ -207,7 +208,9 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		// duplicate mount.
 		rules = append(rules, derivedWorkspaceRules(sb, g.w, rules, seen)...)
 	}
-	// Clipped so a caller appending to the cached slice cannot write into another's.
+	// Clipped because the answer is handed to every later caller asking the same key: the
+	// appends above leave spare capacity, and an append by one of them would otherwise
+	// write into it where the next one reads.
 	rules = slices.Clip(rules)
 	if sb.shieldRulesCache != nil {
 		sb.shieldRulesCache[key.String()] = rules
