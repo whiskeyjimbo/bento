@@ -522,7 +522,7 @@ func TestTheAutoExecReportLayerReportsAHostWithNoGit(t *testing.T) {
 func TestHookRunnerDirsResolvesEachGrantOncePerPass(t *testing.T) {
 	shim := t.TempDir()
 	hooks := filepath.Join(t.TempDir(), "hooks")
-	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nprintf 'false\\nfalse\\n/nonexistent/.git\\n%s\\n' "+hooks+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nprintf 'true\\nfalse\\n/nonexistent/.git\\n%s\\n' "+hooks+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shim)
@@ -597,7 +597,7 @@ func TestHookRunnerDirsAsksGitOncePerCheckout(t *testing.T) {
 	shim := t.TempDir()
 	count := filepath.Join(t.TempDir(), "count")
 	hooks := filepath.Join(t.TempDir(), "hooks")
-	script := "#!/bin/sh\necho >>" + count + "\nprintf 'false\\nfalse\\n/nonexistent/.git\\n%s\\n' " + hooks + "\n"
+	script := "#!/bin/sh\necho >>" + count + "\nprintf 'true\\nfalse\\n/nonexistent/.git\\n%s\\n' " + hooks + "\n"
 	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -752,20 +752,95 @@ func TestAGrantInsideAGitDirFindsTheHooksGitRuns(t *testing.T) {
 	}
 }
 
-// A linked worktree's git directory records its work tree where git does not report it
-// from inside, so a relative core.hooksPath there has nothing to be relative to. The grant
-// is reported unresolved rather than given a directory git never runs hooks from.
-func TestAGrantInsideALinkedWorktreeGitDirIsUnresolved(t *testing.T) {
+// Outside its work tree git answers a relative core.hooksPath as configured, and a git
+// directory whose work tree it cannot name from there leaves the value nothing to be
+// relative to. Each grant is reported unresolved rather than given a directory git never
+// runs hooks from - in either order, since grants under one git directory share an answer.
+func TestAGrantWhoseWorkTreeGitCannotNameIsUnresolved(t *testing.T) {
+	commit := func(t *testing.T, dir string) {
+		gitIn(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
+	}
+	cases := map[string]func(t *testing.T, root string) []string{
+		"linked worktree": func(t *testing.T, root string) []string {
+			m := filepath.Join(root, "m")
+			gitIn(t, root, "init", "-q", m)
+			commit(t, m)
+			gitIn(t, m, "worktree", "add", "-q", filepath.Join(root, "wt"))
+			gitIn(t, m, "config", "core.hooksPath", "a/hooks")
+			return []string{filepath.Join(m, ".git", "worktrees", "wt")}
+		},
+		// git answers --is-inside-git-dir false from a submodule's git directory itself,
+		// since its core.worktree is set, and true from beneath it.
+		"submodule": func(t *testing.T, root string) []string {
+			up := filepath.Join(root, "up")
+			gitIn(t, root, "init", "-q", up)
+			commit(t, up)
+			m := filepath.Join(root, "m")
+			gitIn(t, root, "init", "-q", m)
+			gitIn(t, m, "-c", "protocol.file.allow=always", "submodule", "add", "-q", up, "sub")
+			gd := filepath.Join(m, ".git", "modules", "sub")
+			gitIn(t, gd, "config", "core.hooksPath", "a/hooks")
+			return []string{gd, filepath.Join(gd, "objects")}
+		},
+		// A .git whose core.worktree is elsewhere: its parent is not where hooks run.
+		"core.worktree elsewhere": func(t *testing.T, root string) []string {
+			x := filepath.Join(root, "x")
+			gitIn(t, root, "init", "-q", x)
+			gitIn(t, x, "config", "core.worktree", mkdirs(t, root, "y")[0])
+			gitIn(t, x, "config", "core.hooksPath", "a/hooks")
+			return []string{x, filepath.Join(x, ".git", "objects")}
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			var grants []string
+			for _, g := range build(t, t.TempDir()) {
+				grants = append(grants, resolved(g))
+			}
+			reversed := slices.Clone(grants)
+			slices.Reverse(reversed)
+			for _, order := range [][]string{grants, reversed} {
+				got, unresolved := hookRunnerDirs(order)
+				slices.Sort(unresolved)
+				want := slices.Sorted(slices.Values(order))
+				if len(got) != 0 || !slices.Equal(unresolved, want) {
+					t.Errorf("grants %v: hookRunnerDirs = %v, unresolved %v; want no hook directory and every grant unresolved", order, got, unresolved)
+				}
+			}
+		})
+	}
+}
+
+// With core.hooksPath unset, a git directory's own hooks directory is the answer, and git
+// spells it relative to the directory asked from even outside a work tree. Only a
+// configured value is the one with nothing to be relative to.
+func TestAGrantOnASubmoduleGitDirFindsItsDefaultHooks(t *testing.T) {
 	root := t.TempDir()
+	up := filepath.Join(root, "up")
+	gitIn(t, root, "init", "-q", up)
+	gitIn(t, up, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
 	m := filepath.Join(root, "m")
 	gitIn(t, root, "init", "-q", m)
-	gitIn(t, m, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
-	gitIn(t, m, "worktree", "add", "-q", filepath.Join(root, "wt"))
-	gitIn(t, m, "config", "core.hooksPath", "a/hooks")
-	grant := resolved(filepath.Join(m, ".git", "worktrees", "wt"))
-	got, unresolved := hookRunnerDirs([]string{grant})
-	if len(got) != 0 || !slices.Equal(unresolved, []string{grant}) {
-		t.Errorf("hookRunnerDirs = %v, unresolved %v; want no hook directory and the grant unresolved", got, unresolved)
+	gitIn(t, m, "-c", "protocol.file.allow=always", "submodule", "add", "-q", up, "sub")
+	gd := resolved(filepath.Join(m, ".git", "modules", "sub"))
+	got, unresolved := hookRunnerDirs([]string{gd})
+	if want := []string{filepath.Join(gd, "hooks")}; !slices.Equal(got, want) || len(unresolved) != 0 {
+		t.Errorf("hookRunnerDirs = %v, unresolved %v; want %v", got, unresolved, want)
+	}
+}
+
+// A git older than --absolute-git-dir echoes the flag back as a line of its own, which
+// passes a line count. The answer must be refused rather than read with the flag as the
+// git directory a bare repository's hooks are joined onto.
+func TestAGitThatEchoesAnUnknownFlagIsRefused(t *testing.T) {
+	shim := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nprintf 'false\\ntrue\\n--absolute-git-dir\\na/hooks\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	grant := t.TempDir()
+	if got, err := hookRunnerDir(grant, []string{resolved(grant)}); err == nil {
+		t.Errorf("hookRunnerDir = %q with no error for an answer naming no git directory", got)
 	}
 }
 
