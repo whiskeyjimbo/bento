@@ -123,7 +123,7 @@ var autoExecDirs = []string{
 // empty report from a clean one.
 //
 // resolvedWrites are the write grants already resolved, once per pass by the caller: this
-// runs once per grant, and resolving them here made a pass cost grants squared symlink
+// runs once per grant, so resolving them here would cost a pass grants squared symlink
 // walks.
 func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 	// The deadline is this call's own rather than the run's: changed() asks again after

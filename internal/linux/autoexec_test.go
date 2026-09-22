@@ -326,7 +326,7 @@ func TestAnEmptyGitAnswerNamesNoHookDir(t *testing.T) {
 	}
 	t.Setenv("PATH", shim)
 	grant := t.TempDir()
-	got, err := hookRunnerDir(grant, []string{grant})
+	got, err := hookRunnerDir(grant, []string{resolved(grant)})
 	if err != nil {
 		t.Fatalf("hookRunnerDir: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestAGitThatCannotAnswerNamesTheGrant(t *testing.T) {
 	t.Setenv("PATH", shim)
 	grant := t.TempDir()
 
-	if _, err := hookRunnerDir(grant, []string{grant}); err == nil {
+	if _, err := hookRunnerDir(grant, []string{resolved(grant)}); err == nil {
 		t.Error("hookRunnerDir returned no error for a git exiting 127")
 	}
 	hooks, unresolved := hookRunnerDirs([]string{grant})
@@ -380,7 +380,7 @@ func TestAGitThatNeverAnswersIsBounded(t *testing.T) {
 	grant := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		_, err := hookRunnerDir(grant, []string{grant})
+		_, err := hookRunnerDir(grant, []string{resolved(grant)})
 		done <- err
 	}()
 	select {
@@ -512,8 +512,8 @@ func TestTheAutoExecReportLayerReportsAHostWithNoGit(t *testing.T) {
 }
 
 // Every grant's hook directory is tested for containment against every write grant, and
-// resolving the grants inside that test made one pass cost W^2 symlink resolutions - 14,520
-// at 240 grants under one checkout, most of a launch's stats. The grants are resolved once
+// resolving the grants inside that test made one pass cost W^2 symlink resolutions - 57,840
+// at 240 grants whose hook directory is under none of them. The grants are resolved once
 // per pass, so eight times the grants must cost about eight times the resolutions. The
 // hook directory sits under no grant, which is the shape that runs the containment test to
 // the end: a match on an early grant would stop it and hide the cost.
