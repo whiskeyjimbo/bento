@@ -37,7 +37,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 	// Resolve the sandbox facts the grant checks need (home shields, the resolve/isDir
 	// seams) along with the entrypoint and interpreter. gated is false: the degraded
 	// tier is only reached for a no-network manifest, so there is no proxy socket.
-	sb, cleanup, err := newSandbox(p, e.selfPath, false, nil)
+	sb, cleanup, err := newSandbox(p, e.selfPath, false, nil, nil)
 	if err != nil {
 		return enforce.Result{}, err
 	}

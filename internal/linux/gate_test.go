@@ -226,7 +226,7 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
 
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", true, nil)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", true, nil, nil)
 	if err != nil {
 		t.Fatalf("newSandbox: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestNewSandboxGatedNoRulesExecAll(t *testing.T) {
 
 	// The same policy WITHOUT a gate needs no proxy socket, but the launcher still
 	// runs on every sandbox (it drops inherited descriptors), so bentoPath stays set.
-	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false, nil)
+	sbNo, cleanupNo, err := newSandbox(p, "bento-placeholder", false, nil, nil)
 	if err != nil {
 		t.Fatalf("newSandbox (ungated): %v", err)
 	}
@@ -270,7 +270,7 @@ func TestNewSandboxDropsRelativeHomeButKeepsPasswd(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh", Exec: policy.ExecAll}
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil)
 	if err != nil {
 		t.Fatalf("newSandbox with a relative HOME: %v, want it to fall back to the passwd home", err)
 	}

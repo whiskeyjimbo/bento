@@ -92,6 +92,13 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 		if len(opts.DenyPaths) > 0 {
 			return enforce.Result{}, fmt.Errorf("linux: caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields")
 		}
+		for _, ro := range opts.ReadOnlyPaths {
+			for _, w := range p.Write {
+				if policy.CoversResolved(w, ro) {
+					return enforce.Result{}, fmt.Errorf("linux: %s cannot be kept read-only by the degraded tier under the write grant %q: it has no mount namespace", ro, w)
+				}
+			}
+		}
 		// The record itself is stamped inside runDegraded, on every arm where the launcher
 		// was dispatched: which arms those are is only knowable there.
 		return e.runDegraded(ctx, p, proc, opts)
@@ -110,7 +117,7 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// A gate forces the egress stack up even with zero rules: a supervised run with
 	// no manifest network means "prompt on every host", so the proxy must exist for
 	// the gate to be consulted at all.
-	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, opts.DenyPaths)
+	sb, cleanup, err := newSandbox(p, e.selfPath, opts.Gate != nil, opts.DenyPaths, opts.ReadOnlyPaths)
 	if err != nil {
 		return enforce.Result{}, err
 	}
@@ -872,7 +879,7 @@ var runDirBase = "/tmp"
 
 // newSandbox resolves the host facts the argv compiler needs, and returns a
 // cleanup for the temporary files it creates.
-func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []string) (sandbox, func(), error) {
+func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOnlyPaths []string) (sandbox, func(), error) {
 	noop := func() {}
 
 	// Bounded, like the sandbox's own seams, except these run before the sandbox exists:
@@ -993,6 +1000,15 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths []strin
 	if sb.extraDeny, err = buildExtraDeny(denyPaths, sb); err != nil {
 		cleanup()
 		return sandbox{}, noop, err
+	}
+	for _, ro := range readOnlyPaths {
+		// A file only: a DenyWrite directory shield over an absent path would be a tmpfs,
+		// and over a present one it is DenyPaths' job with its own refusals.
+		if !filepath.IsAbs(ro) || !sb.exists(ro) || sb.isDir(ro) {
+			cleanup()
+			return sandbox{}, noop, fmt.Errorf("linux: read-only path %q must be an absolute path to an existing file", ro)
+		}
+		sb.extraDeny = append(sb.extraDeny, denylist.Rule{Path: ro, Deny: denylist.DenyWrite})
 	}
 	// Allocated only now, after the caller's denies are final. The memo holds the whole
 	// assembled set, denies included, so warming it any earlier would hand every later

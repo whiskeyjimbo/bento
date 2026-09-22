@@ -178,6 +178,9 @@ func newRunCmd() *cobra.Command {
 				AcceptAliasesUnder: acceptAliases,
 				RunID:              runID,
 				RecordExec:         recordExec,
+				// The approval is a stamp in this file, so a run that could write it could
+				// re-stamp a widened policy for its next run.
+				ReadOnlyPaths: []string{mt.RealPath},
 			})
 			return writeRunResult(os.Stderr, asJSON, p, env, res, &notes, stream, err)
 		},

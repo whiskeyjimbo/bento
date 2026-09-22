@@ -252,3 +252,30 @@ func TestRunAppendsExtraArgsAfterTheFixedOnes(t *testing.T) {
 		t.Errorf("the run must disclose the arguments it appended (%q):\n%s", want, stderr)
 	}
 }
+
+// Approval is the stamp inside the manifest, so a run that can write its own manifest can
+// widen it and re-stamp it (`bento approve --yes` needs nothing the sandbox withholds),
+// and the next run executes a policy no human read. The manifest is read-only to its own
+// run for that reason, including under a write grant that covers it.
+func TestRunCannotRewriteItsOwnManifest(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, `echo "write: [/]" >> bento.yaml && exit 0; exit 7`+"\n", &policy.Policy{
+		Entrypoint:  "./run.sh",
+		Interpreter: "sh",
+		Workdir:     ".",
+		Read:        []string{"."},
+		Write:       []string{"."},
+	})
+	before, err := os.ReadFile(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 7 {
+		t.Errorf("exit = %d, want the target's 7 from a refused write:\n%s", got, stderr)
+	}
+	if after, _ := os.ReadFile(m); string(after) != string(before) {
+		t.Errorf("the run rewrote its own manifest:\n%s", after)
+	}
+}

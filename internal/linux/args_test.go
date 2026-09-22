@@ -703,7 +703,7 @@ func TestNewSandboxCarriesWorkdir(t *testing.T) {
 	if err := os.Mkdir(checkout, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sb, cleanup, err := newSandbox(&policy.Policy{Entrypoint: entrypoint, Workdir: checkout}, "bento-placeholder", false, nil)
+	sb, cleanup, err := newSandbox(&policy.Policy{Entrypoint: entrypoint, Workdir: checkout}, "bento-placeholder", false, nil, nil)
 	if err != nil {
 		t.Fatalf("newSandbox: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestNewSandboxCarriesWorkdir(t *testing.T) {
 	}
 
 	relative := &policy.Policy{Entrypoint: entrypoint, Workdir: "checkout"}
-	bad, cleanupBad, err := newSandbox(relative, "bento-placeholder", false, nil)
+	bad, cleanupBad, err := newSandbox(relative, "bento-placeholder", false, nil, nil)
 	cleanupBad()
 	if err == nil {
 		t.Fatalf("newSandbox accepted a relative workdir and built a sandbox starting at %q", bad.workdir)

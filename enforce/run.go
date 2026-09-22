@@ -60,6 +60,19 @@ type Options struct {
 	//     a report is read the target has already had the path.
 	DenyPaths []string
 
+	// ReadOnlyPaths are absolute paths of existing host FILES the run may read but never
+	// write, even where a write grant covers them. It is how the CLI keeps a run from
+	// rewriting its own manifest: approval is a stamp inside that file, so a run able to
+	// write it could widen and re-stamp the policy its next run executes. A read-only bind
+	// over one file inside a writable tree holds (a mount point cannot be renamed or
+	// unlinked), which is why this is allowed where a DenyPaths entry inside a write
+	// grant is refused.
+	//
+	// The degraded tier applies no shields, so a run that lands there with one of these
+	// under a write grant is refused. Outside every write grant nothing can write it
+	// anyway, and the run proceeds.
+	ReadOnlyPaths []string
+
 	// RecordExec asks for a record of the execs the run performed, returned in
 	// Result.ExecRecord. See RunOptions.RecordExec for what it costs the target and why
 	// a run that cannot have one is not refused over it.
@@ -132,6 +145,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		Gate:               opts.NetworkGate,
 		Degraded:           degraded,
 		DenyPaths:          opts.DenyPaths,
+		ReadOnlyPaths:      opts.ReadOnlyPaths,
 		RecordExec:         opts.RecordExec,
 		AcceptAliasesUnder: opts.AcceptAliasesUnder,
 		RunID:              opts.RunID,
@@ -733,6 +747,16 @@ func admitTier(p *policy.Policy, opts Options, probed, required Report) error {
 			return &Refusal{
 				Report: required,
 				Reason: "caller deny paths cannot be honored by the degraded tier: it has no mount namespace and applies no shields",
+			}
+		}
+		for _, ro := range opts.ReadOnlyPaths {
+			for _, w := range p.Write {
+				if policy.CoversResolved(w, ro) {
+					return &Refusal{
+						Report: required,
+						Reason: fmt.Sprintf("%s must stay read-only to this run, and the write grant %q covers it: the degraded tier has no mount namespace to make one file inside a writable tree read-only", ro, w),
+					}
+				}
 			}
 		}
 		if opts.NetworkGate != nil {

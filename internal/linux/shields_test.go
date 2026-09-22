@@ -1291,7 +1291,7 @@ func TestWriteGrantWhoseShieldCannotBeCarvedNamesTheGrant(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: entry, Interpreter: "sh", Write: []string{grant}}
 
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

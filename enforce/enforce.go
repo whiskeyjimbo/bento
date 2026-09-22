@@ -80,6 +80,10 @@ type RunOptions struct {
 	// built-in deny-list. See Options.DenyPaths for what the guarantee covers.
 	DenyPaths []string
 
+	// ReadOnlyPaths are existing host files the run may read but not write, even under a
+	// write grant. See Options.ReadOnlyPaths.
+	ReadOnlyPaths []string
+
 	// RecordExec asks the backend to record the tree of execs the run performs, returned
 	// in Result.ExecRecord. It is off by default, and not out of caution about the
 	// mechanism: recording takes the ability to ptrace away from everything inside the

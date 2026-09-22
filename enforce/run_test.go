@@ -29,6 +29,7 @@ type fakeEnforcer struct {
 	gotDegraded      bool
 	gotAcceptAliases []string
 	gotDenyPaths     []string
+	gotReadOnlyPaths []string
 	gotRunID         string
 	// silentStage makes the fake return a stage that never attested its setup, which
 	// Run refuses. A backend that reached the target attests, so that is the default
@@ -45,6 +46,7 @@ func (f *fakeEnforcer) Run(ctx context.Context, _ *policy.Policy, _ Process, opt
 	f.gotDegraded = opts.Degraded
 	f.gotAcceptAliases = opts.AcceptAliasesUnder
 	f.gotDenyPaths = opts.DenyPaths
+	f.gotReadOnlyPaths = opts.ReadOnlyPaths
 	f.gotRunID = opts.RunID
 	if opts.Gate != nil {
 		f.gotGate = opts.Gate(ctx, "example.com", "443")
@@ -1873,5 +1875,47 @@ func TestTheManifestEditIsScreenedByTheTier(t *testing.T) {
 		if editErr != nil && !refusal.NoRemedy {
 			t.Errorf("memory %s: the refusal leaves dropping `limits:` on offer, and the edited run is refused: %v", s, editErr)
 		}
+	}
+}
+
+// Options.ReadOnlyPaths must reach the backend verbatim, for DenyPaths' reason: a path the
+// core dropped would leave the CLI believing its manifest was read-only on a run that
+// could re-stamp it.
+func TestRunForwardsReadOnlyPaths(t *testing.T) {
+	ro := []string{"/w/bento.yaml"}
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{}, Options{ReadOnlyPaths: ro}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Equal(f.gotReadOnlyPaths, ro) {
+		t.Errorf("backend got ReadOnlyPaths %v, want %v", f.gotReadOnlyPaths, ro)
+	}
+}
+
+// The degraded tier has no mount namespace, so a read-only file inside a write grant would
+// be writable there: refused. Outside every write grant nothing can write it anyway, so the
+// same option must not cost a degraded run whose manifest sits elsewhere.
+func TestDegradedTierRefusesReadOnlyPathsUnderAWriteGrant(t *testing.T) {
+	for name, tc := range map[string]struct {
+		write  []string
+		refuse bool
+	}{
+		"under a write grant": {[]string{"/w"}, true},
+		"outside every grant": {[]string{"/out"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeEnforcer{}
+			f.probe.Add(LayerFilesystem, Degraded, "no user namespaces")
+			p := validPolicy()
+			p.Write = tc.write
+			_, err := Run(context.Background(), f, p, Process{}, Options{AllowDegraded: true, ReadOnlyPaths: []string{"/w/bento.yaml"}})
+			var refusal *Refusal
+			if got := errors.As(err, &refusal); got != tc.refuse {
+				t.Fatalf("refused = %v (err %v), want %v", got, err, tc.refuse)
+			}
+			if f.ran == tc.refuse {
+				t.Errorf("enforcer ran = %v, want %v", f.ran, !tc.refuse)
+			}
+		})
 	}
 }

@@ -512,7 +512,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 	}
 	p := &policy.Policy{Entrypoint: store, Interpreter: "cat"}
 
-	_, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store})
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil)
 	if err == nil {
 		cleanup()
 		t.Fatal("an entrypoint inside a caller deny must be refused")
@@ -527,7 +527,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 	// untrusted manifest could read: its way past the one shield the embedder controls.
 	// OptIns excludes it, and this is what holds that.
 	optedIn := &policy.Policy{Entrypoint: store, Interpreter: "cat", Read: []string{store}}
-	if _, cleanupIn, err := newSandbox(optedIn, "bento-placeholder", false, []string{store}); err == nil {
+	if _, cleanupIn, err := newSandbox(optedIn, "bento-placeholder", false, []string{store}, nil); err == nil {
 		cleanupIn()
 		t.Error("a read grant naming the caller's store must not opt the entrypoint past its deny")
 	}
@@ -538,7 +538,7 @@ func TestEntrypointInsideACallerDenyRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
-	if _, cleanupOK, err := newSandbox(ok, "bento-placeholder", false, []string{store}); err != nil {
+	if _, cleanupOK, err := newSandbox(ok, "bento-placeholder", false, []string{store}, nil); err != nil {
 		t.Errorf("an entrypoint outside the caller deny must be accepted: %v", err)
 	} else {
 		cleanupOK()
@@ -563,7 +563,7 @@ func TestEntrypointInsideABuiltInShieldRefused(t *testing.T) {
 	}
 
 	p := &policy.Policy{Entrypoint: key, Interpreter: "cat"}
-	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil)
+	_, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil)
 	if err == nil {
 		cleanup()
 		t.Fatal("an entrypoint inside the ~/.ssh shield must be refused")
@@ -634,7 +634,7 @@ func TestCallerDenyOnAnUnreadableDirectoryRefusesTheLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &policy.Policy{Entrypoint: script, Interpreter: "sh"}
-	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store})
+	sb, cleanup, err := newSandbox(p, "bento-placeholder", false, []string{store}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -112,7 +112,7 @@ func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.P
 	// presence is signalled here. denyPaths shield caller-owned state (e.g. a
 	// supervising wrapper's permission store) even behind a grant that would cover it;
 	// they are set on the sandbox before the shield-cleanup defer below reads it.
-	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths)
+	sb, cleanup, err := newSandbox(p, e.selfPath, false, denyPaths, nil)
 	if err != nil {
 		return profile.Observation{}, err
 	}
