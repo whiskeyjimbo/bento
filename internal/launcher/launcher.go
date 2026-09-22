@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1232,19 +1233,52 @@ func bridgeConn(client net.Conn, socket string, idle time.Duration) {
 		return
 	}
 	defer upstream.Close()
+	bridge(client, upstream, idle)
+}
 
+// bridge copies both ways between client and upstream until each side is done or the
+// connection goes idle, which it does between idle and idle+idle/8 after its last byte.
+func bridge(client, upstream net.Conn, idle time.Duration) {
 	// Traffic in either direction means the bridge is active, so re-arm the idle
-	// deadline on BOTH conns on every read. A long one-way transfer keeps only its
-	// own direction busy; if each direction armed only its own conn, the silent
-	// side would trip the idle timeout after idleTimeout and - because SetDeadline
-	// bounds writes too - kill the active side's next write, dropping a connection
-	// that never went idle.
-	extend := func() {
-		t := time.Now().Add(idle)
+	// deadline on BOTH conns. A long one-way transfer keeps only its own direction
+	// busy; if each direction armed only its own conn, the silent side would trip the
+	// idle timeout after idleTimeout and - because SetDeadline bounds writes too - kill
+	// the active side's next write, dropping a connection that never went idle.
+	//
+	// Re-arming is a timer modify on each conn, so it is done at most once per slack
+	// window rather than on every read: each arm reaches idle+slack ahead, and a read
+	// less than slack after the last arm skips it. A skipped read is under a deadline
+	// more than idle away, so the bridge dies between idle and idle+slack after its last
+	// byte. The arm is under armMu and re-reads the clock there, so two directions
+	// arming together cannot land an earlier deadline after a later one - which the skip
+	// would then leave standing for a whole window.
+	slack := idle / 8
+	start := time.Now()
+	var (
+		armMu   sync.Mutex
+		armedAt atomic.Int64 // time.Since(start) at the last arm
+	)
+	arm := func() { // armMu held
+		now := time.Since(start)
+		t := start.Add(now + idle + slack)
 		client.SetDeadline(t)
 		upstream.SetDeadline(t)
+		armedAt.Store(int64(now))
 	}
-	extend()
+	stale := func() bool { return time.Since(start)-time.Duration(armedAt.Load()) >= slack }
+	extend := func() {
+		if !stale() {
+			return
+		}
+		armMu.Lock()
+		defer armMu.Unlock()
+		if stale() {
+			arm()
+		}
+	}
+	armMu.Lock()
+	arm()
+	armMu.Unlock()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); copyIdle(upstream, client, extend); halfClose(upstream) }()
@@ -1254,6 +1288,8 @@ func bridgeConn(client net.Conn, socket string, idle time.Duration) {
 
 // idleTimeout tears down a bridged connection that has sat with no traffic this
 // long, so a stalled connection cannot pin a goroutine for the life of the run.
+// Teardown can land up to an eighth later, at 5m37.5s: that is the slack bridge
+// re-arms its deadlines in.
 // bridgeConn takes it as an argument so a test can shorten it without writing to
 // shared state other bridges are reading.
 const idleTimeout = 5 * time.Minute
@@ -1262,7 +1298,9 @@ const idleTimeout = 5 * time.Minute
 // direction keeps the bridge's idle deadline fresh; an idle bridge is dropped
 // when neither direction reads.
 func copyIdle(dst io.Writer, src io.Reader, extend func()) {
-	buf := make([]byte, 32*1024)
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	buf := *bp
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -1276,6 +1314,13 @@ func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 		}
 	}
 }
+
+// copyBufs holds the bridge's copy buffers, so a connection reuses one an earlier
+// bridge finished with rather than allocating 64 KiB per connection.
+var copyBufs = sync.Pool{New: func() any {
+	b := make([]byte, 32*1024)
+	return &b
+}}
 
 func halfClose(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {

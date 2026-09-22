@@ -4,12 +4,14 @@ package launcher
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,6 +166,104 @@ func TestBridgeOneWayTransferNotIdleTimedOut(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream did not receive the full transfer")
+	}
+}
+
+// deadlineCounter counts SetDeadline calls on a conn. It hides CloseWrite, so halfClose
+// takes its expired-deadline branch and adds one call per direction at teardown.
+type deadlineCounter struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c deadlineCounter) SetDeadline(t time.Time) error {
+	c.n.Add(1)
+	return c.Conn.SetDeadline(t)
+}
+
+// Re-arming the idle deadline is a pd lock and a runtime timer modify on each conn, and
+// the bridge's copy loops read far more often than the deadline gets anywhere near
+// firing. Traffic inside one slack window must arm once, not once per read.
+func TestBridgeReArmsOncePerSlackWindow(t *testing.T) {
+	target, clientConn := net.Pipe()
+	upstreamConn, proxy := net.Pipe()
+	defer target.Close()
+	defer proxy.Close()
+	var calls atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		// An hour of idle puts every read below inside the first slack window.
+		bridge(deadlineCounter{clientConn, &calls}, deadlineCounter{upstreamConn, &calls}, time.Hour)
+		close(done)
+	}()
+	go func() { _, _ = io.Copy(io.Discard, proxy) }()
+	const reads = 10000
+	b := []byte("x")
+	for range reads {
+		if _, err := target.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target.Close()
+	proxy.Close()
+	<-done
+
+	// Setup arms both conns (2) and halfClose expires each at teardown (2). Per-read
+	// re-arming was 2 per read.
+	if n := calls.Load(); n > 10 {
+		t.Errorf("SetDeadline called %d times for %d reads inside one slack window, want <= 10", n, reads)
+	}
+}
+
+// The re-arm is skipped inside a slack window, so the deadline a skipped read relies on
+// was set by an earlier read. It must still land no earlier than idle after the LAST
+// byte: a deadline measured from the arm rather than the read tears a live connection
+// down up to slack early.
+func TestBridgeIdlesOutNoEarlierThanIdleAfterTheLastByte(t *testing.T) {
+	const idle = 400 * time.Millisecond
+	const slack = idle / 8
+	target, clientConn := net.Pipe()
+	upstreamConn, proxy := net.Pipe()
+	defer target.Close()
+	defer proxy.Close()
+	go func() { _, _ = io.Copy(io.Discard, proxy) }()
+	done := make(chan struct{})
+	go func() {
+		bridge(clientConn, upstreamConn, idle)
+		close(done)
+	}()
+
+	if _, err := io.WriteString(target, "x"); err != nil {
+		t.Fatal(err)
+	}
+	// Late in the window bridge's setup arm opened, so this read is skipped and leans on
+	// that arm. The timestamp precedes the write, so it bounds the read from below.
+	time.Sleep(slack * 7 / 10)
+	last := time.Now()
+	if _, err := io.WriteString(target, "x"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("an idle bridge was never torn down")
+	}
+	if got := time.Since(last); got < idle {
+		t.Errorf("bridge torn down %v after the last byte, want >= idle (%v)", got, idle)
+	}
+}
+
+// Each bridged connection copies both ways through a 32 KiB buffer; a connection has to
+// reuse one an earlier one finished with rather than allocating its own.
+func TestCopyIdleReusesItsBuffer(t *testing.T) {
+	src := bytes.NewReader(nil)
+	payload := []byte("x")
+	extend := func() {}
+	if n := testing.AllocsPerRun(100, func() {
+		src.Reset(payload)
+		copyIdle(io.Discard, src, extend)
+	}); n != 0 {
+		t.Errorf("copyIdle allocated %v times per copy, want 0", n)
 	}
 }
 
