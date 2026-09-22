@@ -1276,9 +1276,7 @@ func bridge(client, upstream net.Conn, idle time.Duration) {
 			arm()
 		}
 	}
-	armMu.Lock()
 	arm()
-	armMu.Unlock()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); copyIdle(upstream, client, extend); halfClose(upstream) }()
@@ -1299,20 +1297,22 @@ const idleTimeout = 5 * time.Minute
 // when neither direction reads.
 func copyIdle(dst io.Writer, src io.Reader, extend func()) {
 	bp := copyBufs.Get().(*[]byte)
-	defer copyBufs.Put(bp)
 	buf := *bp
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
 			extend()
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return
+				break
 			}
 		}
 		if err != nil {
-			return
+			break
 		}
 	}
+	// Not deferred: a copy that panicked out of Read or Write may have left the conn
+	// holding the buffer, and one handed back from there would be shared.
+	copyBufs.Put(bp)
 }
 
 // copyBufs holds the bridge's copy buffers, so a connection reuses one an earlier
