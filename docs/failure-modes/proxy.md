@@ -49,8 +49,8 @@ Behavior: HANDLED / HANG / SILENT-WRONG / CRASH / UNREACHED. Detection is what t
 | upstream-tcp/connection-refused | HANDLED, 502 | script sees "could not reach" | DETECTED as `Unreachable` (counted, unnamed: `linux.go:1098`) | read (test) | `proxy.go:975-979`; `TestAFailedDialIsReportedApartFromAnEstablishedTunnel` |
 | upstream-tcp/connection-hang (SYN blackhole) | HANDLED, 15s | slot held 15s | DETECTED `Unreachable` | read | `proxy.go:291-297` |
 | upstream-tcp/accepts-then-silent | HANDLED, 30s first-byte | slot held 30s | none specific; tunnel closes | read (test) | `proxy.go:1324`; `TestTunnelBoundsASilentUpstreamThroughTheClientsTraffic` |
-| upstream-tcp/stalls-mid-stream | HANDLED, 5m idle | slot held up to 5m per tunnel | none | read (test) | `proxy.go:1305-1315`; `TestTunnelOneWayTransferNotIdleTimedOut` |
-| upstream-tcp/stops-reading (write blocks) | HANDLED, first-byte or idle deadline bounds writes | slot held up to 5m | none | read | `proxy.go:1297`, `proxy.go:1313`, `proxy.go:1324` |
+| upstream-tcp/stalls-mid-stream | HANDLED, 5m idle (torn down within 5m-5m37.5s) | slot held up to 5m37.5s per tunnel | none | read (test) | `proxy.go:1305-1315`; `TestTunnelOneWayTransferNotIdleTimedOut` |
+| upstream-tcp/stops-reading (write blocks) | HANDLED, first-byte or idle deadline bounds writes | slot held up to 5m37.5s | none | read | `proxy.go:1297`, `proxy.go:1313`, `proxy.go:1324` |
 | upstream-tcp/reset-mid-stream | HANDLED, copy ends, halfClose | tunnel truncated, script sees reset | none (correctly, since it's the peer's doing) | read | `proxy.go:1373-1379`, `proxy.go:1336-1352` |
 | upstream-tcp/half-close | HANDLED | return path stays open | n/a | read (test) | `TestTunnelHalfCloseKeepsTheReturnDirectionOpen` |
 | upstream-tcp/multi-address one refused by guard | HANDLED | refusal on a non-first address is not lost | DETECTED `GuardBlocked` | read (test) | `proxy.go:950`; `TestGuardBlockSurvivesAnotherAddressesError` |

@@ -1436,8 +1436,10 @@ func writeStatus(c net.Conn, status, body string) {
 
 // idleTimeout tears down a tunnel that has sat with no traffic in either
 // direction for this long, so untrusted code cannot pin host resources with idle
-// connections held open indefinitely. tunnel takes it as an argument so a test can
-// shorten it without writing to shared state other tunnels are reading.
+// connections held open indefinitely. Teardown can land up to an eighth later, at
+// 5m37.5s: that is the slack tunnel re-arms its deadlines in. tunnel takes it as an
+// argument so a test can shorten it without writing to shared state other tunnels are
+// reading.
 const idleTimeout = 5 * time.Minute
 
 // firstByteTimeout bounds how long an established tunnel may wait for its FIRST byte
@@ -1457,40 +1459,73 @@ const firstByteTimeout = 30 * time.Second
 // tunnel copies bytes both ways until either side closes or the tunnel goes idle.
 // The client side is read through clientR (which may hold buffered bytes); client
 // and upstream are the conns used to write, half-close, and bound idleness; idle
-// is how long the tunnel may sit with no traffic before it is torn down, and
+// is how long the tunnel may sit with no traffic before it is torn down (at most idle/8
+// later), and
 // firstByte how long it may wait for upstream to say anything at all.
 func tunnel(clientR io.Reader, client, upstream net.Conn, idle, firstByte time.Duration) {
 	// Traffic in either direction means the tunnel is active, so re-arm the idle
-	// deadline on BOTH conns on every read. A long one-way transfer (a large
-	// upload with a silent upstream, say) keeps only its own direction busy; if
-	// each direction armed only its own conn, the silent side would trip the idle
-	// timeout after idle and - because SetDeadline bounds writes too - kill
-	// the active side's next write, aborting a transfer that never went idle.
+	// deadline on BOTH conns. A long one-way transfer (a large upload with a silent
+	// upstream, say) keeps only its own direction busy; if each direction armed only its
+	// own conn, the silent side would trip the idle timeout after idle and - because
+	// SetDeadline bounds writes too - kill the active side's next write, aborting a
+	// transfer that never went idle.
+	//
+	// Re-arming is a timer modify on each conn, so it is done at most once per slack
+	// window rather than on every read: each arm reaches idle+slack ahead, and a read
+	// less than slack after the last arm skips it. A skipped read is under a deadline
+	// more than idle away, so the tunnel dies between idle and idle+slack after its last
+	// byte. The arm itself is under armMu and re-reads the clock there, so two
+	// directions arming together cannot land an earlier deadline after a later one -
+	// which the skip would then leave standing for a whole window.
+	//
 	// Until upstream has produced a byte, its own deadline is held at the first-byte
 	// bound rather than pushed out by the client's traffic - which through a CONNECT
 	// tunnel starts arriving immediately and would otherwise clear the bound before it
-	// could ever apply. Written by the upstream copy goroutine and read by both, so it
-	// is atomic.
-	var upstreamSpoke atomic.Bool
-	extend := func() {
-		t := time.Now().Add(idle)
+	// could ever apply. The flag flips under armMu, and arm reads it there, so a client
+	// read cannot check it, be descheduled, and clamp the deadline back onto a
+	// destination that had just answered.
+	slack := idle / 8
+	start := time.Now()
+	var (
+		armMu         sync.Mutex
+		armedAt       atomic.Int64 // time.Since(start) at the last arm
+		upstreamSpoke atomic.Bool
+	)
+	arm := func() { // armMu held
+		now := time.Since(start)
+		t := start.Add(now + idle + slack)
 		client.SetDeadline(t)
-		// Before upstream has spoken its deadline belongs to extendUp alone, which is
-		// what keeps this from racing the byte that lifts the bound: a client read that
-		// checked the flag, was descheduled, and wrote afterwards would otherwise clamp
-		// the deadline back onto a destination that had just answered.
 		if upstreamSpoke.Load() {
 			upstream.SetDeadline(t)
+		}
+		armedAt.Store(int64(now))
+	}
+	stale := func() bool { return time.Since(start)-time.Duration(armedAt.Load()) >= slack }
+	extend := func() {
+		if !stale() {
+			return
+		}
+		armMu.Lock()
+		defer armMu.Unlock()
+		if stale() {
+			arm()
 		}
 	}
 	// The upstream direction's first read is what lifts the bound, and it lifts it for
 	// the connection's whole remaining life: a destination that answered once is a real
-	// one, and after that only idle governs.
+	// one, and after that only idle governs. That first read always arms, window or not,
+	// or upstream would stay on the first-byte bound until the window closed.
 	extendUp := func() {
+		if upstreamSpoke.Load() {
+			extend()
+			return
+		}
+		armMu.Lock()
+		defer armMu.Unlock()
 		upstreamSpoke.Store(true)
-		extend()
+		arm()
 	}
-	extend()
+	arm()
 	upstream.SetDeadline(time.Now().Add(firstByte))
 	// handle's recover runs on the caller's goroutine and cannot see a panic raised in
 	// either copy, so one left here does not reach the Faulted path at all - it takes

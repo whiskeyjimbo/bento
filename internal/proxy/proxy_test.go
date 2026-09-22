@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -987,6 +988,131 @@ func TestTunnelOneWayTransferNotIdleTimedOut(t *testing.T) {
 	got := make([]byte, chunks)
 	if n, err := io.ReadFull(server, got); err != nil {
 		t.Fatalf("forwarded %d of %d bytes: a busy one-way transfer was torn down by the idle timeout: %v", n, chunks, err)
+	}
+}
+
+// deadlineCounter counts SetDeadline calls on a conn. It hides CloseWrite, so halfClose
+// takes its expired-deadline branch and adds one call per direction at teardown.
+type deadlineCounter struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c deadlineCounter) SetDeadline(t time.Time) error {
+	c.n.Add(1)
+	return c.Conn.SetDeadline(t)
+}
+
+// Re-arming the idle deadline is a pd lock and a runtime timer modify on each conn, and
+// the tunnel's copy loops read far more often than the deadline gets anywhere near
+// firing. Traffic inside one slack window must arm once, not once per read.
+func TestTunnelReArmsOncePerSlackWindow(t *testing.T) {
+	sandbox, clientConn := net.Pipe()
+	upstreamConn, server := net.Pipe()
+	defer sandbox.Close()
+	defer server.Close()
+	var calls atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		// An hour of idle puts every read below inside the first slack window.
+		tunnel(clientConn, deadlineCounter{clientConn, &calls}, deadlineCounter{upstreamConn, &calls}, time.Hour, time.Hour)
+		close(done)
+	}()
+
+	// Upstream speaks first, so from here on each read would re-arm both conns.
+	if _, err := io.WriteString(server, "y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(sandbox, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	const reads = 10000
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+	b := []byte("x")
+	for range reads {
+		if _, err := sandbox.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sandbox.Close()
+	server.Close()
+	<-done
+
+	// Setup arms client and upstream (2), upstream's first byte arms both (2), and
+	// halfClose expires each conn at teardown (2). Per-read re-arming was ~2 per read.
+	if n := calls.Load(); n > 10 {
+		t.Errorf("SetDeadline called %d times for %d reads inside one slack window, want <= 10", n, reads)
+	}
+}
+
+// The re-arm is skipped inside a slack window, so the deadline a skipped read relies on
+// was set by an earlier read. It must still land no earlier than idle after the LAST
+// byte: a deadline measured from the arm rather than the read tears a live tunnel down
+// up to slack early.
+func TestTunnelIdlesOutNoEarlierThanIdleAfterTheLastByte(t *testing.T) {
+	const idle = 400 * time.Millisecond
+	const slack = idle / 8
+	sandbox, clientConn := net.Pipe()
+	upstreamConn, server := net.Pipe()
+	defer sandbox.Close()
+	defer server.Close()
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+	done := make(chan struct{})
+	go func() {
+		tunnel(clientConn, clientConn, upstreamConn, idle, time.Hour)
+		close(done)
+	}()
+
+	if _, err := io.WriteString(sandbox, "x"); err != nil {
+		t.Fatal(err)
+	}
+	// Late in the window the first write armed, so this read is skipped and leans on
+	// that arm. The timestamp precedes the write, so it bounds the read from below.
+	time.Sleep(slack * 7 / 10)
+	last := time.Now()
+	if _, err := io.WriteString(sandbox, "x"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("an idle tunnel was never torn down")
+	}
+	if got := time.Since(last); got < idle {
+		t.Errorf("tunnel torn down %v after the last byte, want >= idle (%v)", got, idle)
+	}
+}
+
+// A destination that answered once is a real one: from its first byte only idle governs,
+// so the client's continuing traffic must keep it alive past the first-byte bound. That
+// first byte arrives right after setup armed the conns, inside the slack window a later
+// re-arm is skipped in, and it must arm anyway or upstream stays on the first-byte bound.
+func TestTunnelAnAnsweredUpstreamOutlivesTheFirstByteBound(t *testing.T) {
+	const firstByte = 150 * time.Millisecond
+	sandbox, clientConn := net.Pipe()
+	upstreamConn, server := net.Pipe()
+	defer sandbox.Close()
+	defer server.Close()
+	go tunnel(clientConn, clientConn, upstreamConn, time.Hour, firstByte)
+
+	if _, err := io.WriteString(server, "y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(sandbox, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	const chunks = 20
+	go func() {
+		for range chunks {
+			if _, err := io.WriteString(sandbox, "x"); err != nil {
+				return
+			}
+			time.Sleep(firstByte / 5)
+		}
+	}()
+	server.SetDeadline(time.Now().Add(10 * time.Second))
+	if n, err := io.ReadFull(server, make([]byte, chunks)); err != nil {
+		t.Fatalf("forwarded %d of %d bytes: an upstream that had answered was cut at the first-byte bound: %v", n, chunks, err)
 	}
 }
 
