@@ -301,30 +301,28 @@ func (s Set) covers(above, below string) bool {
 	}
 	sep := string(filepath.Separator)
 	a, b := filepath.Clean(above), filepath.Clean(below)
-	ac, bc := strings.Split(a, sep), strings.Split(b, sep)
-	if len(bc) < len(ac) {
+	if strings.Count(b, sep) < strings.Count(a, sep) {
 		return false
 	}
-	// Offsets into the cleaned strings rather than a rejoin per component: the prefix
-	// through component i is already spelled there. A fold can change a name's LENGTH
-	// (the Kelvin sign folds onto one-byte "k"), so the two are tracked separately.
+	// Cut rather than Split: this runs for every rule the byte-exact test declines, which is
+	// nearly all of them on every verdict, and two slices per rule was most of a verdict's
+	// allocations. Offsets into the cleaned strings rather than a rejoin per component: the
+	// prefix through each component is already spelled there. A fold can change a name's
+	// LENGTH (the Kelvin sign folds onto one-byte "k"), so the two are tracked separately.
 	ai, bi := 0, 0
-	for i, name := range ac {
-		if i > 0 {
-			ai, bi = ai+1, bi+1
-		}
-		ai, bi = ai+len(name), bi+len(bc[i])
-		if name == bc[i] {
-			continue
-		}
-		if !strings.EqualFold(name, bc[i]) {
+	for ra, rb := a, b; ; {
+		na, restA, moreA := strings.Cut(ra, sep)
+		nb, restB, _ := strings.Cut(rb, sep)
+		ai, bi = ai+len(na), bi+len(nb)
+		if na != nb && (!strings.EqualFold(na, nb) || !s.fs.SameFile(a[:ai], b[:bi])) {
 			return false
 		}
-		if !s.fs.SameFile(a[:ai], b[:bi]) {
-			return false
+		if !moreA {
+			return true
 		}
+		ai, bi = ai+1, bi+1
+		ra, rb = restA, restB
 	}
-	return true
 }
 
 // foldsCase reports whether the directory holding path reaches path's content under a
