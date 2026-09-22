@@ -1585,17 +1585,11 @@ func sockaddrUnixPath(pid int, addr uintptr, addrlen uint32) (string, bool) {
 	if addrlen <= 2 || addrlen > 110 {
 		return "", true
 	}
-	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
-	if err != nil {
-		return "", false
-	}
-	defer mem.Close()
-
 	buf := make([]byte, addrlen)
 	// A short read is not a shorter address: sun_path need not be NUL-terminated, so
 	// parsing the truncated bytes would record a real-looking path that is a prefix of
 	// the one the target used - a misattributed access, worse than a counted loss.
-	if n, err := mem.ReadAt(buf, int64(addr)); err != nil && n < len(buf) {
+	if readMem(pid, addr, buf) < len(buf) {
 		return "", false
 	}
 	return unixSockaddrPath(buf), true
@@ -1722,14 +1716,8 @@ func readPathAt(pid int, dirfd int32, addr uintptr) (string, bool) {
 // the resolve flags there is no honest path, and guessing one named a file the kernel
 // never opened.
 func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
-	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
-	if err != nil {
-		return 0, 0, false
-	}
-	defer mem.Close()
-
 	var buf [24]byte
-	if n, _ := mem.ReadAt(buf[:], int64(addr)); n < 24 {
+	if readMem(pid, addr, buf[:]) < len(buf) {
 		return 0, 0, false
 	}
 	return binary.LittleEndian.Uint64(buf[0:8]), binary.LittleEndian.Uint64(buf[16:24]), true
@@ -1737,14 +1725,8 @@ func openHow(pid int, addr uintptr) (flags, resolve uint64, ok bool) {
 
 // readString reads a NUL-terminated string from the traced process's memory.
 func readString(pid int, addr uintptr) (string, bool) {
-	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
-	if err != nil {
-		return "", false
-	}
-	defer mem.Close()
-
 	var buf [4096]byte
-	n, _ := mem.ReadAt(buf[:], int64(addr))
+	n := readMem(pid, addr, buf[:])
 	for i := range n {
 		if buf[i] == 0 {
 			return string(buf[:i]), true
@@ -1753,6 +1735,36 @@ func readString(pid int, addr uintptr) (string, bool) {
 	// No NUL in the window: either the read failed outright or the pathname is longer
 	// than any the kernel would accept. Either way the path is unknown, not empty.
 	return "", false
+}
+
+// readMem reads the traced process's memory at addr into buf, which is no longer than a
+// page, and reports how many bytes arrived. It runs once per pathname the target names, so
+// it is one process_vm_readv rather than an open of /proc/pid/mem: os.Open registers the
+// descriptor with the netpoller, which made every pathname cost eight syscalls.
+//
+// The two need the same access to the tracee - PTRACE_MODE_ATTACH, which a tracer holds
+// over what it traces - but process_vm_readv does not read with FOLL_FORCE, so a pathname
+// in a mapping the tracee itself cannot read comes back short and is dropped. The kernel
+// answers the traced call EFAULT for the same bytes, so what is lost is a path it never
+// opened either.
+//
+// The read is split at the page boundary because process_vm_readv(2) transfers no part of
+// a remote iovec that faults: a pathname near the end of the last mapped page would
+// otherwise read as nothing, where the page-split form still delivers the prefix holding
+// its NUL.
+func readMem(pid int, addr uintptr, buf []byte) int {
+	page := uintptr(os.Getpagesize())
+	first := min(uintptr(len(buf)), page-addr%page)
+	local := []unix.Iovec{{Base: &buf[0], Len: uint64(len(buf))}}
+	remote := []unix.RemoteIovec{
+		{Base: addr, Len: int(first)},
+		{Base: addr + first, Len: len(buf) - int(first)},
+	}
+	n, err := unix.ProcessVMReadv(pid, local, remote, 0)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func exitCode(ws syscall.WaitStatus) int {

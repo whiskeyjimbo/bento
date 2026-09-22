@@ -1551,3 +1551,41 @@ func TestTraceAllocatesNothingPerIgnoredSyscall(t *testing.T) {
 		t.Errorf("%.2f allocations per ignored syscall, want < 1", mallocs)
 	}
 }
+
+// A pathname is read out of the tracee with process_vm_readv, which is not a read-family
+// syscall, rather than through /proc/pid/mem - an open, a pread and a close per pathname,
+// and through os.Open, four fcntls and an epoll_ctl on top for the netpoller.
+func TestTraceReadsPathnamesWithoutProcMem(t *testing.T) {
+	if _, reads := tracerCost(t, "statabs"); reads >= 0.5 {
+		t.Errorf("%.2f read syscalls per pathname, want 0", reads)
+	}
+}
+
+// A pathname that ends on the last page of a mapping must still read. The observer reads a
+// full page-sized window and looks for the NUL in whatever arrived, so a window running off
+// the end of the mapping has to deliver the mapped prefix rather than nothing - and a
+// window that finds no NUL there must answer "unknown", never the truncated bytes.
+func TestReadStringStopsAtAnUnmappedPage(t *testing.T) {
+	page := os.Getpagesize()
+	mem, err := unix.Mmap(-1, 0, 2*page, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Munmap(mem)
+	if err := unix.Mprotect(mem[page:], unix.PROT_NONE); err != nil {
+		t.Fatal(err)
+	}
+
+	const path = "/etc/at-the-page-edge"
+	at := page - len(path) - 1
+	copy(mem[at:], path+"\x00")
+	got, ok := readString(os.Getpid(), uintptr(unsafe.Pointer(&mem[at])))
+	if !ok || got != path {
+		t.Errorf("readString at the page edge = %q, %v; want %q, true", got, ok, path)
+	}
+
+	copy(mem[at:], path+"x")
+	if got, ok := readString(os.Getpid(), uintptr(unsafe.Pointer(&mem[at]))); ok {
+		t.Errorf("readString with no NUL before the unmapped page = %q, true; want not ok", got)
+	}
+}
