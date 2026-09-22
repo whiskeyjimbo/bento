@@ -241,19 +241,29 @@ func derivedWorkspaceRules(sb sandbox, w string, above []denylist.Rule, seen map
 	// later finding can land inside an earlier one. Only the rule side is resolved: the
 	// findings' own paths come from the walk of the resolved grant and are compared as
 	// they stand.
-	inForce := map[string]bool{}
-	var dirs []string
+	//
+	// The directory shields are a set looked up by the finding's ancestors rather than a
+	// list scanned per finding: a monorepo grant brings hundreds of findings against
+	// hundreds of rules in force, and the scan was most of a launch's derivation cost.
+	inForce, dirs := map[string]bool{}, map[string]bool{}
 	accept := func(rules ...denylist.Rule) {
 		for _, r := range rules {
 			rp := sb.resolve(r.Path)
 			inForce[rp] = true
 			if r.Dir {
-				dirs = append(dirs, rp)
+				dirs[filepath.Clean(rp)] = true
 			}
 		}
 	}
 	insideDirShield := func(path string) bool {
-		return slices.ContainsFunc(dirs, func(d string) bool { return d != path && policy.CoversResolved(d, path) })
+		for dir := filepath.Dir(filepath.Clean(path)); ; dir = filepath.Dir(dir) {
+			if dirs[dir] {
+				return true
+			}
+			if filepath.Dir(dir) == dir {
+				return false
+			}
+		}
 	}
 	accept(above...)
 	var out []denylist.Rule

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 )
@@ -58,6 +59,38 @@ func TestDerivedWorkspaceRulesCostIsLinearInFindings(t *testing.T) {
 	small, large := derive(10), derive(100)
 	if perEntry := float64(large-small) / 90; perEntry > 4 {
 		t.Errorf("each added project config entry costs %.0f resolves (%d at 10 entries, %d at 100); want a constant, not one per rule in force", perEntry, small, large)
+	}
+}
+
+// A finding is dropped when a directory shield already in force encloses it, and that
+// test ran over every directory rule in force for every finding - findings x rules again,
+// one level below the resolves the test above pins. Timed rather than counted because the
+// comparisons go through no seam: at ten times both the rules and the findings a pass
+// linear in each costs about ten times as much, and one over their product about a hundred.
+func TestDerivedWorkspaceRulesScreenIsLinearInRulesAndFindings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("times two sizes of the derivation")
+	}
+	derive := func(rules, config int) time.Duration {
+		sb, _ := projectSandbox(config, 0)
+		var above []denylist.Rule
+		for i := range rules {
+			above = append(above, denylist.Rule{Path: fmt.Sprintf("/elsewhere/s%d", i), Deny: denylist.DenyWrite, Dir: true})
+		}
+		best := time.Duration(1 << 62)
+		for range 7 {
+			start := time.Now()
+			if got := derivedWorkspaceRules(sb, "/w", above, map[string]bool{}); len(got) != config {
+				t.Fatalf("every project config entry should be shielded; got %d of %d", len(got), config)
+			}
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	small, large := derive(600, 100), derive(6000, 1000)
+	t.Logf("600 rules x 100 entries %v, 6000 x 1000 %v", small, large)
+	if ratio := float64(large) / float64(small); ratio > 30 {
+		t.Errorf("ten times the rules and findings cost %.0fx the time (%v -> %v); a screen linear in each costs about 10x", ratio, small, large)
 	}
 }
 
