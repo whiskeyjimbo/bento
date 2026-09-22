@@ -28,7 +28,9 @@ registry, `read:` for a toolchain outside the system directories - and approve i
 again.
 
 The project's `.claude/` and your `~/.claude` are both read-only to a sandboxed
-command, so the agent cannot switch the hook off from inside. The manifest is
+command, so a shell command cannot switch the hook off. Claude Code's own Write and
+Edit tools are not sandboxed and can still edit `.claude/settings.json`; add a
+permission deny rule for it if the agent must not. The manifest is
 read-only to its own run too: approval is a stamp inside it, and a command that could
 rewrite it could re-stamp a wider policy. Keep it at the top of its write grant, as
 here - `bento run` refuses a manifest under a wider write grant, because the directory

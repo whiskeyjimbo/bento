@@ -138,6 +138,16 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := admitEnv(p, proc); err != nil {
 		return Result{}, err
 	}
+	if len(proc.ExtraArgs) > 0 && !p.ExtraArgs {
+		return Result{}, fmt.Errorf("enforce: the policy does not set extra_args, so a run of it takes no arguments beyond its own")
+	}
+	for _, a := range proc.ExtraArgs {
+		// The one thing an argv element cannot carry; exec would fail on it after the
+		// sandbox was built.
+		if strings.ContainsRune(a, 0) {
+			return Result{}, fmt.Errorf("enforce: extra argument %q contains a NUL byte, which no argument can carry", a)
+		}
+	}
 	wanted := requiredLayers(p, opts)
 	probed := e.Probe(ctx)
 	required := probed.forLayers(wanted)

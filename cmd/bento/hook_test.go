@@ -151,3 +151,22 @@ func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 		})
 	}
 }
+
+// A hook configured without its manifest must still answer. Failing as a usage error
+// exits non-zero, which Claude Code treats as non-blocking - the original command then
+// runs unconfined, from a settings file that looks like it sandboxes everything.
+func TestHookMisconfiguredStillDenies(t *testing.T) {
+	cmd := newClaudeCodeHookCmd()
+	cmd.SetArgs(nil)
+	cmd.SetIn(strings.NewReader(`{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`))
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&strings.Builder{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("the hook exited with an error, which Claude Code does not block on: %v", err)
+	}
+	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
+		t.Errorf("a hook with no manifest must deny; got %q", out.String())
+	}
+}

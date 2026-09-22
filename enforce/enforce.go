@@ -206,6 +206,12 @@ type Process struct {
 	// find out what the manifest should declare, so it is given an environment the
 	// not-yet-written manifest cannot list.
 	Env map[string]string
+
+	// ExtraArgs are appended to the target's argv after the policy's Args, for a policy
+	// that sets ExtraArgs. They are an invocation, not a permission - never fingerprinted,
+	// and not screened like the policy's own fields, whose screen keeps a newline from
+	// forging a fingerprint line. A multi-line shell script is the ordinary value here.
+	ExtraArgs []string
 }
 
 // CredentialAlias is a second readable path to a shielded credential: Path reaches the

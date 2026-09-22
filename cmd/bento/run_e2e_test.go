@@ -249,7 +249,20 @@ func TestRunAppendsExtraArgsAfterTheFixedOnes(t *testing.T) {
 	if got := asExitError(t, err).code; got != 0 {
 		t.Fatalf("exit = %d, want 0 (9 means the target saw the wrong argv):\n%s", got, stderr)
 	}
-	if want := `extra args: "a" "b c"`; !strings.Contains(stderr, want) {
+	// A multi-line script is the ordinary shape of an agent's command (heredocs, several
+	// statements). The appended args are not the approved policy, so the screen that keeps
+	// a newline out of fingerprinted fields has nothing to protect here.
+	m = writeRunnableManifest(t, `[ "$2" = "$(printf 'one\ntwo')" ] || exit 9`+"\n", &policy.Policy{
+		Entrypoint:  "./run.sh",
+		Interpreter: "sh",
+		Args:        []string{"fixed"},
+		ExtraArgs:   true,
+	})
+	stderr, err = runCmdCapturingStderr(t, m, "--", "one\ntwo")
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want 0 (9 means the target saw the wrong argv):\n%s", got, stderr)
+	}
+	if want := `extra args: "one\ntwo"`; !strings.Contains(stderr, want) {
 		t.Errorf("the run must disclose the arguments it appended (%q):\n%s", want, stderr)
 	}
 }
@@ -384,5 +397,21 @@ func TestANestedCheckoutsHooksAreShielded(t *testing.T) {
 		if b, _ := os.ReadFile(filepath.Join(filepath.Dir(m), p)); strings.Contains(string(b), "planted") {
 			t.Errorf("%s was planted on the host through the write grant above it", p)
 		}
+	}
+}
+
+// The approval does not cover appended arguments, so a gate reading --json alone has to
+// be able to see them - the stderr line is not part of that stream.
+func TestRunJSONCarriesExtraArgs(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", ExtraArgs: true})
+	out, err := runCapturingStdout(t, newRunCmd(), "--json", m, "--", "appended")
+	if asExitError(t, err).code != 0 {
+		t.Fatalf("run failed:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if !strings.Contains(lines[len(lines)-1], `"extra_args":["appended"]`) {
+		t.Errorf("the verdict object does not carry the appended args:\n%s", lines[len(lines)-1])
 	}
 }

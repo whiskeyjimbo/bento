@@ -39,7 +39,14 @@ field() {
 # agent <command> runs <command> the way Claude Code would after the hook: the rewritten
 # line, through a shell.
 agent() {
-	cmd="$(hook "$1" | field 'updatedInput["command"]')"
+	reply="$(hook "$1")"
+	# A deny carries no command to run, so the checks after a sandboxed attempt would pass
+	# for a hook that simply refused. Insist it was rewritten.
+	if [ "$(printf '%s' "$reply" | field 'permissionDecision')" != "ask" ]; then
+		echo "FAIL: the hook did not rewrite: $reply" >&2
+		exit 1
+	fi
+	cmd="$(printf '%s' "$reply" | field 'updatedInput["command"]')"
 	sh -c "$cmd" </dev/null
 }
 
@@ -51,6 +58,14 @@ fi
 agent 'echo built > out.txt' 2>/dev/null
 if [ "$(cat "$repo/out.txt" 2>/dev/null)" != "built" ]; then
 	echo "FAIL: a command under the write grant did not write the checkout" >&2
+	exit 1
+fi
+
+# Agents send multi-line scripts; each line has to reach the shell.
+agent 'printf a > multi.txt
+printf b >> multi.txt' 2>/dev/null || true
+if [ "$(cat "$repo/multi.txt" 2>/dev/null)" != "ab" ]; then
+	echo "FAIL: a multi-line command did not run whole" >&2
 	exit 1
 fi
 

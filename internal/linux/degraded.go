@@ -225,7 +225,7 @@ func (e *Enforcer) runDegraded(ctx context.Context, p *policy.Policy, proc enfor
 		Scratch:     scratch,
 		StripEnv:    stripEnv,
 		AppliedFD:   appliedReportFD,
-		Target:      command(p, sb),
+		Target:      command(p, proc, sb),
 	}
 
 	// A scope execs its command in place, so the launcher stays the leader of the group

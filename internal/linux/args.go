@@ -463,7 +463,7 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 		// way to tell a mode that cannot be recorded from a stage that never reported;
 		// the launcher writes the recorder absent with its own reason instead.
 		RecordExec: sb.recordExec,
-		Target:     command(p, sb),
+		Target:     command(p, proc, sb),
 	}
 	// Ahead of the deadMount check below, because shieldsApplied consults sb.exists to tell
 	// a read-only bind from a discarded tmpfs, and a seam expiring THERE would answer true
@@ -768,14 +768,14 @@ func observeHomeTmpfs(proc enforce.Process, sb sandbox) string {
 //
 // InterpreterArgs precede the entrypoint because that is where the interpreter reads
 // its options; after it they would be the script's argv.
-func command(p *policy.Policy, sb sandbox) []string {
+func command(p *policy.Policy, proc enforce.Process, sb sandbox) []string {
 	var cmd []string
 	if sb.interpreter != "" {
 		cmd = append(cmd, sb.interpreter)
 		cmd = append(cmd, p.InterpreterArgs...)
 	}
 	cmd = append(cmd, sb.entrypoint)
-	return append(cmd, p.Args...)
+	return append(append(cmd, p.Args...), proc.ExtraArgs...)
 }
 
 // hostExists is the real filesystem probe used outside tests.

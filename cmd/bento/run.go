@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,14 +118,12 @@ func newRunCmd() *cobra.Command {
 					return refuse(fmt.Errorf("%s does not set extra_args: true, so run takes no arguments after --; "+
 						"the approval covers the manifest's own args only", args[0]))
 				}
-				// Appended to the resolved policy only: the fingerprint was checked above
-				// against the manifest as written, which is where these must not appear.
-				p.Args = append(slices.Clone(p.Args), extra...)
 				quoted := make([]string, len(extra))
 				for i, a := range extra {
 					quoted[i] = strconv.Quote(a)
 				}
 				fmt.Fprintf(os.Stderr, "[bento] extra args: %s\n", strings.Join(quoted, " "))
+				notes.ExtraArgs = extra
 			}
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
 			if err != nil {
@@ -166,7 +163,7 @@ func newRunCmd() *cobra.Command {
 			// pipeline running a long build shows its logs and a job killed on a timeout
 			// leaves them behind, and nothing is held: the memory a run costs no longer
 			// grows with what the target printed. It is given no stdin.
-			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env}
+			proc := enforce.Process{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Env: env, ExtraArgs: args[1:]}
 			var stream *eventStream
 			if asJSON {
 				stream = newEventStream(os.Stdout)
@@ -427,6 +424,9 @@ type runNotesJSON struct {
 	ApprovalNote string `json:"approval_note,omitempty"`
 	// UnsetEnv are the allowlisted variables this host does not set, so the sandbox gets none.
 	UnsetEnv []string `json:"unset_env,omitempty"`
+	// ExtraArgs are the arguments this invocation appended after the manifest's own, which
+	// the approval does not cover.
+	ExtraArgs []string `json:"extra_args,omitempty"`
 	// MissingReadGrants are the read grants that named nothing on this host when the run
 	// started. It is the field that connects a script dying on a file it could not open to
 	// the manifest grant that no longer resolves.

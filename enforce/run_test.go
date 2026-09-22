@@ -1930,3 +1930,23 @@ func TestDegradedTierRefusesReadOnlyPathsUnderAWriteGrant(t *testing.T) {
 		})
 	}
 }
+
+// Extra arguments ride on the Process, outside the approved policy, so Run is where a
+// policy that never opted in refuses them - and where the one value no argv element can
+// carry is refused before a sandbox is built for an exec that would fail.
+func TestRunAdmitsExtraArgsOnlyWhenThePolicyOptsIn(t *testing.T) {
+	f := &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, validPolicy(), Process{ExtraArgs: []string{"x"}}, Options{}); err == nil || f.ran {
+		t.Errorf("extra args ran under a policy without extra_args (err %v)", err)
+	}
+	opted := validPolicy()
+	opted.ExtraArgs = true
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, opted, Process{ExtraArgs: []string{"a\x00b"}}, Options{}); err == nil || f.ran {
+		t.Errorf("an extra arg carrying NUL reached the backend (err %v)", err)
+	}
+	f = &fakeEnforcer{probe: fullyEnforced()}
+	if _, err := Run(context.Background(), f, opted, Process{ExtraArgs: []string{"line one\nline two"}}, Options{}); err != nil || !f.ran {
+		t.Errorf("a multi-line extra arg under an opted-in policy was refused: %v", err)
+	}
+}

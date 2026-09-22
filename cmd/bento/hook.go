@@ -40,11 +40,15 @@ func newClaudeCodeHookCmd() *cobra.Command {
 			"tools do not run through a shell and are not confined by this hook.\n\n" +
 			"Any payload it cannot turn into a sandboxed command is answered with \"deny\" rather\n" +
 			"than an error, because Claude Code runs the original command when a hook fails.",
-		Args: exactArgs(1, "a manifest path"),
+		// Checked in RunE rather than by an Args validator: every failure here is answered
+		// with a deny, because an error exit is one Claude Code does not block on.
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return writeHookDecision(cmd.OutOrStdout(), "deny", fmt.Sprintf("bento hook claude-code is configured with %d arguments; it takes exactly one, the manifest path", len(args)), nil)
+			}
 			self, err := os.Executable()
 			if err != nil {
-				return err
+				return writeHookDecision(cmd.OutOrStdout(), "deny", fmt.Sprintf("bento could not locate its own binary to run the command under: %v", err), nil)
 			}
 			return claudeCodeHook(cmd.InOrStdin(), cmd.OutOrStdout(), args[0], self, allow)
 		},
