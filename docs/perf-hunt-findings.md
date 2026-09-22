@@ -8,9 +8,10 @@ is its own file. Candidate census and ranking in `perf-hunt-candidates.md`.
 - `perf-grid-gate-alias.md` - gate credential-alias walk
 - `perf-grid-denylist.md` - denylist rule construction and coverage
 
-No fixes applied. Wall time deliberately not taken anywhere: the four measurers shared one
-machine, so only counts (execs, syscalls, allocs, filesystem ops) are trustworthy here.
-Each finding below needs a serialized before/after when it is fixed.
+Wall time was not taken during the measuring: the four measurers shared one machine, so only
+counts (execs, syscalls, allocs, filesystem ops) are trustworthy in the grids. Findings 1
+and 3 have since been fixed and measured serially - see the perf diff at the end. Everything
+else still needs its own before/after.
 
 ## The cross-cutting result
 
@@ -18,8 +19,13 @@ Three of the four grids independently found the same shape: **a memo exists, and
 call site computing the identical value does not consult it.** Not a missing optimization -
 an optimization that was landed once and not carried across its row.
 
-- `shield`: `e9f2682` memoized resolve-per-rule into `s.targets` (`rules.go:156`), consulted
-  only at `rules.go:211`; `verdict.go:179` and `:230` recompute it in a loop.
+- `shield`: `verdict.go:179` and `:230` recomputed a per-rule spelling in a loop that was
+  fixed at assembly, beside `s.targets` (`rules.go:156`) doing exactly that for its own
+  value. Corrected while fixing: the grid claimed `e9f2682` had already memoized *this*
+  value and the loops failed to consult it. It had not - `s.targets` holds the fully
+  resolved path, which the loop already has as `a.Resolved`, while the loops wanted the
+  parent-resolved-name-literal spelling, a third value that was in no memo. The shape still
+  holds, the specific lookup did not exist.
 - `shield`: `e1ce786`'s `shieldRulesCache` covers `denyArgs`/`createdShields`; the two grant
   checks build the same rules and miss it.
 - `probe`: `cacheProbe` (`limits.go:63`) memoizes the limits half of `Probe`;
