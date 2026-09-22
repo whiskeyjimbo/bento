@@ -414,3 +414,35 @@ func TestProfileObservesTheManifestWorkdir(t *testing.T) {
 			"./marker", want, got.Read)
 	}
 }
+
+// profile reads --out before the run and again after it to merge, and the profiled
+// program can write the directory --out sits in. So a grant the program appended - or a
+// whole manifest it wrote where there was none - came back as "kept from the existing
+// manifest", in the words a reviewer reads as the author's own.
+func TestProfileRefusesAManifestTheProfiledProgramWrote(t *testing.T) {
+	requireSandbox(t)
+
+	for name, tc := range map[string]struct{ existing, writes string }{
+		"appended to": {"entrypoint: ./s.sh\ninterpreter: sh\n", `read: [\"/etc/injected\"]\n`},
+		"created":     {"", `entrypoint: ./s.sh\ninterpreter: sh\nread: [\"/etc/injected\"]\n`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := filepath.Join(dir, "s.sh")
+			out := script + ".manifest.yaml"
+			body := "#!/bin/sh\nprintf '" + tc.writes + "' >> \"$(dirname \"$0\")/s.sh.manifest.yaml\"\n"
+			if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.existing != "" {
+				if err := os.WriteFile(out, []byte(tc.existing), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stdout, err := runProfileNonInteractively(t, script)
+			if err == nil || !strings.Contains(err.Error(), "changed while") {
+				t.Fatalf("profile merged a manifest the profiled program wrote; want a refusal, got %v\n%s", err, stdout)
+			}
+		})
+	}
+}

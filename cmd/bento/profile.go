@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -157,6 +158,7 @@ func newProfileCmd() *cobra.Command {
 			if err != nil {
 				return refuse(err)
 			}
+			outBefore := snapshotOut(out)
 			workdir := ""
 			if existing != nil {
 				workdir = existing.Workdir
@@ -292,6 +294,9 @@ func newProfileCmd() *cobra.Command {
 			// Merge into an existing manifest rather than overwriting it, so a second
 			// profile run widens the policy instead of replacing it.
 			accepted := proposed
+			if err := outBefore.unchanged(); err != nil {
+				return refuse(err)
+			}
 			merge, err := mergeExisting(out, script, proposed)
 			if err != nil {
 				return refuse(err)
@@ -1885,4 +1890,35 @@ func union(a, b []string) []string {
 		out = append(out, x)
 	}
 	return out
+}
+
+// outSnapshot is --out as it stood before the profiled program ran. The program may write
+// the directory --out sits in - the script's own directory is granted to it - and
+// mergeExisting reads the file after the run, so without this a grant the program
+// appended, or a whole manifest it wrote where there was none, would be merged and shown
+// as kept from the existing manifest: the author's own words, as the reviewer reads them.
+type outSnapshot struct {
+	path    string
+	content []byte
+	absent  bool
+}
+
+func snapshotOut(path string) outSnapshot {
+	b, err := os.ReadFile(path)
+	return outSnapshot{path: path, content: b, absent: errors.Is(err, fs.ErrNotExist)}
+}
+
+// unchanged refuses a --out the profiled program created or rewrote. A read error either
+// side counts as changed: the merge would otherwise run on a file nobody vouched for.
+func (s outSnapshot) unchanged() error {
+	b, err := os.ReadFile(s.path)
+	absent := errors.Is(err, fs.ErrNotExist)
+	if absent && s.absent {
+		return nil
+	}
+	if err == nil && !s.absent && bytes.Equal(b, s.content) {
+		return nil
+	}
+	return fmt.Errorf("refusing to merge: %s changed while the profiled program ran, so its content is not a manifest anyone wrote - "+
+		"restore or delete it and profile again, or pass --out outside the script's directory", s.path)
 }
