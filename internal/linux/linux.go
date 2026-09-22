@@ -1023,6 +1023,7 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 	// findCheckouts is false for the degraded tier, which applies no shields, so the walk
 	// would cost O(tree) for nothing - and its bound would refuse a run it cannot protect.
 	sb.nestedCheckouts = map[string][]string{}
+	sb.agentConfig = map[string][]denylist.Rule{}
 	for _, w := range p.Write {
 		rw := sb.resolve(w)
 		if !findCheckouts || !sb.isDir(rw) {
@@ -1031,14 +1032,19 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 		if _, done := sb.nestedCheckouts[rw]; done {
 			continue
 		}
-		found, err := bounded("the search of "+rw+" for git checkouts", func() ([]string, error) {
-			return findNestedCheckouts(rw)
+		type findings struct {
+			checkouts []string
+			agent     []denylist.Rule
+		}
+		f, err := bounded("the search of "+rw+" for git checkouts and agent config", func() (findings, error) {
+			c, a, err := findNestedCheckouts(rw)
+			return findings{c, a}, err
 		})
 		if err != nil {
 			cleanup()
 			return sandbox{}, noop, err
 		}
-		sb.nestedCheckouts[rw] = found
+		sb.nestedCheckouts[rw], sb.agentConfig[rw] = f.checkouts, f.agent
 	}
 
 	// Caller-supplied deny paths join the built-in deny-list. Built here, after the

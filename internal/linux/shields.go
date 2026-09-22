@@ -186,25 +186,48 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 		seen[root] = true
 		ws, _ := workspaceShields(sb, w)
 		rules = append(rules, ws...)
-		for _, nested := range sb.nestedCheckouts[sb.resolve(w)] {
-			if seen[nested] || insideDirShield(sb, rules, nested) {
-				continue
-			}
-			seen[nested] = true
-			ns, _ := workspaceShields(sb, nested)
-			rules = append(rules, ns...)
-		}
+		rules = append(rules, derivedWorkspaceRules(sb, w, rules, seen)...)
 	}
 	return rules
 }
 
-// insideDirShield reports whether path lies inside a directory one of rules shields. A
+// derivedWorkspaceRules is what the workspace walk found below write grant w: a shield per
+// existing agent-config entry, then the workspace shields of each nested checkout. above
+// is every rule already in force, so a finding inside a directory it shields is left out -
+// writes cannot reach it, and a mount point inside a read-only mount aborts bwrap. (The
+// walk itself never enters an agent-config directory, so a checkout kept inside a deep
+// .claude is not found at all; this covers the enclosing checkout's .vscode and .idea,
+// which it does enter.) seen deduplicates checkouts across grants.
+//
+// Shared by shieldRules and checkWriteNotUnderReadOnlyShield, so a grant inside a derived
+// shield is refused by the rules that would otherwise have neutered it silently.
+func derivedWorkspaceRules(sb sandbox, w string, above []denylist.Rule, seen map[string]bool) []denylist.Rule {
+	var out []denylist.Rule
+	all := func() []denylist.Rule { return slices.Concat(above, out) }
+	for _, r := range sb.agentConfig[sb.resolve(w)] {
+		if !insideDirShield(sb, all(), r.Path) {
+			out = append(out, r)
+		}
+	}
+	for _, nested := range sb.nestedCheckouts[sb.resolve(w)] {
+		if seen[nested] || insideDirShield(sb, all(), nested) {
+			continue
+		}
+		seen[nested] = true
+		ns, _ := workspaceShields(sb, nested)
+		out = append(out, ns...)
+	}
+	return out
+}
+
+// insideDirShield reports whether path lies strictly inside a directory one of rules
+// shields. A
 // checkout there is already beyond the run's writes - Claude Code's worktrees under the
 // read-only .claude are the ordinary case - and shields of its own would need bwrap to
 // create their mount points inside a read-only mount, which aborts the run.
 func insideDirShield(sb sandbox, rules []denylist.Rule, path string) bool {
 	for _, r := range rules {
-		if r.Dir && policy.CoversResolved(sb.resolve(r.Path), path) {
+		if rp := sb.resolve(r.Path); r.Dir && rp != path && policy.CoversResolved(rp, path) {
 			return true
 		}
 	}
@@ -216,20 +239,37 @@ func insideDirShield(sb sandbox, rules []denylist.Rule, path string) bool {
 // thousands of mounts; past it the run is refused rather than shielded short.
 const maxNestedCheckouts = 96
 
+// maxAgentConfig bounds the agent-config entries the same walk shields. Each is one mount
+// rather than a checkout's dozen, so its bound is wider for the same reason to have one.
+const maxAgentConfig = 512
+
 // findNestedCheckouts walks a write grant for git checkouts below its enclosing one, by
 // name only - it never reads a .git entry's content, which is what keeps checkoutRoot's
 // decoy argument true here too. Symlinks are not followed, so the walk stays inside the
 // grant. A subtree it cannot read is one the run cannot read either, as in the alias scan,
 // so it is skipped; any other error is refused, since a walk that broke has not shown the
 // grant holds no checkout.
-func findNestedCheckouts(grant string) ([]string, error) {
+func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
 	var found []string
+	var agent []denylist.Rule
 	err := filepath.WalkDir(grant, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
 				return nil
 			}
 			return err
+		}
+		if slices.ContainsFunc(denylist.AgentConfig, func(a denylist.AgentConfigEntry) bool { return a.Name == d.Name() }) {
+			// Shielded as it stands: a directory whole, whatever it holds, so the walk has
+			// nothing to find below it.
+			agent = append(agent, denylist.Rule{Path: p, Deny: denylist.DenyWrite, Dir: d.IsDir()})
+			if len(agent) > maxAgentConfig {
+				return fmt.Errorf("more than %d coding-agent config entries below the write grant %s; bento shields each one, and will not mount that many - grant the projects that need writing instead", maxAgentConfig, grant)
+			}
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.Name() != ".git" {
 			return nil
@@ -246,9 +286,9 @@ func findNestedCheckouts(grant string) ([]string, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("linux: looking for git checkouts under %s: %w", grant, err)
+		return nil, nil, fmt.Errorf("linux: looking for git checkouts under %s: %w", grant, err)
 	}
-	return found, nil
+	return found, agent, nil
 }
 
 // workspaceShields is the code-execution surface of the checkout a write grant lands

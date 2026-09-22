@@ -163,15 +163,16 @@ func checkWriteNotUnderReadOnlyShield(sb sandbox, writes []string) error {
 	// sharing one derive a single set between them, and appending it per grant makes the
 	// comparison below grow with the square of how many grants a project names.
 	seen := map[string]bool{}
+	set := shields(sb)
+	nested := map[string]bool{}
 	for _, w := range writes {
 		ws, root := workspaceShields(sb, w)
-		if seen[root] {
-			continue
+		if !seen[root] {
+			seen[root] = true
+			workspace = append(workspace, ws...)
 		}
-		seen[root] = true
-		workspace = append(workspace, ws...)
+		workspace = append(workspace, derivedWorkspaceRules(sb, w, slices.Concat(set.Rules(), workspace), nested)...)
 	}
-	set := shields(sb)
 	for _, g := range writes {
 		if r, v := set.Contains(g, shield.Write, nil, workspace); v == shield.UnderWriteShield {
 			return grantrefusal.WriteUnderReadOnlyShield(g, r.Path)

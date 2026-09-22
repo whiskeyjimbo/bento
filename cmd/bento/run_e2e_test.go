@@ -458,3 +458,67 @@ func TestAWriteGrantInsideANestedCheckoutsShieldIsRefused(t *testing.T) {
 		t.Fatalf("a write grant inside a nested checkout's .vscode shield was not refused naming it; got %v", err)
 	}
 }
+
+// Agent config in a project directory with no .git below the grant root had no shield:
+// the workspace shields anchor at git checkouts. An existing .claude/settings.json there
+// declares hooks Claude Code runs on the host when the project is opened.
+func TestAgentConfigInANonGitProjectIsShielded(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "echo planted > notes/.claude/settings.json; echo planted > notes/.mcp.json; exit 0\n", &policy.Policy{
+		Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."},
+	})
+	notes := filepath.Join(filepath.Dir(m), "notes")
+	if err := os.MkdirAll(filepath.Join(notes, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{".claude/settings.json", ".mcp.json"} {
+		if err := os.WriteFile(filepath.Join(notes, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d:\n%s", got, stderr)
+	}
+	for _, f := range []string{".claude/settings.json", ".mcp.json"} {
+		if b, _ := os.ReadFile(filepath.Join(notes, f)); strings.Contains(string(b), "planted") {
+			t.Errorf("notes/%s was planted on the host through the write grant above it", f)
+		}
+	}
+
+	// A grant inside it is refused, not admitted and silently neutered by the shield.
+	m = writeRunnableManifest(t, "exit 0\n", &policy.Policy{
+		Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{".", "notes/.claude"},
+	})
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(m), "notes", ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCmd(t, m); err == nil || !strings.Contains(err.Error(), ".claude") {
+		t.Errorf("a write grant inside a non-git project's .claude was not refused naming it; got %v", err)
+	}
+}
+
+// A git worktree kept under a project's .claude that is not the grant root: the .claude is
+// shielded now, and a checkout inside it must be left alone like one under the root's.
+func TestAWorktreeUnderADeepClaudeDoesNotBreakTheRun(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}})
+	proj := filepath.Join(filepath.Dir(m), "proj")
+	for _, args := range [][]string{
+		{"init", "-q", proj},
+		{"-C", proj, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", proj, "worktree", "add", "-q", filepath.Join(filepath.Dir(m), "notes", ".claude", "worktrees", "wt1")},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", got, stderr)
+	}
+}

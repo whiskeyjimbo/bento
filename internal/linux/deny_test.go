@@ -695,7 +695,7 @@ func TestFindNestedCheckouts(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(grant, "link")); err != nil {
 		t.Fatal(err)
 	}
-	got, err := findNestedCheckouts(grant)
+	got, _, err := findNestedCheckouts(grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestFindNestedCheckoutsRefusesPastTheBound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := findNestedCheckouts(grant); err == nil {
+	if _, _, err := findNestedCheckouts(grant); err == nil {
 		t.Error("a grant holding more checkouts than the bound was walked without refusal")
 	}
 }
@@ -742,5 +742,38 @@ func TestNewSandboxWalksForCheckoutsOnlyWhereShieldsApply(t *testing.T) {
 	if _, cleanup, err := newSandbox(p, "bento-placeholder", false, nil, nil, true); err == nil {
 		cleanup()
 		t.Error("a shielded tier's sandbox did not refuse a grant over the checkout bound")
+	}
+}
+
+// The walk shields an agent-config entry as it stands - a directory whole - so it has
+// nothing to find inside one: a worktree Claude Code keeps under a deep .claude is not a
+// checkout to shield again, and shielding it would need mount points inside a read-only
+// mount.
+func TestFindNestedCheckoutsShieldsAgentConfigWholeAndLooksNoFurther(t *testing.T) {
+	grant := t.TempDir()
+	for _, d := range []string{"notes/.claude/worktrees/wt/.git", "notes/sub"} {
+		if err := os.MkdirAll(filepath.Join(grant, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(grant, "notes/sub/.mcp.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkouts, agent, err := findNestedCheckouts(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkouts) != 0 {
+		t.Errorf("found checkouts %q inside an agent-config directory", checkouts)
+	}
+	want := map[string]bool{filepath.Join(grant, "notes/.claude"): true, filepath.Join(grant, "notes/sub/.mcp.json"): false}
+	if len(agent) != len(want) {
+		t.Fatalf("agent config %v, want %v", agent, want)
+	}
+	for _, r := range agent {
+		dir, ok := want[r.Path]
+		if !ok || r.Dir != dir || r.Deny != denylist.DenyWrite {
+			t.Errorf("unexpected agent-config rule %+v", r)
+		}
 	}
 }

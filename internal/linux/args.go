@@ -191,6 +191,10 @@ type sandbox struct {
 	// checkout. Found once, in newSandbox, where a walk that cannot finish can refuse the
 	// run; shieldRules gives each the workspace shields its enclosing checkout gets.
 	nestedCheckouts map[string][]string
+	// agentConfig maps each resolved write grant to a DenyWrite rule per coding-agent
+	// config entry (denylist.AgentConfig) found below it, git checkout or not. Found in
+	// the same walk as nestedCheckouts.
+	agentConfig map[string][]denylist.Rule
 	// shieldCache memoizes the run's assembled shield set. Assembling it walks every
 	// DenyAll credential/history/persistence store on the host - isDir/listDir/resolve per
 	// entry - and the set is reached roughly ten times per compile: the mount emission from
@@ -496,12 +500,13 @@ func compile(p *policy.Policy, proc enforce.Process, sb sandbox) ([]string, []en
 const bwrapMaxArgs = 9000
 
 // checkBwrapArgCount refuses a sandbox too large for bwrap to accept, naming the usual
-// cause: every git checkout under a write grant brings its own shields and pins.
+// cause: every git checkout and agent-config entry under a write grant brings its own
+// shields and pins.
 func checkBwrapArgCount(args []string) error {
 	if len(args) <= bwrapMaxArgs {
 		return nil
 	}
-	return fmt.Errorf("linux: this sandbox needs %d bubblewrap arguments and bubblewrap accepts at most %d; each git checkout under a write grant adds its own shields, so grant the checkouts that need writing rather than a directory holding many", len(args), bwrapMaxArgs)
+	return fmt.Errorf("linux: this sandbox needs %d bubblewrap arguments and bubblewrap accepts at most %d; each git checkout and coding-agent config entry under a write grant adds its own shields, so grant the projects that need writing rather than a directory holding many", len(args), bwrapMaxArgs)
 }
 
 // execBlockFlags reports the launcher's exec-block flags for execMode, gated on

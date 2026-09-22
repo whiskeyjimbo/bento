@@ -182,11 +182,17 @@ about half a second for 350,000 entries - and each checkout it finds adds its mo
 roughly 25ms apiece. Past 96 checkouts the run is refused rather than mounted
 short, and so is any sandbox bubblewrap's 9,000-argument ceiling cannot hold: grant
 the checkouts that need writing, not a directory full of them. The degraded tier
-applies no shields and skips the walk. The cost to legitimate work is the
+applies no shields and skips the walk. The same walk shields each coding-agent config
+entry it finds (`.claude`, `.mcp.json`, `.cursor` and the rest) where it stands, in a
+git checkout or not - a project directory with no repository still has a
+`.claude/settings.json` whose hooks run on the host when it is opened. The cost to legitimate work is the
 enclosing checkout's already: inside the run, a directory holding a nested repo
 cannot be renamed, and `rm -rf` of it stops at the shield mounts.
 
-Three shapes stay fence residuals. A repo created during the run: nothing mounted
+Four shapes stay fence residuals. Agent config the run creates where there was none -
+a new `notes/.claude/settings.json` - is as unreachable as a new repo; Claude Code
+asks whether to trust a folder it has not opened before, which is the check left for
+that case. A repo created during the run: nothing mounted
 before launch can reach it, so `git init sub` inside the grant makes a `sub/.git/hooks`
 that exists only after the shields were set. A bare repository, which has no entry
 named `.git` - its `hooks/` sits at the top, and a host `git push` into it runs them.

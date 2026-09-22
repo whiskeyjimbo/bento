@@ -1848,27 +1848,12 @@ func stricter(a, b Rule) bool {
 // denied but reads stay allowed, so a build that consults the config still works.
 func Workspace(dir string) []Rule {
 	join := func(p string) string { return filepath.Join(dir, p) }
-	return []Rule{
+	rules := []Rule{
 		{Path: join(".git/hooks"), Deny: DenyWrite, Dir: true},
 		{Path: join(".git/config"), Deny: DenyWrite},
 		{Path: join(".git/config.worktree"), Deny: DenyWrite}, // honored under extensions.worktreeConfig
 		{Path: join(".vscode"), Deny: DenyWrite, Dir: true},
 		{Path: join(".idea"), Deny: DenyWrite, Dir: true},
-		// Coding agents' project config, the checkout-level twin of Home's agent trees:
-		// each declares hooks, MCP servers or lint/test commands the agent runs on the host
-		// at its next session. The dirs are taken whole for the editor-dir reason above.
-		//
-		// Residual: Claude Code keeps worktrees under .claude/worktrees, so a write grant
-		// on a checkout ro-binds its worktrees, and granting both the checkout and a
-		// worktree inside it is refused as a write under a write shield. A worktree granted
-		// on its own still works.
-		{Path: join(".claude"), Deny: DenyWrite, Dir: true},
-		{Path: join(".codex"), Deny: DenyWrite, Dir: true},
-		{Path: join(".cursor"), Deny: DenyWrite, Dir: true},
-		{Path: join(".gemini"), Deny: DenyWrite, Dir: true},
-		{Path: join(".continue"), Deny: DenyWrite, Dir: true},
-		{Path: join(".mcp.json"), Deny: DenyWrite},
-		{Path: join(".aider.conf.yml"), Deny: DenyWrite},
 		// config{,.toml} here names a rustc-wrapper, linker or target runner the host
 		// execs on the developer's next cargo command - the ~/.cargo/config.toml case one
 		// level in, and the one toolchain surface with no approval record that an agent
@@ -1888,6 +1873,37 @@ func Workspace(dir string) []Rule {
 		{Path: join(".cargo/config.toml"), Deny: DenyWrite},
 		{Path: join(".cargo/config"), Deny: DenyWrite},
 	}
+	for _, a := range AgentConfig {
+		rules = append(rules, Rule{Path: join(a.Name), Deny: DenyWrite, Dir: a.Dir})
+	}
+	return rules
+}
+
+// AgentConfigEntry names one AgentConfig entry and whether it is a directory.
+type AgentConfigEntry struct {
+	Name string
+	Dir  bool
+}
+
+// AgentConfig are the coding agents' project config entries, the checkout-level twin of
+// Home's agent trees: each declares hooks, MCP servers or lint/test commands the agent
+// runs on the host at its next session. The dirs are taken whole for the editor-dir
+// reason Workspace gives. Workspace shields them at a checkout, and they are also shielded
+// wherever they already exist further down a write grant, git checkout or not
+// (internal/linux's workspace walk) - hence a list of names, not only anchored rules.
+//
+// Residual: Claude Code keeps worktrees under .claude/worktrees, so a write grant on a
+// checkout ro-binds its worktrees, and granting both the checkout and a worktree inside
+// it is refused as a write under a write shield. A worktree granted on its own still
+// works.
+var AgentConfig = []AgentConfigEntry{
+	{".claude", true},
+	{".codex", true},
+	{".cursor", true},
+	{".gemini", true},
+	{".continue", true},
+	{".mcp.json", false},
+	{".aider.conf.yml", false},
 }
 
 // WorkspaceGitfile returns Workspace's rules for a checkout whose .git is a FILE rather
