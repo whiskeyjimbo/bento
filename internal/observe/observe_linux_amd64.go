@@ -275,7 +275,10 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		return Result{}, fmt.Errorf("observe: set options: %w", err)
 	}
 
-	seen := map[string]bool{}
+	// Keyed on the Access as add appends it, before Absent and Probed are filled in at the
+	// end: a struct key costs nothing to build, and the check runs on every file syscall,
+	// almost all of them repeats.
+	seen := map[Access]bool{}
 	// The in-flight entry/exit pairs dropOnce is deduplicating, kept apart from the
 	// recorded-path set above: entries here are released as each pair completes, and
 	// mixing the two lifetimes in one map is how a stale key goes unnoticed.
@@ -309,12 +312,12 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 		if path == "" {
 			return
 		}
-		key := path + boolKey(write)
-		if seen[key] {
+		a := Access{Path: path, Write: write}
+		if seen[a] {
 			return
 		}
-		seen[key] = true
-		res.Accesses = append(res.Accesses, Access{Path: path, Write: write})
+		seen[a] = true
+		res.Accesses = append(res.Accesses, a)
 	}
 	record := func(path string, write bool) {
 		if path != "" {

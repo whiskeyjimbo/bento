@@ -1589,3 +1589,11 @@ func TestReadStringStopsAtAnUnmappedPage(t *testing.T) {
 		t.Errorf("readString with no NUL before the unmapped page = %q, true; want not ok", got)
 	}
 }
+
+// A repeated stat of one path allocates the pathname it reads and nothing else: the access
+// is already recorded, so the dedup check that says so must not build a key to ask.
+func TestTraceAllocatesOnlyThePathnamePerRepeatedStat(t *testing.T) {
+	if mallocs, _ := tracerCost(t, "statabs"); mallocs >= 1.5 {
+		t.Errorf("%.2f allocations per repeated stat, want 1 (the pathname read out of the tracee)", mallocs)
+	}
+}
