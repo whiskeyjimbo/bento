@@ -294,7 +294,13 @@ func BenchmarkCredentialLinkWalk(b *testing.B) {
 		listDir:   hostListDir,
 		resolve:   hostResolve,
 	}
+	// Checked once, outside the timing: an expansion that stopped finding the farm would
+	// time a walk with nothing behind it.
+	if links := shields(sb).CredentialLinks(); len(links) == 0 {
+		b.Fatal("the farm home produced no symlinked-credential shield, so the benchmark would not reach the expansion")
+	}
 	run := func(b *testing.B, memo bool) {
+		b.ReportAllocs()
 		for b.Loop() {
 			sb := sb
 			if memo {

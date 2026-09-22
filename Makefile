@@ -314,11 +314,19 @@ examples: ## Build, vet and test every example module against the public API
 	@for f in examples/*/verify.sh; do "$$f" || exit 1; done
 	@printf "$(GREEN)$(BOLD)✓ Examples verified!$(RESET)\n"
 
+# One iteration of every benchmark, so the fixtures' own checks run and a benchmark that
+# stopped reaching its hot path fails the gate instead of reporting a speedup. Timing is
+# not asserted here; read the numbers with -benchtime and -count when measuring a change.
+bench: ## Smoke-run every benchmark once
+	@printf "$(CYAN)$(BOLD)==> Smoke-running benchmarks...$(RESET)\n"
+	@GOWORK=off go test -run '^$$' -bench . -benchtime=1x ./...
+	@printf "$(GREEN)$(BOLD)✓ Benchmarks ran!$(RESET)\n"
+
 # vuln is in here rather than on a nightly schedule because a known-vulnerable
 # dependency should stop the merge that introduces it, not be reported the next
 # morning. It is the one gate that needs network: the tool is pinned but the
 # vulnerability database is fetched at run time and is expected to move.
-check: vet crossbuild bentoprobe lint test race layering audit examples vuln ## Run all quality gates (vet, crossbuild, bentoprobe, lint, test, race, layering, audit, examples, vuln)
+check: vet crossbuild bentoprobe lint test race bench layering audit examples vuln ## Run all quality gates (vet, crossbuild, bentoprobe, lint, test, race, bench, layering, audit, examples, vuln)
 	@printf "\n$(GREEN)$(BOLD)★ All quality gates passed cleanly!$(RESET)\n"
 
 ## @category Utilities
