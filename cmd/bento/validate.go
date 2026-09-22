@@ -585,6 +585,7 @@ type policyJSON struct {
 	// InterpreterArgs are the interpreter's own options; Args are the script's.
 	InterpreterArgs []string `json:"interpreter_args,omitempty"`
 	Args            []string `json:"args,omitempty"`
+	ExtraArgs       bool     `json:"extra_args,omitempty"`
 	// Workdir is the directory the run starts in, absent when the manifest sets none and
 	// the entrypoint's own directory is used. Inside the approval fingerprint, so a gate
 	// diffing manifests across runs has to be able to see it move.
@@ -858,6 +859,7 @@ func toPolicyJSON(p, resolved *policy.Policy, blockedHosts []string) policyJSON 
 		Interpreter:     p.Interpreter,
 		InterpreterArgs: p.InterpreterArgs,
 		Args:            p.Args,
+		ExtraArgs:       p.ExtraArgs,
 		Workdir:         p.Workdir,
 		Env:             p.Env,
 		Read:            p.Read,

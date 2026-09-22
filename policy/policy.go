@@ -42,6 +42,12 @@ type Policy struct {
 	InterpreterArgs []string
 	// Args are fixed arguments passed to the entrypoint.
 	Args []string
+	// ExtraArgs lets each run append arguments after Args (`bento run m.yaml -- ...`).
+	// Those arguments are not fingerprinted - the stamp attests what the run may reach,
+	// and they change only what it does inside that - but the permission to pass them
+	// is, because it turns a reviewed one-shot invocation into whatever a caller sends.
+	// Under an interpreter's -c that is arbitrary code, bounded by the rest of the policy.
+	ExtraArgs bool
 	// Workdir is the directory the run starts in. Empty means the entrypoint's own
 	// directory, which is what every manifest written before this field got, so an
 	// absent value changes nothing and is left out of the fingerprint.

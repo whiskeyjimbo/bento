@@ -2124,3 +2124,12 @@ func TestScratchWriteToTmpDoesNotClaimTmpIsAbsent(t *testing.T) {
 		t.Errorf("claims the host has no /tmp:\n%s", got)
 	}
 }
+
+// A discovery run never carries extra_args, so taking the field from it would let
+// `profile` widening a manifest silently revoke the opt-in its author wrote.
+func TestMergeKeepsTheManifestsExtraArgs(t *testing.T) {
+	base := &policy.Policy{Entrypoint: "/bin/sh", ExtraArgs: true}
+	if got := mergePolicies(base, &policy.Policy{Entrypoint: "/bin/sh"}); !got.ExtraArgs {
+		t.Error("merge dropped extra_args from the manifest being widened")
+	}
+}

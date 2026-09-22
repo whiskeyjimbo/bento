@@ -308,6 +308,7 @@ entrypoint: ./fetch.py          # Script or binary to execute
 interpreter: python3            # Optional interpreter (omit for compiled binaries)
 interpreter_args: [-u]          # Options for the interpreter itself, before the entrypoint
 args: [--verbose]               # Arguments for the script
+extra_args: false               # Let `bento run m.yaml -- ...` append arguments (see below)
 workdir: .                      # Directory the run starts in (relative to the manifest;
                                 # omitted means the entrypoint's own directory)
 
@@ -370,6 +371,32 @@ grant sits under. A path no grant reaches does not exist inside the sandbox and 
 fails naming it. A path that merely *contains* a grant does exist, but holds only what
 the grants put there, so `workdir: .` alongside `read: ["./data"]` starts the run in a
 directory whose only entry is `data`. Grant the directory the run starts in.
+
+### Arguments at run time
+
+A manifest's `args:` are fixed, and they are inside the approval. `extra_args: true`
+lets each run append its own after them:
+
+```yaml
+entrypoint: /bin/sh
+args: [-c]
+extra_args: true
+workdir: .
+read:  ["."]
+write: ["."]
+exec: all
+```
+
+```sh
+bento run agent.yaml -- 'make test'
+```
+
+The appended arguments are not part of what `bento approve` stamped - the run names
+them on stderr before it starts - but the permission to pass them is, so turning
+`extra_args` on asks for approval again. With an interpreter's `-c` that is any
+program the caller sends, confined by the grants: this is the shape for running
+an agent's commands, and the wrong one for a manifest whose approval is meant to
+cover one specific script. Without it, `bento run` refuses anything after `--`.
 
 Egress rides a host-side HTTP `CONNECT` proxy, so a `network:` rule grants a destination
 the sandbox can *tunnel* to. A client that speaks plain `http://` through a proxy sends an

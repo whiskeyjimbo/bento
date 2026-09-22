@@ -57,6 +57,10 @@ func (p *Policy) Fingerprint() string {
 	for _, a := range p.Args {
 		line("arg\x00%s", a)
 	}
+	// Emitted only when set, like workdir.
+	if p.ExtraArgs {
+		line("extra_args")
+	}
 	for _, e := range sortedCopy(p.Env) {
 		line("env\x00%s", e)
 	}

@@ -188,6 +188,8 @@ func leaves(t *testing.T, typ reflect.Type) []leaf {
 		return []leaf{{mutate: func(v reflect.Value) { v.SetString(v.String() + "-changed") }}}
 	case reflect.Int, reflect.Int64:
 		return []leaf{{mutate: func(v reflect.Value) { v.SetInt(v.Int() + 1) }}}
+	case reflect.Bool:
+		return []leaf{{mutate: func(v reflect.Value) { v.SetBool(!v.Bool()) }}}
 	case reflect.Slice:
 		var out []leaf
 		for _, l := range leaves(t, typ.Elem()) {
@@ -306,5 +308,20 @@ func TestWorkdirDoesNotRestampManifestsThatOmitIt(t *testing.T) {
 	p.Workdir = "."
 	if got := p.Fingerprint(); got == preWorkdirFingerprint {
 		t.Error("setting workdir left the fingerprint unchanged, so the approval would not be asked for again")
+	}
+}
+
+// extra_args is the third field added after manifests were in circulation, under the same
+// guarantee as workdir: a policy that does not set it hashes exactly as before, and one
+// that sets it does not. It is a permission in its own right - it lets every run's command
+// line add arguments no reviewer read - so turning it on must ask for approval again.
+func TestExtraArgsDoesNotRestampManifestsThatOmitIt(t *testing.T) {
+	p := &Policy{Entrypoint: "./run.py", Interpreter: "python3", Read: []string{"./data"}, Exec: ExecNone}
+	if got := p.Fingerprint(); got != preWorkdirFingerprint {
+		t.Errorf("a policy without extra_args fingerprints as %s, want %s; every approved manifest that omits the key is now stale", got, preWorkdirFingerprint)
+	}
+	p.ExtraArgs = true
+	if got := p.Fingerprint(); got == preWorkdirFingerprint {
+		t.Error("setting extra_args left the fingerprint unchanged, so the approval would not be asked for again")
 	}
 }

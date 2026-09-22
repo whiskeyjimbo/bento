@@ -1851,6 +1851,7 @@ func mergePolicies(base, add *policy.Policy) *policy.Policy {
 		Interpreter:     add.Interpreter,
 		InterpreterArgs: add.InterpreterArgs,
 		Args:            base.Args,
+		ExtraArgs:       base.ExtraArgs,
 		Workdir:         base.Workdir,
 		Env:             union(base.Env, add.Env),
 		Read:            union(base.Read, add.Read),

@@ -860,3 +860,21 @@ func TestApproveCarriesTheCarveUnknownItsRefusalSetIsShortOf(t *testing.T) {
 		t.Errorf("a manifest with no directory write grant derives no workspace shields, so nothing was left unanswered;\ngot:\n%s", quiet.String())
 	}
 }
+
+// extra_args grants no path and no host, so the grants block says nothing about it - yet
+// it lets every run add arguments this approval never saw. The callout is the only place
+// the approver reads that.
+func TestApprovalCalloutsNameExtraArgs(t *testing.T) {
+	var buf strings.Builder
+	p := &policy.Policy{Entrypoint: "/bin/sh", Args: []string{"-c"}, ExtraArgs: true}
+	writeApprovalCallouts(&buf, "m.yaml", "m.yaml", p, p, nil, false)
+	if !strings.Contains(buf.String(), "extra_args") {
+		t.Errorf("approve did not call out extra_args:\n%s", buf.String())
+	}
+	var plain strings.Builder
+	q := &policy.Policy{Entrypoint: "/bin/sh"}
+	writeApprovalCallouts(&plain, "m.yaml", "m.yaml", q, q, nil, false)
+	if strings.Contains(plain.String(), "extra_args") {
+		t.Errorf("a manifest without extra_args must produce no callout:\n%s", plain.String())
+	}
+}

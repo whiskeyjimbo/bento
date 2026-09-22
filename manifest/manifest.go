@@ -52,6 +52,7 @@ type manifest struct {
 	// InterpreterArgs are the interpreter's own options; Args are the script's.
 	InterpreterArgs []string      `yaml:"interpreter_args,omitempty"`
 	Args            []string      `yaml:"args,omitempty"`
+	ExtraArgs       bool          `yaml:"extra_args,omitempty"`
 	Workdir         string        `yaml:"workdir,omitempty"`
 	Env             []string      `yaml:"env,omitempty"`
 	Read            []string      `yaml:"read,omitempty"`
@@ -557,6 +558,7 @@ func fromPolicy(p *policy.Policy) manifest {
 		Interpreter:     p.Interpreter,
 		InterpreterArgs: p.InterpreterArgs,
 		Args:            p.Args,
+		ExtraArgs:       p.ExtraArgs,
 		Workdir:         p.Workdir,
 		Env:             p.Env,
 		Read:            p.Read,
@@ -581,6 +583,7 @@ func (m *manifest) toPolicy() *policy.Policy {
 		Interpreter:     m.Interpreter,
 		InterpreterArgs: m.InterpreterArgs,
 		Args:            m.Args,
+		ExtraArgs:       m.ExtraArgs,
 		Workdir:         m.Workdir,
 		Env:             m.Env,
 		Read:            m.Read,

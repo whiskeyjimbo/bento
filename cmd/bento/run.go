@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -32,7 +34,7 @@ func newRunCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "run <manifest>",
+		Use:   "run <manifest> [-- args...]",
 		Short: "Run a script under the permissions its manifest declares",
 		Long: "run enforces the manifest's policy and executes the script.\n\n" +
 			"The script's exit code is passed through untouched. If bento itself could not\n" +
@@ -47,8 +49,11 @@ func newRunCmd() *cobra.Command {
 			"carrying the bytes base64-encoded, then exactly one final object with the\n" +
 			"outcome. Switch on the event field - \"stdout\" and \"stderr\" for the script's\n" +
 			"output, then \"verdict\", \"refusal\" or \"failed\". Nothing is held in memory\n" +
-			"until the run ends, so a chatty job costs no more than a quiet one.",
-		Args:        exactArgs(1, "a manifest path"),
+			"until the run ends, so a chatty job costs no more than a quiet one.\n\n" +
+			"Arguments after -- are appended to the manifest's own args, if the manifest\n" +
+			"sets extra_args: true. They are not part of what approve stamped, so the run\n" +
+			"names them on stderr before it starts.",
+		Args:        manifestThenExtraArgs,
 		Annotations: map[string]string{jsonRefusalAnnotation: jsonRefusalStream},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every refusal raised before enforce.Run - a bad --env, an unparseable or
@@ -105,6 +110,20 @@ func newRunCmd() *cobra.Command {
 			p := doc.Policy
 			if err := manifest.Resolve(p, args[0]); err != nil {
 				return refuse(err)
+			}
+			if extra := args[1:]; len(extra) > 0 {
+				if !p.ExtraArgs {
+					return refuse(fmt.Errorf("%s does not set extra_args: true, so run takes no arguments after --; "+
+						"the approval covers the manifest's own args only", args[0]))
+				}
+				// Appended to the resolved policy only: the fingerprint was checked above
+				// against the manifest as written, which is where these must not appear.
+				p.Args = append(slices.Clone(p.Args), extra...)
+				quoted := make([]string, len(extra))
+				for i, a := range extra {
+					quoted[i] = strconv.Quote(a)
+				}
+				fmt.Fprintf(os.Stderr, "[bento] extra args: %s\n", strings.Join(quoted, " "))
 			}
 			env, unset, err := enforce.ResolveEnv(p, overrides, os.LookupEnv)
 			if err != nil {
@@ -767,4 +786,15 @@ func parseEnvFlags(flags []string) (map[string]string, error) {
 		out[name] = value
 	}
 	return out, nil
+}
+
+// manifestThenExtraArgs takes exactly one manifest before --, and anything after it.
+// Whether anything after it is allowed is the manifest's call, made in RunE once it is
+// loaded.
+func manifestThenExtraArgs(cmd *cobra.Command, args []string) error {
+	before := args
+	if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+		before = args[:dash]
+	}
+	return exactArgs(1, "a manifest path")(cmd, before)
 }

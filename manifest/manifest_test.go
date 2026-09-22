@@ -965,3 +965,22 @@ read: ["."]
 		t.Errorf("a manifest with no workdir resolved to %q; an absent key must stay absent so the entrypoint's directory remains the default", bare.Workdir)
 	}
 }
+
+// extra_args is a bool rather than a sentinel in args: args is a list, and a manifest can
+// want fixed leading arguments and a caller's trailing ones at once (`args: [-c]`).
+func TestExtraArgsRoundTrips(t *testing.T) {
+	p, err := Load(strings.NewReader("entrypoint: /bin/sh\nargs: [-c]\nextra_args: true\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !p.ExtraArgs {
+		t.Fatal("extra_args: true parsed as false")
+	}
+	out, err := Marshal(p, Provenance{})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "extra_args: true") {
+		t.Errorf("Marshal dropped extra_args, so approve's rewrite would silently revoke it:\n%s", out)
+	}
+}

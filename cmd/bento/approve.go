@@ -312,6 +312,9 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	if p.Workdir != "" {
 		notes = append(notes, fmt.Sprintf("workdir: %q - the run starts there rather than in the entrypoint's own directory, so every relative path the script opens resolves under it, and the grants below are worth reading against that directory.", p.Workdir))
 	}
+	if p.ExtraArgs {
+		notes = append(notes, "extra_args: true - every run may append arguments after the ones listed here, and those are not part of this approval. With an interpreter that takes -c, that is any program the caller sends, confined by the grants below.")
+	}
 	if p.Exec == policy.ExecAll {
 		notes = append(notes, "exec: all - the script may spawn any subprocess, including ones the profiling run never showed.")
 	}

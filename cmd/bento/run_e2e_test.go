@@ -216,3 +216,39 @@ func TestRunJSONCarriesStampAtRisk(t *testing.T) {
 		}
 	}
 }
+
+// Arguments after -- are refused unless the manifest opts in: the stamp's reviewer read
+// one command line, and a one-shot manifest must not be repurposable into a runner for
+// whatever a caller sends.
+func TestRunRefusesExtraArgsWithoutTheOptIn(t *testing.T) {
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh"})
+	err := runCmd(t, m, "--", "surprise")
+	if err == nil || !strings.Contains(err.Error(), "extra_args") {
+		t.Fatalf("run appended arguments the manifest never allowed; want a refusal naming extra_args, got %v", err)
+	}
+	// A stray positional before -- is a usage mistake as it always was, opt-in or not.
+	if err := runCmd(t, m, "stray", "--", "x"); err == nil {
+		t.Fatal("a second positional before -- was accepted")
+	}
+}
+
+// With the opt-in, extra arguments land after the manifest's fixed ones, in order and
+// unsplit, and the run says what it appended - they are not in the stamp, so the report
+// is the only place a reader sees them.
+func TestRunAppendsExtraArgsAfterTheFixedOnes(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, `[ "$#|$1|$2|$3" = "3|fixed|a|b c" ] || exit 9`+"\n", &policy.Policy{
+		Entrypoint:  "./run.sh",
+		Interpreter: "sh",
+		Args:        []string{"fixed"},
+		ExtraArgs:   true,
+	})
+	stderr, err := runCmdCapturingStderr(t, m, "--", "a", "b c")
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want 0 (9 means the target saw the wrong argv):\n%s", got, stderr)
+	}
+	if want := `extra args: "a" "b c"`; !strings.Contains(stderr, want) {
+		t.Errorf("the run must disclose the arguments it appended (%q):\n%s", want, stderr)
+	}
+}
