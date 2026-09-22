@@ -21,6 +21,7 @@ package shield
 
 import (
 	"os"
+	"sync"
 
 	"github.com/whiskeyjimbo/bento/internal/pathresolve"
 )
@@ -68,10 +69,28 @@ type FS struct {
 // Host is the FS every caller outside the backend passes: the real filesystem, resolved
 // the way a write through a path actually lands. The backend passes its sandbox's own
 // seams instead, which are this same behavior with the fakes its tests inject.
+//
+// Each call's Resolve answers a path once and repeats that answer for the FS's life, as the
+// backend's per-run memo does: a verdict resolves every workspace rule it is handed, and the
+// gate and the clamp ask one per grant against the same rules. A Set already holds one
+// answer per assembled rule, fixed at assembly, so the memo makes the workspace half agree
+// with it rather than each verdict seeing whatever a link said at its own instant. A fresh
+// Host is a fresh view.
 func Host() FS {
+	var mu sync.Mutex
+	resolved := map[string]string{}
 	return FS{
-		IsDir:    hostIsDir,
-		Resolve:  hostResolve,
+		IsDir: hostIsDir,
+		Resolve: func(path string) string {
+			mu.Lock()
+			defer mu.Unlock()
+			r, ok := resolved[path]
+			if !ok {
+				r = hostResolve(path)
+				resolved[path] = r
+			}
+			return r
+		},
 		ListDir:  hostListDir,
 		SameFile: hostSameFile,
 	}
