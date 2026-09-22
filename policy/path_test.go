@@ -63,7 +63,23 @@ func TestCoversResolved(t *testing.T) {
 // allocations both matter. The two obvious spellings - filepath.Rel, or
 // HasPrefix(path, grant+sep) - each allocate on every call; this one allocates only
 // when an input is not already clean, which the preconditions say it should be.
-// Reported, not asserted: a benchmark cannot fail on an allocation.
+//
+// The paths are long on purpose: Go keeps a concatenation of up to 32 bytes on the stack,
+// so the allocating spelling is free on a short fixture and the test would pass with it.
+func TestCoversResolvedDoesNotAllocateOnCleanPaths(t *testing.T) {
+	const grant = "/home/someone-with-a-long-name/.config/some-tool"
+	for _, path := range []string{
+		grant + "/credentials/deeper/file.json",
+		"/home/someone-with-a-long-name/projects/checkout/src/main.go",
+	} {
+		if n := testing.AllocsPerRun(100, func() { sink = CoversResolved(grant, path) }); n != 0 {
+			t.Errorf("CoversResolved(%q, %q) allocated %v times", grant, path, n)
+		}
+	}
+}
+
+// BenchmarkCoversResolved reports the cost; TestCoversResolvedDoesNotAllocateOnCleanPaths
+// asserts the allocations.
 func BenchmarkCoversResolved(b *testing.B) {
 	for _, tc := range []struct {
 		name, grant, path string

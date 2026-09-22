@@ -91,14 +91,19 @@ func projectTree(tb testing.TB, submodules, projects int) string {
 // and - when memo is set - the per-run caches allocated as construction allocates them.
 // Fresh per iteration, since every cache here is a one-run cache and carrying one across
 // iterations would measure a hit rate no run ever sees.
-func workspaceBenchSandbox(tb testing.TB, root string, memo bool) sandbox {
+//
+// statID is the production seam too: nothing in the fixture folds case, but a shield set
+// asks it the moment a spelling differs, and a nil seam there is a panic rather than a
+// number.
+func workspaceBenchSandbox(tb testing.TB, root, home string, memo bool) sandbox {
 	sb := sandbox{
-		homes:     []string{"/home/u"},
+		homes:     []string{home},
 		emptyFile: "/tmp/shield",
 		exists:    hostExists,
 		isDir:     hostIsDir,
 		listDir:   hostListDir,
 		resolve:   hostResolve,
+		statID:    hostStatIDOK,
 		deadMount: &deadMount{},
 	}
 	sb = boundHostSeams(sb)
@@ -123,6 +128,15 @@ func workspaceBenchSandbox(tb testing.TB, root string, memo bool) sandbox {
 // the per-run caches, memo one allocated as newSandbox allocates it.
 func BenchmarkWorkspaceShieldWalk(b *testing.B) {
 	root := projectTree(b, 24, 64)
+	// A home that exists, holding the stores a developer's does, so the shield set's
+	// resolves walk real directories rather than failing at the first missing component
+	// of a home the runner does not have.
+	home := b.TempDir()
+	for _, d := range []string{".ssh", ".aws", ".config/gh", ".local/bin"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			b.Fatal(err)
+		}
+	}
 	writes := []string{root, filepath.Join(root, "build"), filepath.Join(root, "dist")}
 	for _, w := range writes[1:] {
 		if err := os.MkdirAll(w, 0o755); err != nil {
@@ -131,7 +145,7 @@ func BenchmarkWorkspaceShieldWalk(b *testing.B) {
 	}
 	// Checked once, outside the timing: a fixture whose derived shields went missing would
 	// time the short path and report it as a speedup.
-	got := rulePaths(shieldRules(workspaceBenchSandbox(b, root, true), writes))
+	got := rulePaths(shieldRules(workspaceBenchSandbox(b, root, home, true), writes))
 	for _, want := range []string{
 		filepath.Join(root, "projects", "p1", ".claude"),
 		filepath.Join(root, "projects", "p63", ".mcp.json"),
@@ -145,7 +159,7 @@ func BenchmarkWorkspaceShieldWalk(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			b.StopTimer()
-			sb := workspaceBenchSandbox(b, root, memo)
+			sb := workspaceBenchSandbox(b, root, home, memo)
 			b.StartTimer()
 			shieldRules(sb, writes)
 			shieldRules(sb, writes)
