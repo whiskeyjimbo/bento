@@ -412,8 +412,8 @@ func commandShieldSet() (shield.Set, error) {
 	return shieldSetCache.set, shieldSetCache.err
 }
 
-// assembleShieldSet is the walk commandShieldSet memoizes, a variable so a test can count
-// the walks one command makes.
+// assembleShieldSet is the walk commandShieldSet memoizes, a variable so a test can tell
+// whether a verdict was asked of the command's set or of one walked elsewhere.
 var assembleShieldSet = gate.ShieldSet
 
 // invalidateShieldSet drops the memoized set, so the next ask walks the stores again. It

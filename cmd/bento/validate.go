@@ -62,8 +62,8 @@ func newValidateCmd() *cobra.Command {
 			"`pinned_paths` and compares it against the set it expects rather than asking for\n" +
 			"--relocatable, which answers a narrower question than that.\n\n" +
 			"validate runs no manifest, so it answers on a host bento cannot run one on. It does\n" +
-			"probe the host, as doctor does, to say which of the layers this manifest needs are\n" +
-			"fully enforced here.\n" +
+			"probe the host, for the layers this manifest needs, to say which of them are fully\n" +
+			"enforced here; `bento doctor` reports every layer.\n" +
 			"Off Linux it cannot check who else can write an approved manifest, and says so\n" +
 			"rather than passing over the question - a warning, as every trust finding is.",
 		Args: exactArgs(1, "a manifest path"),

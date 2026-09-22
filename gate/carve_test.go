@@ -99,7 +99,7 @@ func TestTheDerivedHalfOfTheCarveCheckIsReportedUnknown(t *testing.T) {
 
 // The carve check stats a mount point only where a write grant reaches it: reachability is
 // pure, and on a real host almost no rule is reached by any one grant, so statting first
-// paid a syscall per rule - ~545 per call on validate's path - to answer nothing. A stat
+// paid a syscall per rule - over a thousand on a developer home - to answer nothing. A stat
 // allocates, so a check that stats every rule allocates at least once per rule.
 func TestShieldCarveProblemsStatsOnlyReachedMountPoints(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

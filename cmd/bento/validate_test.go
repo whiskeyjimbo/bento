@@ -1738,28 +1738,21 @@ func TestValidateSaysWhyTheShieldsCouldNotBeAnchored(t *testing.T) {
 
 // validate walks the shield set once: the gate's verdict and the summary's per-grant
 // refusals are asked of the command's one set, rather than gate.Check walking a second
-// copy the memo never sees - two full walks of the credential stores per validate. The
-// walk returns a sentinel anchoring failure, so a verdict computed off any other set
-// cannot carry its words.
+// copy the memo never sees - two full walks of the credential stores per validate. A
+// counter on the walk cannot see that second copy, so the walk returns a sentinel
+// anchoring failure instead: a verdict computed off any other set cannot carry its words.
 func TestValidateAssemblesTheShieldSetOnce(t *testing.T) {
 	const reason = "sentinel: the command's own shield set"
 	invalidateShieldSet()
 	t.Cleanup(invalidateShieldSet)
 	restore := assembleShieldSet
 	t.Cleanup(func() { assembleShieldSet = restore })
-	walks := 0
-	assembleShieldSet = func() (shield.Set, error) {
-		walks++
-		return shield.Set{}, errors.New(reason)
-	}
+	assembleShieldSet = func() (shield.Set, error) { return shield.Set{}, errors.New(reason) }
 	path := writeManifest(t, &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll}, manifest.Provenance{})
 
 	out, err := runCapturingStdout(t, newValidateCmd(), "--json", path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if walks != 1 {
-		t.Errorf("validate walked the command's shield set %d times, want 1", walks)
 	}
 	var machine map[string]any
 	if err := json.Unmarshal([]byte(out), &machine); err != nil {
