@@ -223,8 +223,8 @@ to preserve - **verify each in ptrace(2) / seccomp(2)**:
 - the filter must be installed before the target's first decoded syscall, and
   `BlockIoUring`'s pre-fork install is not a slot for it: that filter goes on TSYNC in the
   launcher, which is the tracer, and a RET_TRACE filter there ENOSYSes the tracer's own
-  decoded syscalls and the TRACEME'd child's execve (see bv2-6rdnk's design note); `undecodedPathSyscalls`
-  and `nullPathnameOK` must be in the traced set;
+  decoded syscalls and the TRACEME'd child's execve (see bv2-6rdnk's design note);
+  `undecodedPathSyscalls` and `nullPathnameOK` must be in the traced set;
 - `TestTraceCountsEveryLostAccessOnce`, `TestTraceDoesNotCountHandledSignalsAsLostAccesses`
   and the exec / retired-tid tests stay green.
 
