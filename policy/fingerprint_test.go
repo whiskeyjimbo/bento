@@ -325,3 +325,63 @@ func TestExtraArgsDoesNotRestampManifestsThatOmitIt(t *testing.T) {
 		t.Error("setting extra_args left the fingerprint unchanged, so the approval would not be asked for again")
 	}
 }
+
+// Fingerprint writes one newline-terminated line per value with no escaping, so a value
+// carrying a newline could forge the lines after it - Args ["x\nextra_args"] hashes as
+// Args ["x"] plus extra_args, and one approval would cover both. What keeps that out is
+// Validate, which every manifest load passes through before anything is compared against
+// a stamp. This walks every string in Policy, so a field added later without a screen
+// fails here rather than opening the forgery quietly.
+func TestValidateRejectsANewlineInEveryFingerprintedString(t *testing.T) {
+	base := func() Policy {
+		return Policy{
+			Entrypoint:      "./x",
+			Interpreter:     "python3",
+			InterpreterArgs: []string{"-u"},
+			Args:            []string{"--flag"},
+			Workdir:         ".",
+			Env:             []string{"PATH"},
+			Read:            []string{"/data"},
+			Write:           []string{"/out"},
+			Network:         []NetworkRule{{Host: "a.com", Port: "443"}},
+			Exec:            ExecAll,
+			Limits:          Limits{Memory: "1M", CPU: "50%", PIDs: 128},
+		}
+	}
+	if b := base(); b.Validate() != nil {
+		t.Fatalf("the base policy must be valid for the cases to mean anything: %v", b.Validate())
+	}
+	var visit func(name string, v reflect.Value, each func(string, reflect.Value))
+	visit = func(name string, v reflect.Value, each func(string, reflect.Value)) {
+		switch v.Kind() {
+		case reflect.String:
+			each(name, v)
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				visit(name, v.Index(i), each)
+			}
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				visit(join(name, v.Type().Field(i).Name), v.Field(i), each)
+			}
+		}
+	}
+	var names []string
+	b := base()
+	visit("", reflect.ValueOf(&b).Elem(), func(n string, _ reflect.Value) { names = append(names, n) })
+	for i, name := range names {
+		t.Run(name, func(t *testing.T) {
+			p := base()
+			j := 0
+			visit("", reflect.ValueOf(&p).Elem(), func(_ string, v reflect.Value) {
+				if j == i {
+					v.SetString(v.String() + "\nextra_args")
+				}
+				j++
+			})
+			if p.Validate() == nil {
+				t.Errorf("%s accepted a newline, so a manifest can forge the fingerprint lines after it", name)
+			}
+		})
+	}
+}
