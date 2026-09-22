@@ -1664,7 +1664,7 @@ func TestTheHostNoteReadsOneLayerEntryNotTwo(t *testing.T) {
 func TestValidateCarriesTheHostPostureToBothSurfaces(t *testing.T) {
 	restore := probeHost
 	t.Cleanup(func() { probeHost = restore })
-	probeHost = func(context.Context) (enforce.Report, bool) {
+	probeHost = func(context.Context, []enforce.Layer) (enforce.Report, bool) {
 		var r enforce.Report
 		r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 		r.Add(enforce.LayerLimitsMemory, enforce.Unavailable, "no cgroup delegation")
@@ -1708,7 +1708,7 @@ func TestValidateCarriesTheHostPostureToBothSurfaces(t *testing.T) {
 	}
 
 	// And a host that meets what this manifest asks for says nothing at all.
-	probeHost = func(context.Context) (enforce.Report, bool) {
+	probeHost = func(context.Context, []enforce.Layer) (enforce.Report, bool) {
 		var r enforce.Report
 		r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
 		r.Add(enforce.LayerLimitsMemory, enforce.Enforced, "")
@@ -1767,5 +1767,57 @@ func TestValidateAssemblesTheShieldSetOnce(t *testing.T) {
 	}
 	if machine["shields_unknown_reason"] != reason {
 		t.Errorf("shields_unknown_reason = %v, want %q: the gate's verdict came from a shield set of its own, not the command's", machine["shields_unknown_reason"], reason)
+	}
+}
+
+// layerProbeFake is a backend that records what validate asks it to measure.
+type layerProbeFake struct {
+	asked  [][]enforce.Layer
+	probes int
+}
+
+func (f *layerProbeFake) Probe(context.Context) enforce.Report {
+	f.probes++
+	return enforce.Report{}
+}
+
+func (f *layerProbeFake) ProbeFor(_ context.Context, layers []enforce.Layer) enforce.Report {
+	f.asked = append(f.asked, layers)
+	return enforce.Report{}
+}
+
+func (f *layerProbeFake) Run(context.Context, *policy.Policy, enforce.Process, enforce.RunOptions) (enforce.Result, error) {
+	return enforce.Result{}, errors.New("validate runs nothing")
+}
+
+// validate measures only the layers its manifest requires, as a run does: the full Probe
+// measures the limits layers too, which on Linux is seven execs and two round trips to the
+// systemd user manager on every validate of a manifest that has no limits. The limits
+// manifest is the other half, so a probe that asked for nothing at all cannot pass.
+func TestValidateProbesOnlyTheManifestsLayers(t *testing.T) {
+	restore := newBackend
+	t.Cleanup(func() { newBackend = restore })
+	for _, tc := range []struct {
+		name   string
+		limits policy.Limits
+		want   bool
+	}{
+		{"no limits", policy.Limits{}, false},
+		{"memory limit", policy.Limits{Memory: "64M"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &layerProbeFake{}
+			newBackend = func() (enforce.Enforcer, error) { return fake, nil }
+			path := writeManifest(t, &policy.Policy{Entrypoint: "./x", Exec: policy.ExecAll, Limits: tc.limits}, manifest.Provenance{})
+			if _, err := runCapturingStdout(t, newValidateCmd(), path); err != nil {
+				t.Fatal(err)
+			}
+			if fake.probes != 0 || len(fake.asked) != 1 {
+				t.Fatalf("want one ProbeFor and no Probe; got ProbeFor %v and %d Probe", fake.asked, fake.probes)
+			}
+			if got := slices.Contains(fake.asked[0], enforce.LayerLimitsMemory); got != tc.want {
+				t.Errorf("ProbeFor(%v): asked for the memory limit = %v, want %v", fake.asked[0], got, tc.want)
+			}
+		})
 	}
 }

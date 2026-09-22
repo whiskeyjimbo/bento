@@ -82,7 +82,7 @@ func newValidateCmd() *cobra.Command {
 				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], resolved)...)
 			}
 			var posture []enforce.LayerStatus
-			if report, ok := probeHost(cmd.Context()); ok {
+			if report, ok := probeHost(cmd.Context(), enforce.RequiredLayers(doc.Policy, enforce.Options{})); ok {
 				posture = hostPosture(report, doc.Policy)
 			}
 			pinned := pinnedPaths(doc.Policy)
@@ -470,13 +470,26 @@ func writeHostPosture(w io.Writer, short []enforce.LayerStatus) {
 // False, not an error, where the answer cannot be had: validate answers on a host bento
 // cannot run a manifest on, and a backend that will not open is that host, so the note is
 // absent rather than the command failing.
-var probeHost = func(ctx context.Context) (enforce.Report, bool) {
-	e, err := backend.New()
+//
+// Only the layers hostPosture reads are measured, as a run measures them: on Linux the
+// limits layers alone cost seven execs and two round trips to the systemd user manager,
+// for a manifest with no limits that reads none of them. doctor keeps the whole Probe.
+var probeHost = func(ctx context.Context, layers []enforce.Layer) (enforce.Report, bool) {
+	e, err := newBackend()
 	if err != nil {
 		return enforce.Report{}, false
 	}
+	if lp, ok := e.(interface {
+		ProbeFor(context.Context, []enforce.Layer) enforce.Report
+	}); ok {
+		return lp.ProbeFor(ctx, layers), true
+	}
 	return e.Probe(ctx), true
 }
+
+// newBackend is the backend probeHost opens, a variable so a test can see which layers
+// validate asks it for.
+var newBackend = backend.New
 
 // strictRunnableError is the strict verdict on gate.Runnability, shared by the human and
 // --json paths for the same reason strictApprovalError is. A host that could not resolve
