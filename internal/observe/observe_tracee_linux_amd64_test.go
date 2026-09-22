@@ -32,7 +32,7 @@ import (
 //
 //	threads    T locked OS threads each open a file of their own, concurrently.
 //	lostpaths  N openat calls whose pathname pointer is unmapped, from one call site.
-//	sigreturn  N handled signals, so the tracer sees N rt_sigreturn exit stops.
+//	sigreturn  N handled signals and N raw syscall(-1) calls, neither naming a syscall.
 //	nullpath   N utimensat/futimesat calls with a NULL pathname.
 //	lostrename N renames with BOTH pathnames unmapped, from one call site.
 //	getpid     N getpid calls, which the decoder ignores.
@@ -105,6 +105,8 @@ func TestObserveTraceeHelper(t *testing.T) {
 		signal.Notify(ch, syscall.SIGUSR1)
 		defer signal.Stop(ch)
 		for range n {
+			// A raw syscall(-1) enters with the same number, and names nothing either.
+			_, _, _ = syscall.Syscall(^uintptr(0), 0, 0, 0)
 			if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
 				fmt.Fprintln(os.Stderr, "TRACEE_KILL_ERR", err)
 				os.Exit(6)
@@ -792,58 +794,6 @@ func TestTraceAttributesConcurrentOpensPerThread(t *testing.T) {
 	}
 }
 
-// A thread that dies holding a syscall stop is the observer's own race, not a loss the
-// tracee had: a ptrace-stopped thread runs nothing until it is resumed, so one that is
-// already gone at the entry stop never executed the syscall. Counting it reports a lost
-// access on a call that never happened, which is what made a multithreaded Go tracee
-// report a drop or two on a run that lost nothing.
-//
-// The exit stop turns on what the stop had left to do rather than on the stop itself. Its
-// only decode is the existence syscalls' success filter, replayed against a pathname the
-// entry stop held, so a pid holding nothing had nothing to lose - a dying thread's
-// nanosleep exit stop is the one that showed up in practice. A pid with a pathname held is
-// the real loss: the probe completed and its result is what decides the grant.
-func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
-	// A reaped pid answers every ptrace request with ESRCH, which is exactly the state a
-	// thread that exited between its stop and the register read leaves behind.
-	dead := reapedPid(t)
-	if err := syscall.PtraceGetRegs(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
-		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
-	}
-
-	for _, tc := range []struct {
-		name string
-		op   byte
-		held map[stopID]heldPath
-		want int
-	}{
-		{"entry", unix.PTRACE_SYSCALL_INFO_ENTRY, map[stopID]heldPath{}, 0},
-		{"exit holding nothing", unix.PTRACE_SYSCALL_INFO_EXIT, map[stopID]heldPath{}, 0},
-		{
-			"exit holding a pathname",
-			unix.PTRACE_SYSCALL_INFO_EXIT,
-			map[stopID]heldPath{stopKey(dead, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
-			1,
-		},
-		{
-			// Another pid's pending probe says nothing about this one's stop.
-			"exit while a sibling holds a pathname",
-			unix.PTRACE_SYSCALL_INFO_EXIT,
-			map[stopID]heldPath{stopKey(dead+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
-			0,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var res Result
-			drops := dropOnce(map[dropID]bool{}, dead, &res.Dropped)
-			inspect(dead, tc.op, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, drops, tc.held, map[int]bool{}, &res)
-			if res.Dropped != tc.want {
-				t.Errorf("Dropped = %d after an ESRCH register read at the %s stop, want %d", res.Dropped, tc.name, tc.want)
-			}
-		})
-	}
-}
-
 // A thread that dies holding a probe is reported by two channels in turn, and the loss is
 // one. The ptrace read at its stop fails ESRCH and counts it; then its wait status arrives
 // and the loop's exit branch sweeps everything the tid still held. Both consult the same
@@ -851,7 +801,7 @@ func TestInspectDoesNotCountADeadThreadsPhantomStops(t *testing.T) {
 // one lost probe tells the user the manifest is short by two.
 func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 	dead := reapedPid(t)
-	if err := syscall.PtraceGetRegs(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
+	if _, _, err := syscallInfo(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
 		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
 	}
 	held := map[stopID]heldPath{
@@ -860,8 +810,9 @@ func TestADeadThreadsHeldProbeIsCountedOnce(t *testing.T) {
 	}
 
 	var res Result
-	drops := dropOnce(map[dropID]bool{}, dead, &res.Dropped)
-	inspect(dead, unix.PTRACE_SYSCALL_INFO_EXIT, func(string, bool) {}, func(string, bool) {}, func(string, bool) {}, drops, held, map[int]bool{}, &res)
+	lastOp := map[int]lastStop{dead: {op: unix.PTRACE_SYSCALL_INFO_ENTRY, nr: unix.SYS_STAT}}
+	var regs syscall.PtraceRegs
+	nativeSyscall(dead, &regs, lastOp, held, func() {}, &res.Dropped)
 	res.Dropped += releaseHeldOf(held, dead)
 
 	if res.Dropped != 2 {
@@ -938,14 +889,23 @@ func TestAnUnreadableStopEndsItsPairsDedup(t *testing.T) {
 	}
 }
 
-// The same race one read earlier: the thread dies before PTRACE_GET_SYSCALL_INFO, so the
-// stop has no op of its own and the pid's last recorded one has to supply the parity.
-// Stops alternate, so the stop after a known entry stop is an exit stop and the stop after
-// a known exit stop is an entry stop; from there the judgement is the same one inspect
-// makes. Parity that was never established is unknown rather than safe and still counts.
+// A thread that dies holding a syscall stop is the observer's own race, not a loss the
+// tracee had: a ptrace-stopped thread runs nothing until it is resumed, so one that is
+// already gone at the entry stop never executed the syscall. Counting it reports a lost
+// access on a call that never happened, which is what made a multithreaded Go tracee
+// report a drop or two on a run that lost nothing.
+//
+// The thread dies before PTRACE_GET_SYSCALL_INFO, so the stop has no op of its own and the
+// pid's last recorded one has to supply the parity. Stops alternate, so the stop after a
+// known entry stop is an exit stop and the stop after a known exit stop is an entry stop.
+// The exit stop then turns on what it had left to do: its only decode is the existence
+// syscalls' success filter, replayed against a pathname the entry stop held, so a pid
+// holding nothing had nothing to lose - a dying thread's nanosleep exit stop is the one
+// that showed up in practice - and a pid with a pathname held is the real loss. Parity that
+// was never established is unknown rather than safe and still counts.
 func TestNativeSyscallResolvesADeadThreadsPhantomStops(t *testing.T) {
 	dead := reapedPid(t)
-	if _, _, err := syscallInfo(dead); !errors.Is(err, syscall.ESRCH) {
+	if _, _, err := syscallInfo(dead, &syscall.PtraceRegs{}); !errors.Is(err, syscall.ESRCH) {
 		t.Skipf("pid %d does not answer ESRCH (%v), so this cannot stand in for a dead thread", dead, err)
 	}
 	holding := map[stopID]heldPath{
@@ -961,17 +921,25 @@ func TestNativeSyscallResolvesADeadThreadsPhantomStops(t *testing.T) {
 		{"at the entry stop after an exit stop", []byte{unix.PTRACE_SYSCALL_INFO_EXIT}, map[stopID]heldPath{}, 0},
 		{"at the exit stop after an entry stop, holding nothing", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, map[stopID]heldPath{}, 0},
 		{"at the exit stop after an entry stop, holding a pathname", []byte{unix.PTRACE_SYSCALL_INFO_ENTRY}, holding, 1},
+		{
+			// Another pid's pending probe says nothing about this one's stop.
+			"at the exit stop after an entry stop, while a sibling holds a pathname",
+			[]byte{unix.PTRACE_SYSCALL_INFO_ENTRY},
+			map[stopID]heldPath{stopKey(dead+1, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT}): {path: "/etc/hosts", readOK: true}},
+			0,
+		},
 		{"after the initial stop", []byte{unix.PTRACE_SYSCALL_INFO_NONE}, map[stopID]heldPath{}, 1},
 		{"after a seccomp stop", []byte{unix.PTRACE_SYSCALL_INFO_SECCOMP}, map[stopID]heldPath{}, 1},
 		{"with no parity recorded", nil, map[stopID]heldPath{}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			lastOp := map[int]byte{}
+			lastOp := map[int]lastStop{}
 			for _, op := range tc.seed {
-				lastOp[dead] = op
+				lastOp[dead] = lastStop{op: op}
 			}
 			dropped := 0
-			if _, native := nativeSyscall(dead, lastOp, tc.held, func() {}, &dropped); native {
+			var regs syscall.PtraceRegs
+			if _, native := nativeSyscall(dead, &regs, lastOp, tc.held, func() {}, &dropped); native {
 				t.Fatal("a failed read cannot report the stop as native")
 			}
 			if dropped != tc.want {
@@ -1030,7 +998,10 @@ func TestTraceCountsEveryLostAccessOnce(t *testing.T) {
 // so a test for the x32 tag bit matches it. That made every handled signal count as an
 // observation the profiler could not read, in the one channel that tells the user their
 // manifest is incomplete; Go's async preemption signals a busy tracee constantly, so a
-// run that lost nothing reported drops in the hundreds.
+// run that lost nothing reported drops in the hundreds. A raw syscall(-1) enters with the
+// same -1 and names nothing either, so the tracee issues one per signal: it is what keeps
+// the negative-number guard pinned, since an exit stop is decoded under its entry stop's
+// number and rt_sigreturn's entry number is 15.
 //
 // Nothing here touches the filesystem, so the count should be zero -
 // two orders of magnitude below what one drop per handled signal would give.
@@ -1038,7 +1009,7 @@ func TestTraceDoesNotCountHandledSignalsAsLostAccesses(t *testing.T) {
 	const signals = 300
 	res := traceHelper(t, "sigreturn", t.TempDir(), signals)
 	if res.Dropped != 0 {
-		t.Errorf("Dropped = %d after %d handled signals and no file access, want 0; ~%d is the signature of rt_sigreturn's restored orig_rax of -1 matching the x32 tag test", res.Dropped, signals, signals)
+		t.Errorf("Dropped = %d after %d handled signals and no file access, want 0; ~%d is the signature of a syscall number of -1 matching the x32 tag test", res.Dropped, signals, signals)
 	}
 }
 
@@ -1245,7 +1216,7 @@ func TestForgetRetiredTidKeepsTheLivePid(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tracees := map[int]bool{leader: true, tc.old: true}
-			lastOp := map[int]byte{tc.old: unix.PTRACE_SYSCALL_INFO_ENTRY}
+			lastOp := map[int]lastStop{tc.old: {op: unix.PTRACE_SYSCALL_INFO_ENTRY}}
 			held := map[stopID]heldPath{}
 			for _, pid := range []int{leader, tc.old} {
 				held[stopKey(pid, &syscall.PtraceRegs{Orig_rax: unix.SYS_STAT})] = heldPath{path: "/etc/hosts", readOK: true}
@@ -1291,7 +1262,7 @@ func TestForgetExitedTidLeavesNothingForAReusedTid(t *testing.T) {
 	const tid = 100
 	regs := syscall.PtraceRegs{Orig_rax: unix.SYS_STAT, Rip: 0xdeadbeef}
 	tracees := map[int]bool{tid: true}
-	lastOp := map[int]byte{tid: unix.PTRACE_SYSCALL_INFO_ENTRY}
+	lastOp := map[int]lastStop{tid: {op: unix.PTRACE_SYSCALL_INFO_ENTRY}}
 	held := map[stopID]heldPath{stopKey(tid, &regs): {path: "/etc/shadow", readOK: true}}
 	// The dead thread's in-flight drop key, left behind by a pair whose exit stop never
 	// reached its release. It was already counted; what it must not do is dedup away the
@@ -1596,4 +1567,131 @@ func TestTraceAllocatesOnlyThePathnamePerRepeatedStat(t *testing.T) {
 	if mallocs, _ := tracerCost(t, "statabs"); mallocs >= 1.5 {
 		t.Errorf("%.2f allocations per repeated stat, want 1 (the pathname read out of the tracee)", mallocs)
 	}
+}
+
+// Every stop the tracer takes costs one read of what the stop is and one resume. The
+// syscall-info read already carries the number, the arguments and the instruction pointer
+// at an entry stop and the return value at an exit stop, so a second read per stop - a
+// GETREGS for the same facts - is paid on every syscall the target makes, file or not.
+//
+// Counted at the kernel rather than through a seam in the observer, so a ptrace request
+// added anywhere on the loop's path is counted whether or not it goes through a helper.
+func TestTracePtraceOpsPerStop(t *testing.T) {
+	const small, large = 100, 2_000
+	dir := t.TempDir()
+	measure := func(n int) (ops, stops uint64) {
+		orig := waitTracee
+		defer func() { waitTracee = orig }()
+		waitTracee = func(pid int, ws *syscall.WaitStatus, flags int, ru *syscall.Rusage) (int, error) {
+			wpid, err := orig(pid, ws, flags, ru)
+			// Every stop, not only syscall stops: the Go helper's runtime signals itself,
+			// and each signal-delivery stop costs a resume the count below includes.
+			if err == nil && ws.Stopped() {
+				stops++
+			}
+			return wpid, err
+		}
+		ops = countPtrace(t, func() { traceHelper(t, "getpid", dir, n) })
+		return ops, stops
+	}
+	opsSmall, ss := measure(small)
+	ol, sl := measure(large)
+	perStop := float64(ol-opsSmall) / float64(sl-ss)
+	t.Logf("%.2f stops per extra getpid, %.2f ptrace ops per stop", float64(sl-ss)/float64(large-small), perStop)
+	// Headroom above 2 because the count runs a little high: a ptrace call waiting on the
+	// supervisor is interrupted by the tracer's own SIGCHLDs and restarted, and each
+	// restart is notified again. A second read per stop puts it near 3.
+	if perStop >= 2.5 {
+		t.Errorf("%.2f ptrace ops per stop, want 2 (one read, one resume)", perStop)
+	}
+}
+
+// countPtrace runs fn on a thread whose ptrace(2) calls are counted by the kernel: a
+// seccomp filter on that thread alone hands each one to a supervisor here, which counts it
+// and lets it run unchanged. The thread is discarded afterwards, since a filter cannot be
+// removed. PTRACE_TRACEME is let through uncounted because the traced child inherits the
+// filter and issues it from a vfork child the supervisor would have to race to answer.
+func countPtrace(t *testing.T, fn func()) uint64 {
+	t.Helper()
+	type seccompNotif struct {
+		id    uint64
+		pid   uint32
+		flags uint32
+		nr    int32
+		arch  uint32
+		ip    uint64
+		args  [6]uint64
+	}
+	type seccompNotifResp struct {
+		id    uint64
+		val   int64
+		error int32
+		flags uint32
+	}
+	const notifRecv, notifSend = 0xc0502100, 0xc0182101 // _IOWR('!', 0/1, ...) on amd64
+
+	listener := make(chan int, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Never unlocked: the goroutine's exit then retires the filtered thread.
+		runtime.LockOSThread()
+		prog := []unix.SockFilter{
+			{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}, // nr
+			{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.SYS_PTRACE, Jf: 3},
+			{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16}, // low half of args[0]
+			{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.PTRACE_TRACEME, Jt: 1},
+			{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_USER_NOTIF},
+			{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+		}
+		fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			listener <- -1
+			return
+		}
+		fd, _, errno := unix.Syscall(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER,
+			unix.SECCOMP_FILTER_FLAG_NEW_LISTENER, uintptr(unsafe.Pointer(&fprog)))
+		if errno != 0 {
+			listener <- -1
+			return
+		}
+		listener <- int(fd)
+		fn()
+	}()
+	fd := <-listener
+	if fd < 0 {
+		<-done
+		t.Skip("no seccomp user notification to count ptrace calls with")
+	}
+	defer unix.Close(fd)
+
+	var count uint64
+	stop := make(chan struct{})
+	supervised := make(chan struct{})
+	go func() {
+		defer close(supervised)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+			if n, err := unix.Poll(fds, 100); err != nil || n == 0 || fds[0].Revents&unix.POLLIN == 0 {
+				continue
+			}
+			var n seccompNotif
+			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), notifRecv, uintptr(unsafe.Pointer(&n))); errno != 0 {
+				continue // ENOENT: the caller died before its notification was read
+			}
+			count++
+			resp := seccompNotifResp{id: n.id, flags: unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE}
+			_, _, _ = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), notifSend, uintptr(unsafe.Pointer(&resp)))
+		}
+	}()
+	// Every counted call was answered before fn could return, so the count is final here.
+	<-done
+	close(stop)
+	<-supervised
+	return count
 }

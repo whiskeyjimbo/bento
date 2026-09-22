@@ -288,9 +288,8 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 	// entry/exit pair like the drop counter, so a stop that is not this pair's - an
 	// rt_sigreturn landing between the two, say - cannot be mistaken for it.
 	held := map[stopID]heldPath{}
-	// The op of each pid's last syscall stop that was read successfully - the parity a
-	// failed read has no op of its own to supply. See nextStop.
-	lastOp := map[int]byte{}
+	// Each pid's last syscall stop that was read successfully. See lastStop.
+	lastOp := map[int]lastStop{}
 	// Whether each tid's most recent spawn attempt was an execve rather than an execveat,
 	// parked at the entry stop for the exec event to read. Keyed on the tid because the
 	// event carries the new image's registers and so no stop key can be rebuilt from it,
@@ -446,8 +445,9 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 			// and exit is deduplicated, so no enter/exit bookkeeping beyond the drop
 			// counter's own.
 			drop := dropOnce(drops, wpid, &res.Dropped)
-			if op, native := nativeSyscall(wpid, lastOp, held, drop.forget, &res.Dropped); native {
-				inspect(wpid, op, record, recordProbe, openResult, drop, held, execSpawn, &res)
+			var regs syscall.PtraceRegs
+			if op, native := nativeSyscall(wpid, &regs, lastOp, held, drop.forget, &res.Dropped); native {
+				inspect(wpid, op, &regs, record, recordProbe, openResult, drop, held, execSpawn, &res)
 			}
 			_ = syscall.PtraceSyscall(wpid, 0)
 		default:
@@ -558,28 +558,42 @@ func Trace(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (Resul
 // failure leaves no op field to tell them apart. With the request's availability already
 // established at the initial stop, the failure that actually happens is a tracee that died
 // mid-pair, and it has no second stop to count; which stop it died at decides whether that
-// is a real loss, and lastOp is what answers it here - unlike inspect, which has this stop's
-// own op in hand. Any other errno leaves a live tracee whose second stop is still coming, so
+// is a real loss, and lastOp is what answers it, the failed read having supplied no op of
+// its own. Any other errno leaves a live tracee whose second stop is still coming, so
 // it is counted flatly and judged on nothing (see unreadableStopLoss).
 //
 // This settles the audit arch, not the whole ABI question: x32 shares AUDIT_ARCH_X86_64
 // and passes here, and inspect drops it on the tag its syscall numbers carry.
-func nativeSyscall(pid int, lastOp map[int]byte, held map[stopID]heldPath, forgetDrops func(), dropped *int) (op byte, native bool) {
-	op, arch, err := syscallInfo(pid)
+//
+// The same read fills regs with everything inspect decodes, so a stop costs one ptrace read.
+// An exit stop's info carries no syscall number, so the one its entry stop read is carried
+// across in lastOp; an exit stop with no entry recorded before it - the pid's previous read
+// failed, or this is the first stop of it the loop has read - has no number to decode by
+// and is reported not native, which decodes nothing and counts nothing, since the entry
+// stop that would have held anything for it was never decoded either.
+func nativeSyscall(pid int, regs *syscall.PtraceRegs, lastOp map[int]lastStop, held map[stopID]heldPath, forgetDrops func(), dropped *int) (op byte, native bool) {
+	prev := lastOp[pid]
+	op, arch, err := syscallInfo(pid, regs)
 	if err != nil {
 		// A read that failed says nothing about which stop this was, so the parity it
 		// would have recorded is gone and every later inference off this pid's stale one
 		// would be off by a stop.
-		prev := lastOp[pid]
 		delete(lastOp, pid)
 		if errors.Is(err, syscall.ESRCH) {
-			*dropped += deadThreadLoss(nextStop(prev), held, pid)
+			*dropped += deadThreadLoss(nextStop(prev.op), held, pid)
 		} else {
 			*dropped += unreadableStopLoss(held, pid, forgetDrops)
 		}
 		return 0, false
 	}
-	lastOp[pid] = op
+	if op == unix.PTRACE_SYSCALL_INFO_EXIT {
+		if prev.op != unix.PTRACE_SYSCALL_INFO_ENTRY {
+			lastOp[pid] = lastStop{op: op}
+			return op, false
+		}
+		regs.Orig_rax = prev.nr
+	}
+	lastOp[pid] = lastStop{op: op, nr: regs.Orig_rax}
 	if arch == auditArchX8664 {
 		return op, true
 	}
@@ -590,9 +604,8 @@ func nativeSyscall(pid int, lastOp map[int]byte, held map[stopID]heldPath, forge
 }
 
 // deadThreadLoss reports how many observations an ESRCH at a stop of this op actually lost.
-// It is the one judgement both reads that can fail on a dying thread share -
-// PTRACE_GET_SYSCALL_INFO in nativeSyscall and PtraceGetRegs in inspect - because which of
-// the two loses the race is a coin flip on the same event.
+// It is the judgement for the one read a stop makes, PTRACE_GET_SYSCALL_INFO in
+// nativeSyscall, when the thread dies before it.
 //
 // At an ENTRY stop nothing ran: a ptrace-stopped thread executes nothing until the observer
 // resumes it, so a thread already gone died holding the stop and never issued the syscall.
@@ -624,8 +637,8 @@ func deadThreadLoss(op byte, held map[stopID]heldPath, pid int) int {
 
 // unreadableStopLoss reports how many observations a read that failed for a reason other
 // than ESRCH lost, and releases the pathname the stop's pair was holding as it counts. The
-// other sibling of deadThreadLoss: both reads that can fail - PTRACE_GET_SYSCALL_INFO in
-// nativeSyscall and PtraceGetRegs in inspect - take this branch on an EIO or EFAULT.
+// other sibling of deadThreadLoss: the stop's one read, PTRACE_GET_SYSCALL_INFO in
+// nativeSyscall, takes this branch on an EIO, an EFAULT or a short answer.
 //
 // One, always, and not judged on the op the way deadThreadLoss judges its own. The
 // asymmetry is the tracee's state, not an oversight: a dead thread at an entry stop never
@@ -650,6 +663,14 @@ func unreadableStopLoss(held map[stopID]heldPath, pid int, forgetDrops func()) i
 	releaseHeldOf(held, pid)
 	forgetDrops()
 	return 1
+}
+
+// lastStop is a pid's last syscall stop that was read successfully: its op, which is the
+// parity a failed read has no op of its own to supply (see nextStop), and the syscall
+// number, which an exit stop's info does not carry and so takes from its entry stop's.
+type lastStop struct {
+	op byte
+	nr uint64
 }
 
 // nextStop reports the op of the stop that follows one of op, which is what a stop whose
@@ -683,12 +704,18 @@ func nextStop(prev byte) byte {
 	return unix.PTRACE_SYSCALL_INFO_NONE
 }
 
-// syscallInfo reads the op and dispatch arch of the stop the tracee is in, via
-// PTRACE_GET_SYSCALL_INFO. Both live in the first eight bytes of struct
-// ptrace_syscall_info (u8 op, u8 pad[3], u32 arch), but the whole struct's size is
-// passed: the kernel writes min(the given size, its own) and returns its own, so asking
-// for eight would be a silent partial read on a layout that grows rather than an error.
-func syscallInfo(pid int) (op byte, arch uint32, err error) {
+// syscallInfo reads the stop the tracee is in via PTRACE_GET_SYSCALL_INFO: its op and
+// dispatch arch, and into regs the parts of it inspect decodes - the instruction pointer,
+// plus the number and the six argument registers at an entry stop or the return value at
+// an exit stop. Nothing else in regs is set; an exit stop's number is the caller's to fill.
+//
+// The layout is struct ptrace_syscall_info: u8 op, u8 reserved, u16 flags, u32 arch, u64
+// instruction_pointer, u64 stack_pointer, then a union whose entry arm is u64 nr, u64
+// args[6] and whose exit arm is s64 rval, u8 is_error. The kernel writes min(the given
+// size, the op's own) and returns the op's own size, so the whole struct is offered and
+// the return is checked against the bytes each op is decoded from: a short answer would
+// otherwise decode as zeroed registers.
+func syscallInfo(pid int, regs *syscall.PtraceRegs) (op byte, arch uint32, err error) {
 	var info [88]byte
 	n, _, errno := unix.Syscall6(unix.SYS_PTRACE, unix.PTRACE_GET_SYSCALL_INFO,
 		uintptr(pid), uintptr(len(info)), uintptr(unsafe.Pointer(&info[0])), 0, 0)
@@ -698,7 +725,23 @@ func syscallInfo(pid int) (op byte, arch uint32, err error) {
 	if n < 8 {
 		return 0, 0, fmt.Errorf("kernel returned %d bytes, too few to read the dispatch arch", n)
 	}
-	return info[0], binary.LittleEndian.Uint32(info[4:8]), nil
+	op, arch = info[0], binary.LittleEndian.Uint32(info[4:8])
+	u64 := func(off int) uint64 { return binary.LittleEndian.Uint64(info[off : off+8]) }
+	*regs = syscall.PtraceRegs{}
+	switch op {
+	case unix.PTRACE_SYSCALL_INFO_ENTRY:
+		if n < 80 {
+			return 0, 0, fmt.Errorf("kernel returned %d bytes for an entry stop, too few to read its arguments", n)
+		}
+		regs.Rip, regs.Orig_rax = u64(8), u64(24)
+		regs.Rdi, regs.Rsi, regs.Rdx, regs.R10, regs.R8, regs.R9 = u64(32), u64(40), u64(48), u64(56), u64(64), u64(72)
+	case unix.PTRACE_SYSCALL_INFO_EXIT:
+		if n < 32 {
+			return 0, 0, fmt.Errorf("kernel returned %d bytes for an exit stop, too few to read its return value", n)
+		}
+		regs.Rip, regs.Rax = u64(8), u64(24)
+	}
+	return op, arch, nil
 }
 
 // requireSyscallInfo checks that the kernel implements PTRACE_GET_SYSCALL_INFO, which
@@ -711,7 +754,7 @@ func syscallInfo(pid int) (op byte, arch uint32, err error) {
 // a run that can fabricate a write grant is worse than no profile, and refusing matches
 // what the profile command already does with an unobservable run.
 func requireSyscallInfo(pid int) error {
-	if _, _, err := syscallInfo(pid); err != nil {
+	if _, _, err := syscallInfo(pid, &syscall.PtraceRegs{}); err != nil {
 		return fmt.Errorf("observe: PTRACE_GET_SYSCALL_INFO (Linux 5.3+) is needed to tell a foreign-ABI syscall from an amd64 one: %w", err)
 	}
 	return nil
@@ -894,7 +937,7 @@ func stopKey(pid int, regs *syscall.PtraceRegs) stopID {
 // syscall stops alternate, so every pair the execer opened closed before its execve entry stop,
 // and there should be nothing left to release. It is swept rather than assumed empty because
 // the cost of being wrong is an uncounted access, which is what Dropped exists to prevent.
-func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, held map[stopID]heldPath, drops map[dropID]bool) int {
+func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]lastStop, held map[stopID]heldPath, drops map[dropID]bool) int {
 	if old == wpid {
 		return 0
 	}
@@ -923,7 +966,7 @@ func forgetRetiredTid(wpid, old int, tracees map[int]bool, lastOp map[int]byte, 
 // swept for the same reason and reports no loss: a tid that exited without reaching its exec
 // event ran no exec, and left behind it would answer for whatever thread the kernel hands the
 // tid to next - with exec: all as the price of being wrong.
-func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]byte, held map[stopID]heldPath, drops map[dropID]bool, execSpawn map[int]bool) int {
+func forgetExitedTid(wpid int, tracees map[int]bool, lastOp map[int]lastStop, held map[stopID]heldPath, drops map[dropID]bool, execSpawn map[int]bool) int {
 	delete(tracees, wpid)
 	delete(lastOp, wpid)
 	delete(execSpawn, wpid)
@@ -1018,50 +1061,27 @@ func existenceHeld(held map[stopID]heldPath) int {
 // below rules out the one ABI that shares it, and the negative-number check rules out the
 // stops that carry no syscall number at all. Past those three the numbers mean what they
 // say.
-func inspect(pid int, op byte, record, recordProbe func(string, bool), openResult func(string, bool), drops dropCounter, held map[stopID]heldPath, execSpawn map[int]bool, res *Result) {
-	var regs syscall.PtraceRegs
-	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
-		// No registers means no syscall number either, so this may not have been a file
-		// access at all - a tracee killed between the stop and this read fails here on
-		// whatever it was running.
-		//
-		// ESRCH means the thread died holding this stop, which deadThreadLoss can often
-		// resolve to nothing rather than count. The op comes from the caller's own read at
-		// this same stop, before any resume, so it describes this stop and not a later one.
-		//
-		// Every other failure is counted: an uncounted lost access is what this channel
-		// exists to prevent. An EIO or EFAULT says nothing about whether the thread is
-		// alive. It is counted per stop rather than through the pair's dedup, whose key
-		// would be built from registers this read never returned - one key for every such
-		// failure on this pid, so a second lost stop would dedup to nothing.
-		if errors.Is(err, syscall.ESRCH) {
-			res.Dropped += deadThreadLoss(op, held, pid)
-			return
-		}
-		res.Dropped += unreadableStopLoss(held, pid, drops.forget)
-		return
-	}
+func inspect(pid int, op byte, regs *syscall.PtraceRegs, record, recordProbe func(string, bool), openResult func(string, bool), drops dropCounter, held map[stopID]heldPath, execSpawn map[int]bool, res *Result) {
 	// This syscall's entry/exit pair ends here, so its dedup key goes with it - see
 	// dropOnce. Deferred so it runs after the decode below has had its chance to count.
 	atExit := op == unix.PTRACE_SYSCALL_INFO_EXIT
 	if atExit {
-		defer drops.release(&regs)
+		defer drops.release(regs)
 	}
-	drop := func() { drops.count(&regs, 0) }
-	dropSlot := func(slot int) { drops.count(&regs, slot) }
-	// A negative orig_rax is the kernel saying this stop reports no syscall number, not a
-	// syscall this decoder failed to read - so it is skipped silently rather than dropped.
-	// It arrives from rt_sigreturn, whose exit stop reports the RESTORED pre-signal
-	// registers: orig_rax is -1 (the marker that suppresses syscall restart) and rax is the
-	// interrupted call's own return value. Nothing is lost by skipping it. Every syscall
-	// recorded at the entry stop was already recorded before these registers appeared, and
-	// no path-existence syscall - the only ones decoded at the exit stop - can present here,
-	// because the value is rt_sigreturn's restored context and not their own.
+	drop := func() { drops.count(regs, 0) }
+	dropSlot := func(slot int) { drops.count(regs, slot) }
+	// A negative number names no syscall, rather than one this decoder failed to read - so
+	// it is skipped silently rather than dropped. A raw syscall(-1) enters with it, and the
+	// kernel answers ENOSYS without touching anything.
+	//
+	// rt_sigreturn's exit stop does not reach here, although its registers carry -1: they
+	// are the RESTORED pre-signal context, and orig_rax -1 is the marker that suppresses
+	// syscall restart. The number decoded at an exit stop is its entry stop's (see
+	// nativeSyscall), 15, under which nothing is ever held, so that stop decodes nothing.
 	//
 	// This must precede the x32 test: -1 has every bit set, so it matches x32SyscallBit and
-	// counted as a lost access once per handled signal. Go's async preemption signals a
-	// busy tracee constantly, which put the count in the hundreds for a run that lost
-	// nothing - in the one channel that tells the user their manifest is incomplete.
+	// would count as a lost access - in the one channel that tells the user their manifest
+	// is incomplete.
 	if int64(regs.Orig_rax) < 0 {
 		return
 	}
@@ -1092,8 +1112,8 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		// The exec release runs first and on its own: an exec is an open of the image, so
 		// it is attributed like one rather than like an existence probe, and recordProbe
 		// below is the existence decoder's alone.
-		if !releaseHeldExec(pid, &regs, record, openResult, drop, held) {
-			recordHeldExistence(pid, &regs, recordProbe, openResult, drop, held)
+		if !releaseHeldExec(pid, regs, record, openResult, drop, held) {
+			recordHeldExistence(pid, regs, recordProbe, openResult, drop, held)
 		}
 		return
 	}
@@ -1101,7 +1121,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 	case sysOpenat:
 		if path, ok := readPathAt(pid, int32(regs.Rdi), uintptr(regs.Rsi)); ok {
 			record(path, regs.Rdx&writeFlags != 0)
-			holdOpen(pid, &regs, held, path)
+			holdOpen(pid, regs, held, path)
 		} else {
 			drop()
 		}
@@ -1127,7 +1147,7 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 				break
 			}
 			record(anchoredPath, flags&uint64(writeFlags) != 0)
-			holdOpen(pid, &regs, held, anchoredPath)
+			holdOpen(pid, regs, held, anchoredPath)
 		}
 	case sysOpen:
 		// open/creat take no dirfd; a relative path is anchored at the working
@@ -1135,14 +1155,14 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		// a relative open after a chdir would be mis-anchored.
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
 			record(path, regs.Rsi&writeFlags != 0)
-			holdOpen(pid, &regs, held, path)
+			holdOpen(pid, regs, held, path)
 		} else {
 			drop()
 		}
 	case sysCreat:
 		if path, ok := readPathAt(pid, atFdCwd, uintptr(regs.Rdi)); ok {
 			record(path, true)
-			holdOpen(pid, &regs, held, path)
+			holdOpen(pid, regs, held, path)
 		} else {
 			drop()
 		}
@@ -1167,20 +1187,20 @@ func inspect(pid int, op byte, record, recordProbe func(string, bool), openResul
 		// weaker flag set here carries.
 		execSpawn[pid] = true
 		res.ExecAttempted = true
-		holdExecTarget(pid, &regs, atFdCwd, uintptr(regs.Rdi), false, held, drop)
+		holdExecTarget(pid, regs, atFdCwd, uintptr(regs.Rdi), false, held, drop)
 	case sysExecveat:
 		// Recorded as not-an-execve rather than left alone: a failed execve on this tid
 		// parked a true above, and the exec event this execveat may be about to fire has no
 		// way of its own to tell whose answer it is reading.
 		execSpawn[pid] = false
-		holdExecTarget(pid, &regs, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, held, drop)
+		holdExecTarget(pid, regs, int32(regs.Rdi), uintptr(regs.Rsi), regs.R8&unix.AT_EMPTY_PATH != 0, held, drop)
 	default:
 		if undecodedPathSyscalls[regs.Orig_rax] {
 			drop()
 			return
 		}
-		inspectMutating(pid, &regs, record, dropSlot)
-		inspectExistence(pid, &regs, recordProbe, drop, held)
+		inspectMutating(pid, regs, record, dropSlot)
+		inspectExistence(pid, regs, recordProbe, drop, held)
 	}
 }
 
