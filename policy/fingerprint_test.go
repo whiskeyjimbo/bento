@@ -371,6 +371,32 @@ func TestValidateRejectsANewlineInEveryFingerprintedString(t *testing.T) {
 	var names []string
 	b := base()
 	visit("", reflect.ValueOf(&b).Elem(), func(n string, _ reflect.Value) { names = append(names, n) })
+	// The walk above sees only what base() populates, so a string field added later and
+	// left empty there would be skipped. Every string the TYPE holds must have been seen.
+	var typeStrings func(name string, t reflect.Type) []string
+	typeStrings = func(name string, typ reflect.Type) []string {
+		switch typ.Kind() {
+		case reflect.String:
+			return []string{name}
+		case reflect.Slice:
+			return typeStrings(name, typ.Elem())
+		case reflect.Struct:
+			var out []string
+			for i := 0; i < typ.NumField(); i++ {
+				out = append(out, typeStrings(join(name, typ.Field(i).Name), typ.Field(i).Type)...)
+			}
+			return out
+		case reflect.Map, reflect.Pointer, reflect.Array, reflect.Interface:
+			t.Fatalf("%s is a %s, which this walk does not descend; teach it", name, typ.Kind())
+		default:
+		}
+		return nil
+	}
+	for _, want := range typeStrings("", reflect.TypeFor[Policy]()) {
+		if !slices.Contains(names, want) {
+			t.Errorf("%s holds strings but base() leaves it empty, so its newline screen is untested; populate it", want)
+		}
+	}
 	for i, name := range names {
 		t.Run(name, func(t *testing.T) {
 			p := base()
