@@ -479,12 +479,7 @@ var probeHost = func(ctx context.Context, layers []enforce.Layer) (enforce.Repor
 	if err != nil {
 		return enforce.Report{}, false
 	}
-	if lp, ok := e.(interface {
-		ProbeFor(context.Context, []enforce.Layer) enforce.Report
-	}); ok {
-		return lp.ProbeFor(ctx, layers), true
-	}
-	return e.Probe(ctx), true
+	return enforce.ProbeFor(ctx, e, layers), true
 }
 
 // newBackend is the backend probeHost opens, a variable so a test can see which layers

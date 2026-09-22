@@ -149,7 +149,7 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 		}
 	}
 	wanted := requiredLayers(p, opts)
-	probed := probeFor(ctx, e, wanted)
+	probed := ProbeFor(ctx, e, wanted)
 	required := probed.forLayers(wanted)
 	if err := composedAdmission(p, opts, probed, required); err != nil {
 		return Result{}, screenRemedies(err, p, opts, probed, required)
@@ -442,7 +442,10 @@ type layerProber interface {
 	ProbeFor(ctx context.Context, layers []Layer) Report
 }
 
-func probeFor(ctx context.Context, e Enforcer, layers []Layer) Report {
+// ProbeFor measures only the given layers where the backend can, and the whole Probe where
+// it cannot. It is exported so a caller reading a manifest's posture without running it
+// measures the same set a run would.
+func ProbeFor(ctx context.Context, e Enforcer, layers []Layer) Report {
 	if lp, ok := e.(layerProber); ok {
 		return lp.ProbeFor(ctx, layers)
 	}
