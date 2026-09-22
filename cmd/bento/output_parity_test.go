@@ -77,7 +77,7 @@ var parityRows = []parityRow{
 	{writers: []string{"writeSandboxHome", "writeSandboxHomeNote"}, fixture: "validate", marker: "HOME is not passed through", key: "home_not_passed_through"},
 	{writers: []string{"writeUnsetEnvNotes"}, fixture: "validate", marker: "BENTO_PARITY_UNSET is allowed by the manifest but not set", key: "unset_env"},
 	// Field by field in TestEveryRunnabilityFieldReachesTheUser; these rows pin the command wiring.
-	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "runnable:", key: "runnable"},
+	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "runnable:", key: "runnable_problems"},
 	{writers: []string{"writeHostPosture"},
 		exempt: "the fixture runs the real host, which enforces what the fixture manifest needs, so this writer is silent here; TestValidateCarriesTheHostPostureToBothSurfaces swaps the probe for a short host and pins both surfaces through the command"},
 	{writers: []string{"writeRunnability"}, fixture: "validate", marker: "names nothing on this host", key: "missing_read_grants"},

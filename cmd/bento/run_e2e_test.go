@@ -279,3 +279,34 @@ func TestRunCannotRewriteItsOwnManifest(t *testing.T) {
 		t.Errorf("the run rewrote its own manifest:\n%s", after)
 	}
 }
+
+// The bind over the manifest holds only its own name, so a write grant wider than the
+// manifest's directory could rename that directory away and put a new manifest in its
+// place. run refuses that shape. Both halves run for real: the refusal, and, with the
+// write grant rooted at the manifest's directory, every way of moving the manifest
+// failing inside the sandbox.
+func TestRunKeepsTheManifestPutUnderAWiderWriteGrant(t *testing.T) {
+	requireSandbox(t)
+
+	script := `d=$(basename "$PWD")
+rm -f bento.yaml 2>/dev/null && exit 3
+mv bento.yaml x.yaml 2>/dev/null && exit 4
+cd .. && mv "$d" moved 2>/dev/null && exit 5
+exit 0
+`
+	wide := &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{".."}, Exec: policy.ExecAll}
+	m := writeRunnableManifest(t, script, wide)
+	if err := runCmd(t, m); err == nil || !strings.Contains(err.Error(), "renamed") {
+		t.Fatalf("a manifest whose directory a write grant could rename was run; want a refusal, got %v", err)
+	}
+
+	rooted := &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}, Exec: policy.ExecAll}
+	m = writeRunnableManifest(t, script, rooted)
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d (3 unlinked, 4 renamed the manifest, 5 renamed its directory):\n%s", got, stderr)
+	}
+	if _, err := os.Stat(m); err != nil {
+		t.Errorf("the manifest is gone from where it was approved: %v", err)
+	}
+}

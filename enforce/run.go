@@ -63,10 +63,13 @@ type Options struct {
 	// ReadOnlyPaths are absolute paths of existing host FILES the run may read but never
 	// write, even where a write grant covers them. It is how the CLI keeps a run from
 	// rewriting its own manifest: approval is a stamp inside that file, so a run able to
-	// write it could widen and re-stamp the policy its next run executes. A read-only bind
-	// over one file inside a writable tree holds (a mount point cannot be renamed or
-	// unlinked), which is why this is allowed where a DenyPaths entry inside a write
-	// grant is refused.
+	// write it could widen and re-stamp the policy its next run executes.
+	//
+	// The bind holds the file's own name and nothing else: the kernel refuses to rename or
+	// unlink a mount point, but a writable directory above it moves with the mount inside,
+	// and another hard link or a symlink naming it is not under the mount at all. Refusing
+	// those shapes is the caller's job - gate.ManifestProblems is the CLI's - because only
+	// the caller knows which name it will trust afterwards.
 	//
 	// The degraded tier applies no shields, so a run that lands there with one of these
 	// under a write grant is refused. Outside every write grant nothing can write it

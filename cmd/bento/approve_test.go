@@ -878,3 +878,25 @@ func TestApprovalCalloutsNameExtraArgs(t *testing.T) {
 		t.Errorf("a manifest without extra_args must produce no callout:\n%s", plain.String())
 	}
 }
+
+// run refuses a manifest whose directory a wider write grant could rename (gate.
+// ManifestProblems), so approve must not stamp it and validate --strict must not pass it:
+// the three are one verdict about the same file on the same host.
+func TestApproveAndValidateRefuseAManifestTheRunCanReplace(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "run.sh")
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := writeManifest(t, &policy.Policy{Entrypoint: entry, Write: []string{".."}}, manifest.Provenance{})
+	if _, err := runCapturingStdout(t, newApproveCmd(), path, "--yes"); err == nil || !strings.Contains(err.Error(), "renamed") {
+		t.Errorf("approve stamped a manifest run refuses; got %v", err)
+	}
+	if out, err := runCapturingStdout(t, newValidateCmd(), "--strict", path); err == nil {
+		t.Errorf("validate --strict passed a manifest run refuses:\n%s", out)
+	}
+
+	ok := writeManifest(t, &policy.Policy{Entrypoint: entry, Write: []string{"."}}, manifest.Provenance{})
+	if out, err := runCapturingStdout(t, newApproveCmd(), ok, "--yes"); err != nil {
+		t.Errorf("a write grant rooted at the manifest's directory is the ordinary shape and must stamp; got %v\n%s", err, out)
+	}
+}

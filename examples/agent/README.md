@@ -20,23 +20,30 @@ cp examples/agent/agent.manifest.yaml ~/src/myproject/
 bento approve ~/src/myproject/agent.manifest.yaml
 ```
 
-Then merge `claude-settings.json` into `~/src/myproject/.claude/settings.json`, or into
-your user settings to cover every project that has an `agent.manifest.yaml` at its
-root. Widen the manifest the way you would any other - `network:` for a package
+Then merge `claude-settings.json` into `~/src/myproject/.claude/settings.json`. In your
+user settings it would apply to every project, and in a project with no
+`agent.manifest.yaml` the hook denies every Bash call - by design, since it never lets
+a command through unconfined. Widen the manifest the way you would any other - `network:` for a package
 registry, `read:` for a toolchain outside the system directories - and approve it
 again.
 
-Keep the hook in `~/.claude/settings.json` or the project's settings file, both of
-which bento keeps read-only to a sandboxed command, so the agent cannot switch it off
-from inside. The manifest itself is read-only to its own run too: approval is a stamp
-inside it, and a command that could rewrite it could re-stamp a wider policy.
+The project's `.claude/` and your `~/.claude` are both read-only to a sandboxed
+command, so the agent cannot switch the hook off from inside. The manifest is
+read-only to its own run too: approval is a stamp inside it, and a command that could
+rewrite it could re-stamp a wider policy. Keep it at the top of its write grant, as
+here - `bento run` refuses a manifest under a wider write grant, because the directory
+holding it could be renamed away.
 
 ## What the hook answers
 
 By default the hook answers `ask`: Claude Code still prompts before each command, and
 the prompt shows the rewritten `bento run ...` line. `bento hook claude-code --allow`
-answers `allow`, so sandboxed commands run without a prompt. Claude Code's own deny and
-ask rules still apply either way.
+answers `allow`, so sandboxed commands run without a prompt.
+
+Claude Code matches its permission rules against the rewritten line, and every
+rewritten line starts with `bento run`. A rule keyed on a command prefix, such as
+`Bash(git push:*)`, stops matching - so under `--allow` such a deny rule no longer
+stops the command. Keep `ask` if you rely on those rules.
 
 Anything the hook cannot turn into a sandboxed command - an unapproved or edited
 manifest, one without `extra_args`, a payload it cannot read - is answered `deny`

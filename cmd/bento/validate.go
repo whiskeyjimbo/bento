@@ -75,6 +75,9 @@ func newValidateCmd() *cobra.Command {
 			warnStampAtRisk(cmd.ErrOrStderr(), doc, mt)
 			resolved := resolvedGrants(doc.Policy, args[0])
 			run := gate.Check(resolved)
+			if resolved != nil {
+				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], resolved)...)
+			}
 			var posture []enforce.LayerStatus
 			if report, ok := probeHost(cmd.Context()); ok {
 				posture = hostPosture(report, doc.Policy)

@@ -31,7 +31,9 @@ func newClaudeCodeHookCmd() *cobra.Command {
 			"The manifest must be approved and set extra_args: true; see examples/agent for one.\n\n" +
 			"By default it answers \"ask\", so Claude Code still prompts, and shows the rewritten\n" +
 			"command. --allow answers \"allow\" instead: every Bash call runs without a prompt,\n" +
-			"confined by the manifest. Claude Code's own deny and ask rules still apply either way.\n\n" +
+			"confined by the manifest. Claude Code matches its permission rules against the\n" +
+			"rewritten line, which starts with bento, so a rule keyed on a command prefix\n" +
+			"such as Bash(git push:*) no longer matches it.\n\n" +
 			"Only the Bash tool is rewritten. Claude Code's built-in Read, Edit, Write and WebFetch\n" +
 			"tools do not run through a shell and are not confined by this hook.\n\n" +
 			"Any payload it cannot turn into a sandboxed command is answered with \"deny\" rather\n" +

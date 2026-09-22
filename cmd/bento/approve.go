@@ -81,6 +81,11 @@ func newApproveCmd() *cobra.Command {
 			if err := requireStartableWorkdir(resolved); err != nil {
 				return err
 			}
+			if resolved != nil {
+				if problems := gate.ManifestProblems(path, resolved); len(problems) > 0 {
+					return fmt.Errorf("not approved: run refuses a manifest its own write grants can replace, so a stamp would attest a run this host refuses:\n  %s", strings.Join(problems, "\n  "))
+				}
+			}
 			// The stamp is an unkeyed sha256 that travels inside the manifest, so on its own
 			// it is satisfied identically by one this host wrote and one that arrived already
 			// stamped from anywhere. The journal is what tells those apart - it is written
