@@ -182,12 +182,15 @@ about half a second for 350,000 entries - and each checkout it finds adds its mo
 roughly 25ms apiece. Past 96 checkouts the run is refused rather than mounted
 short, and so is any sandbox bubblewrap's 9,000-argument ceiling cannot hold: grant
 the checkouts that need writing, not a directory full of them. The degraded tier
-applies no shields and skips the walk. The same walk shields each coding-agent config
-entry it finds (`.claude`, `.mcp.json`, `.cursor` and the rest) where it stands, in a
-git checkout or not - a project directory with no repository still has a
-`.claude/settings.json` whose hooks run on the host when it is opened. A symlinked
-entry is refused rather than shielded (the run could replace the link itself), and a
-write grant that is itself such an entry is refused as one inside a shield. The cost to legitimate work is the
+applies no shields and skips the walk. The same walk shields each editor or
+coding-agent config entry it finds (`.vscode`, `.idea`, `.claude`, `.mcp.json`,
+`.cursor` and the rest) where it stands, in a git checkout or not - a project directory
+with no repository still has a `.claude/settings.json` whose hooks run on the host when
+it is opened, or a `.vscode/tasks.json` that runs on folder open. A symlinked agent
+entry is refused rather than shielded (the run could replace the link itself); a
+symlinked editor directory, a routine shared-config layout, is left unshielded, with the
+editor's own workspace trust behind it. A write grant that is itself such an entry is
+refused as one inside a shield. The cost to legitimate work is the
 enclosing checkout's already: inside the run, a directory holding a nested repo or agent config
 cannot be renamed, and `rm -rf` of it stops at the shield mounts.
 

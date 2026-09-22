@@ -674,7 +674,7 @@ func TestNewSandboxRefusesAReadOnlyPathThatIsNotAFile(t *testing.T) {
 	}
 }
 
-// findNestedCheckouts finds a checkout by the NAME .git, directory or file (a linked
+// findWorkspaceEntries finds a checkout by the NAME .git, directory or file (a linked
 // worktree or submodule working tree), never looks inside one, stays inside the grant,
 // and leaves out the grant's own checkout, which workspaceShields already anchors.
 func TestFindNestedCheckouts(t *testing.T) {
@@ -695,7 +695,7 @@ func TestFindNestedCheckouts(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(grant, "link")); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := findNestedCheckouts(grant)
+	got, _, err := findWorkspaceEntries(grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestFindNestedCheckoutsRefusesPastTheBound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := findNestedCheckouts(grant); err == nil {
+	if _, _, err := findWorkspaceEntries(grant); err == nil {
 		t.Error("a grant holding more checkouts than the bound was walked without refusal")
 	}
 }
@@ -759,7 +759,7 @@ func TestFindNestedCheckoutsShieldsAgentConfigWholeAndLooksNoFurther(t *testing.
 	if err := os.WriteFile(filepath.Join(grant, "notes/sub/.mcp.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checkouts, agent, err := findNestedCheckouts(grant)
+	checkouts, agent, err := findWorkspaceEntries(grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestDerivedWorkspaceRulesSkipAShieldAlreadyInForce(t *testing.T) {
 	root := "/w"
 	sb := sandbox{
 		resolve:         func(p string) string { return p },
-		agentConfig:     map[string][]denylist.Rule{root: {{Path: "/w/.claude", Deny: denylist.DenyWrite, Dir: true}, {Path: "/w/notes/.mcp.json", Deny: denylist.DenyWrite}}},
+		projectConfig:   map[string][]denylist.Rule{root: {{Path: "/w/.claude", Deny: denylist.DenyWrite, Dir: true}, {Path: "/w/notes/.mcp.json", Deny: denylist.DenyWrite}}},
 		nestedCheckouts: map[string][]string{},
 	}
 	above := denylist.Workspace(root)

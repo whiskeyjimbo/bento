@@ -2453,3 +2453,18 @@ func TestAliasAnchorsScreenTheRelocatedBase(t *testing.T) {
 		}
 	}
 }
+
+// Workspace is built from a literal block and a shared name list; a name in both would be
+// shielded twice, a second mount spending argv for nothing. A map keyed by path would
+// collapse the duplicate and hide it, so this counts.
+func TestWorkspaceShieldsEachPathOnce(t *testing.T) {
+	seen := map[string]int{}
+	for _, r := range Workspace("/w") {
+		seen[r.Path]++
+	}
+	for p, n := range seen {
+		if n > 1 {
+			t.Errorf("%s is shielded %d times", p, n)
+		}
+	}
+}

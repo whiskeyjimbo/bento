@@ -192,19 +192,19 @@ func shieldRules(sb sandbox, writes []string) []denylist.Rule {
 }
 
 // derivedWorkspaceRules is what the workspace walk found below write grant w: a shield per
-// existing agent-config entry, then the workspace shields of each nested checkout. above
+// existing project config entry, then the workspace shields of each nested checkout. above
 // is every rule already in force, so a finding inside a directory it shields is left out -
 // writes cannot reach it, and a mount point inside a read-only mount aborts bwrap. (The
-// walk itself never enters an agent-config directory, so a checkout kept inside a deep
-// .claude is not found at all; this covers the enclosing checkout's .vscode and .idea,
-// which it does enter.) seen deduplicates checkouts across grants.
+// walk never enters a project config directory, so a checkout kept inside a deep .claude
+// is not found at all; this covers the built-in directory shields a write grant can
+// contain.) seen deduplicates checkouts across grants.
 //
 // Shared by shieldRules and checkWriteNotUnderReadOnlyShield, so a grant inside a derived
 // shield is refused by the rules that would otherwise have neutered it silently.
 func derivedWorkspaceRules(sb sandbox, w string, above []denylist.Rule, seen map[string]bool) []denylist.Rule {
 	var out []denylist.Rule
 	all := func() []denylist.Rule { return slices.Concat(above, out) }
-	for _, r := range sb.agentConfig[sb.resolve(w)] {
+	for _, r := range sb.projectConfig[sb.resolve(w)] {
 		// Already in force: the grant root's own entries are Workspace's.
 		inForce := slices.ContainsFunc(all(), func(a denylist.Rule) bool { return sb.resolve(a.Path) == r.Path })
 		if !inForce && !insideDirShield(sb, all(), r.Path) {
@@ -241,19 +241,20 @@ func insideDirShield(sb sandbox, rules []denylist.Rule, path string) bool {
 // thousands of mounts; past it the run is refused rather than shielded short.
 const maxNestedCheckouts = 96
 
-// maxAgentConfig bounds the agent-config entries the same walk shields. Each is one mount
+// maxProjectConfig bounds the project config entries the same walk shields. Each is one mount
 // rather than a checkout's dozen, so its bound is wider for the same reason to have one.
-const maxAgentConfig = 512
+const maxProjectConfig = 512
 
-// findNestedCheckouts walks a write grant for git checkouts below its enclosing one, by
-// name only - it never reads a .git entry's content, which is what keeps checkoutRoot's
-// decoy argument true here too. Symlinks are not followed, so the walk stays inside the
+// findWorkspaceEntries walks a write grant for git checkouts below its enclosing one and
+// for existing project config entries (denylist.ProjectConfig), by name only - it never
+// reads a .git entry's content, which is what keeps checkoutRoot's decoy argument true
+// here too. Symlinks are not followed, so the walk stays inside the
 // grant. A subtree it cannot read is one the run cannot read either, as in the alias scan,
 // so it is skipped; any other error is refused, since a walk that broke has not shown the
 // grant holds no checkout.
-func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
-	var found []string
-	var agent []denylist.Rule
+func findWorkspaceEntries(grant string) ([]string, []denylist.Rule, error) {
+	var checkouts []string
+	var config []denylist.Rule
 	err := filepath.WalkDir(grant, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if nothingBehind(err) || errors.Is(err, fs.ErrPermission) {
@@ -261,18 +262,22 @@ func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
 			}
 			return err
 		}
-		if slices.ContainsFunc(denylist.AgentConfig, func(a denylist.AgentConfigEntry) bool { return a.Name == d.Name() }) {
-			// A link's shield lands on its target, and the link itself sits in a writable
-			// directory: the run could replace it with a real entry of its own. Refused, as
-			// the same shape at a checkout root is.
+		if i := slices.IndexFunc(denylist.ProjectConfig, func(c denylist.ProjectConfigEntry) bool { return c.Name == d.Name() }); i >= 0 {
 			if d.Type()&fs.ModeSymlink != 0 {
-				return fmt.Errorf("%s is a symlink, and a write grant covers the directory holding it, so the run could replace it with config of its own; bento cannot shield a name it does not own - make it a real directory, or narrow the write grant", p)
+				// A link's shield lands on its target, and the link itself sits in a
+				// writable directory: the run could replace it with config of its own.
+				// Refused for an agent's config, as the same shape at a checkout root is;
+				// an editor's is left unshielded - see denylist.ProjectConfig.
+				if denylist.ProjectConfig[i].Agent {
+					return fmt.Errorf("%s is a symlink, and a write grant covers the directory holding it, so the run could replace it with config of its own; bento cannot shield a name it does not own - make it a real directory, or narrow the write grant", p)
+				}
+				return nil
 			}
 			// Shielded as it stands: a directory whole, whatever it holds, so the walk has
 			// nothing to find below it.
-			agent = append(agent, denylist.Rule{Path: p, Deny: denylist.DenyWrite, Dir: d.IsDir()})
-			if len(agent) > maxAgentConfig {
-				return fmt.Errorf("more than %d coding-agent config entries below the write grant %s; bento shields each one, and will not mount that many - grant the projects that need writing instead", maxAgentConfig, grant)
+			config = append(config, denylist.Rule{Path: p, Deny: denylist.DenyWrite, Dir: d.IsDir()})
+			if len(config) > maxProjectConfig {
+				return fmt.Errorf("more than %d project config entries below the write grant %s; bento shields each one, and will not mount that many - grant the projects that need writing instead", maxProjectConfig, grant)
 			}
 			if d.IsDir() {
 				return fs.SkipDir
@@ -283,8 +288,8 @@ func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
 			return nil
 		}
 		if dir := filepath.Dir(p); dir != grant {
-			found = append(found, dir)
-			if len(found) > maxNestedCheckouts {
+			checkouts = append(checkouts, dir)
+			if len(checkouts) > maxNestedCheckouts {
 				return fmt.Errorf("more than %d git checkouts below the write grant %s; bento shields each one, and will not mount that many - grant the checkouts that need writing instead", maxNestedCheckouts, grant)
 			}
 		}
@@ -294,9 +299,9 @@ func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("linux: looking for git checkouts under %s: %w", grant, err)
+		return nil, nil, fmt.Errorf("linux: walking %s for git checkouts and project config: %w", grant, err)
 	}
-	return found, agent, nil
+	return checkouts, config, nil
 }
 
 // workspaceShields is the code-execution surface of the checkout a write grant lands
@@ -376,7 +381,7 @@ func checkoutRoot(sb sandbox, dir string) string {
 // that worktree.
 //
 // Independent checkouts further down the grant are not this function's: newSandbox finds
-// them by name (findNestedCheckouts) and shieldRules gives each its own workspace shields.
+// them by name (findWorkspaceEntries) and shieldRules gives each its own workspace shields.
 //
 // Not covered, because a concrete-path deny-list cannot express them (a documented
 // residual): repos created during the run, in-tree hook runners (husky, core.hooksPath
@@ -388,7 +393,7 @@ func checkoutRoot(sb sandbox, dir string) string {
 // under a granted main checkout, dir/.git is a real directory, so the walk takes this
 // branch and dir/<wt>/.git stays writable - a run can repoint it at a gitdir it
 // fabricates elsewhere under the grant, and the developer's next git command in that
-// worktree runs those hooks. findNestedCheckouts does find such a gitfile by name and
+// worktree runs those hooks. findWorkspaceEntries does find such a gitfile by name and
 // shields it in place (WorkspaceGitfile's rules), so it cannot be repointed; what stays
 // open is only the gitdir a fabricated pointer would name, which is under the grant and
 // has to be planted during the run - the created-during-the-run residual above.

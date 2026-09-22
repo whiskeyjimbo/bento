@@ -544,3 +544,42 @@ func TestASymlinkedAgentConfigBelowTheGrantIsRefused(t *testing.T) {
 		t.Errorf("a run with a symlinked .claude below the grant was not refused; got %v", err)
 	}
 }
+
+// Editor config in a project with no .git below the grant root: .vscode/tasks.json can
+// carry a task VS Code runs when the folder opens. Shielded where it stands, as agent
+// config is. A symlinked .vscode - a shared config dir, a routine monorepo layout - is
+// left as it was rather than refusing every run on such a tree.
+func TestEditorConfigInANonGitProjectIsShielded(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "echo planted > notes/.vscode/tasks.json; echo planted > notes/.idea/workspace.xml; exit 0\n", &policy.Policy{
+		Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."},
+	})
+	dir := filepath.Dir(m)
+	for _, f := range []string{"notes/.vscode/tasks.json", "notes/.idea/workspace.xml"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "linked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../shared", filepath.Join(dir, "linked", ".vscode")); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := runCmdCapturingStderr(t, m)
+	if got := asExitError(t, err).code; got != 0 {
+		t.Fatalf("exit = %d, want 0 (a symlinked .vscode must not refuse the run):\n%s", got, stderr)
+	}
+	for _, f := range []string{"notes/.vscode/tasks.json", "notes/.idea/workspace.xml"} {
+		if b, _ := os.ReadFile(filepath.Join(dir, f)); strings.Contains(string(b), "planted") {
+			t.Errorf("%s was planted on the host through the write grant above it", f)
+		}
+	}
+}
