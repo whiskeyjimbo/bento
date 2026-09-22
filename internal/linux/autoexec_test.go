@@ -769,8 +769,9 @@ func TestAGrantWhoseWorkTreeGitCannotNameIsUnresolved(t *testing.T) {
 			gitIn(t, m, "config", "core.hooksPath", "a/hooks")
 			return []string{filepath.Join(m, ".git", "worktrees", "wt")}
 		},
-		// git answers --is-inside-git-dir false from a submodule's git directory itself,
-		// since its core.worktree is set, and true from beneath it.
+		// A grant on the git directory and one beneath it share a discovery stop, and git
+		// answers the two differently - the git directory itself carries core.worktree - so
+		// both have to land on the same verdict.
 		"submodule": func(t *testing.T, root string) []string {
 			up := filepath.Join(root, "up")
 			gitIn(t, root, "init", "-q", up)

@@ -92,8 +92,9 @@ var autoExecDirs = []string{
 // target can git init one of its own; resolving once is what answers that case too.
 // GIT_* is dropped below for the same reason
 // from the other direction - notably GIT_CONFIG_GLOBAL, which would name a global config
-// no shield covers - and `rev-parse --git-path` only reads config, so none of git's
-// config-driven exec knobs (aliases, pager, fsmonitor, textconv) fire for it.
+// no shield covers - and the two commands asked, `rev-parse --git-path` and, outside a
+// work tree, `config --get core.hooksPath`, only read config, so none of git's
+// config-driven exec knobs (aliases, pager, fsmonitor, textconv) fire for them.
 //
 // Answers outside every write grant are dropped: an absolute hooksPath into a checkout
 // the run cannot write is not a file the run can plant. The default .git/hooks is inside
