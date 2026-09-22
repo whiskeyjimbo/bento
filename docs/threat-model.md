@@ -188,11 +188,14 @@ coding-agent config entry it finds (`.vscode`, `.idea`, `.claude`, `.mcp.json`,
 with no repository still has a `.claude/settings.json` whose hooks run on the host when
 it is opened, or a `.vscode/tasks.json` that runs on folder open. A symlinked agent
 entry is refused rather than shielded (the run could replace the link itself); a
-symlinked editor directory, a routine shared-config layout, is left unshielded, with the
-editor's own workspace trust behind it. A write grant that is itself such an entry is
+symlinked editor directory, a routine shared-config layout, is left unshielded in a
+directory that is not a git checkout, with the editor's own workspace trust behind it,
+and refused inside one, where it is one of the checkout's own shields. A write grant that is itself such an entry is
 refused as one inside a shield. The cost to legitimate work is the
-enclosing checkout's already: inside the run, a directory holding a nested repo or agent config
-cannot be renamed, and `rm -rf` of it stops at the shield mounts.
+enclosing checkout's already: inside the run, a directory holding a nested repo or editor or agent
+config cannot be renamed, `rm -rf` of it stops at the shield mounts, and a tool that
+rewrites an existing `.vscode` or `.idea` below the grant - a generator, a vendoring
+step - gets a read-only file system.
 
 Four shapes stay fence residuals. Agent config the run creates where there was none -
 a new `notes/.claude/settings.json` - is as unreachable as a new repo; Claude Code

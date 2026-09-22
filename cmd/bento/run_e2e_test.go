@@ -583,3 +583,28 @@ func TestEditorConfigInANonGitProjectIsShielded(t *testing.T) {
 		}
 	}
 }
+
+// In a nested git checkout a symlinked .vscode is one of the checkout's own workspace
+// shields, and a shield binds at the link's target: the link stayed replaceable and an
+// unrelated directory went read-only. It is refused, as the same link at the grant's own
+// checkout is - the exemption for a symlinked editor dir holds only outside a checkout.
+func TestASymlinkedEditorDirInANestedCheckoutIsRefused(t *testing.T) {
+	requireSandbox(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
+	}
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}})
+	dir := filepath.Dir(m)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(dir, "repo")).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../shared", filepath.Join(dir, "repo", ".vscode")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCmd(t, m); err == nil || !strings.Contains(err.Error(), "symlinked directory component") {
+		t.Errorf("a nested checkout's symlinked .vscode was not refused; got %v", err)
+	}
+}

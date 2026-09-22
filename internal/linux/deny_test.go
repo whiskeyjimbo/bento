@@ -677,7 +677,7 @@ func TestNewSandboxRefusesAReadOnlyPathThatIsNotAFile(t *testing.T) {
 // findWorkspaceEntries finds a checkout by the NAME .git, directory or file (a linked
 // worktree or submodule working tree), never looks inside one, stays inside the grant,
 // and leaves out the grant's own checkout, which workspaceShields already anchors.
-func TestFindNestedCheckouts(t *testing.T) {
+func TestFindWorkspaceEntries(t *testing.T) {
 	grant := t.TempDir()
 	outside := t.TempDir()
 	for _, d := range []string{".git/modules/x/.git", "vendor/lib/.git", "a/b/wt", filepath.Join(outside, "repo/.git")} {
@@ -708,7 +708,7 @@ func TestFindNestedCheckouts(t *testing.T) {
 
 // A .git entry is plantable under a write grant, so the count is bounded: past it the
 // run is refused, never shielded short and never mounted thousands of times over.
-func TestFindNestedCheckoutsRefusesPastTheBound(t *testing.T) {
+func TestFindWorkspaceEntriesRefusesPastTheBound(t *testing.T) {
 	grant := t.TempDir()
 	for i := range maxNestedCheckouts + 1 {
 		if err := os.MkdirAll(filepath.Join(grant, fmt.Sprint(i), ".git"), 0o700); err != nil {
@@ -745,11 +745,11 @@ func TestNewSandboxWalksForCheckoutsOnlyWhereShieldsApply(t *testing.T) {
 	}
 }
 
-// The walk shields an agent-config entry as it stands - a directory whole - so it has
+// The walk shields a project config entry as it stands - a directory whole - so it has
 // nothing to find inside one: a worktree Claude Code keeps under a deep .claude is not a
 // checkout to shield again, and shielding it would need mount points inside a read-only
 // mount.
-func TestFindNestedCheckoutsShieldsAgentConfigWholeAndLooksNoFurther(t *testing.T) {
+func TestFindWorkspaceEntriesShieldsProjectConfigWholeAndLooksNoFurther(t *testing.T) {
 	grant := t.TempDir()
 	for _, d := range []string{"notes/.claude/worktrees/wt/.git", "notes/sub"} {
 		if err := os.MkdirAll(filepath.Join(grant, d), 0o700); err != nil {
@@ -764,16 +764,16 @@ func TestFindNestedCheckoutsShieldsAgentConfigWholeAndLooksNoFurther(t *testing.
 		t.Fatal(err)
 	}
 	if len(checkouts) != 0 {
-		t.Errorf("found checkouts %q inside an agent-config directory", checkouts)
+		t.Errorf("found checkouts %q inside a project config directory", checkouts)
 	}
 	want := map[string]bool{filepath.Join(grant, "notes/.claude"): true, filepath.Join(grant, "notes/sub/.mcp.json"): false}
 	if len(agent) != len(want) {
-		t.Fatalf("agent config %v, want %v", agent, want)
+		t.Fatalf("project config %v, want %v", agent, want)
 	}
 	for _, r := range agent {
 		dir, ok := want[r.Path]
 		if !ok || r.Dir != dir || r.Deny != denylist.DenyWrite {
-			t.Errorf("unexpected agent-config rule %+v", r)
+			t.Errorf("unexpected project config rule %+v", r)
 		}
 	}
 }

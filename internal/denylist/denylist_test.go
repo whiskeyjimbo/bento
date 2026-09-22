@@ -330,7 +330,7 @@ func TestWorkspaceShieldsEditorConfigDirs(t *testing.T) {
 // hooks, MCP servers or lint/test commands the agent runs on the host at the next session.
 // The config dirs are shielded whole, like .vscode, so no sibling (settings.local.json, a
 // hook script beside it) is left plantable.
-func TestWorkspaceShieldsAgentConfig(t *testing.T) {
+func TestWorkspaceShieldsProjectConfig(t *testing.T) {
 	byPath := make(map[string]Rule)
 	for _, r := range Workspace("/w") {
 		byPath[r.Path] = r
