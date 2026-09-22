@@ -205,7 +205,9 @@ func derivedWorkspaceRules(sb sandbox, w string, above []denylist.Rule, seen map
 	var out []denylist.Rule
 	all := func() []denylist.Rule { return slices.Concat(above, out) }
 	for _, r := range sb.agentConfig[sb.resolve(w)] {
-		if !insideDirShield(sb, all(), r.Path) {
+		// Already in force: the grant root's own entries are Workspace's.
+		inForce := slices.ContainsFunc(all(), func(a denylist.Rule) bool { return sb.resolve(a.Path) == r.Path })
+		if !inForce && !insideDirShield(sb, all(), r.Path) {
 			out = append(out, r)
 		}
 	}
@@ -260,6 +262,12 @@ func findNestedCheckouts(grant string) ([]string, []denylist.Rule, error) {
 			return err
 		}
 		if slices.ContainsFunc(denylist.AgentConfig, func(a denylist.AgentConfigEntry) bool { return a.Name == d.Name() }) {
+			// A link's shield lands on its target, and the link itself sits in a writable
+			// directory: the run could replace it with a real entry of its own. Refused, as
+			// the same shape at a checkout root is.
+			if d.Type()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("%s is a symlink, and a write grant covers the directory holding it, so the run could replace it with config of its own; bento cannot shield a name it does not own - make it a real directory, or narrow the write grant", p)
+			}
 			// Shielded as it stands: a directory whole, whatever it holds, so the walk has
 			// nothing to find below it.
 			agent = append(agent, denylist.Rule{Path: p, Deny: denylist.DenyWrite, Dir: d.IsDir()})

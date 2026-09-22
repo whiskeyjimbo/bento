@@ -522,3 +522,25 @@ func TestAWorktreeUnderADeepClaudeDoesNotBreakTheRun(t *testing.T) {
 		t.Fatalf("exit = %d, want 0:\n%s", got, stderr)
 	}
 }
+
+// A symlinked agent-config entry is a name the run can replace: the shield lands on what
+// the link points at, and the link itself sits in a writable directory. The run is refused,
+// as the same shape at the checkout root already is.
+func TestASymlinkedAgentConfigBelowTheGrantIsRefused(t *testing.T) {
+	requireSandbox(t)
+
+	m := writeRunnableManifest(t, "exit 0\n", &policy.Policy{Entrypoint: "./run.sh", Interpreter: "sh", Workdir: ".", Write: []string{"."}})
+	dir := filepath.Dir(m)
+	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../real", filepath.Join(dir, "notes", ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCmd(t, m); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("a run with a symlinked .claude below the grant was not refused; got %v", err)
+	}
+}

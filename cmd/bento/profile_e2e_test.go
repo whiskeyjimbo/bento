@@ -446,3 +446,25 @@ func TestProfileRefusesAManifestTheProfiledProgramWrote(t *testing.T) {
 		})
 	}
 }
+
+// A symlink planted where --out will be written redirects profile's write through it, so
+// the check compares the entry itself, not only the bytes behind it: absent before and a
+// dangling link after reads as absent-and-absent to anything that follows links.
+func TestProfileRefusesAnOutTheProfiledProgramRedirected(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "planted.yaml")
+	script := filepath.Join(dir, "s.sh")
+	body := "#!/bin/sh\nln -s " + victim + " \"$(dirname \"$0\")/s.sh.manifest.yaml\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := runProfileNonInteractively(t, script)
+	if err == nil || !strings.Contains(err.Error(), "changed while") {
+		t.Errorf("profile followed a link the profiled program planted at --out; want a refusal, got %v\n%s", err, stdout)
+	}
+	if _, err := os.Lstat(victim); err == nil {
+		t.Error("profile wrote a manifest outside the grant, through the planted link")
+	}
+}

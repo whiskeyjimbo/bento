@@ -777,3 +777,20 @@ func TestFindNestedCheckoutsShieldsAgentConfigWholeAndLooksNoFurther(t *testing.
 		}
 	}
 }
+
+// The walk also finds the grant root's own agent config, which Workspace already shields.
+// Emitted twice it was mounted twice: harmless to the target, but each copy spends the
+// argv the checkout bound and bubblewrap's ceiling are budgeting.
+func TestDerivedWorkspaceRulesSkipAShieldAlreadyInForce(t *testing.T) {
+	root := "/w"
+	sb := sandbox{
+		resolve:         func(p string) string { return p },
+		agentConfig:     map[string][]denylist.Rule{root: {{Path: "/w/.claude", Deny: denylist.DenyWrite, Dir: true}, {Path: "/w/notes/.mcp.json", Deny: denylist.DenyWrite}}},
+		nestedCheckouts: map[string][]string{},
+	}
+	above := denylist.Workspace(root)
+	got := derivedWorkspaceRules(sb, root, above, map[string]bool{})
+	if len(got) != 1 || got[0].Path != "/w/notes/.mcp.json" {
+		t.Errorf("derived %+v, want only /w/notes/.mcp.json - /w/.claude is already in force", got)
+	}
+}

@@ -185,8 +185,10 @@ the checkouts that need writing, not a directory full of them. The degraded tier
 applies no shields and skips the walk. The same walk shields each coding-agent config
 entry it finds (`.claude`, `.mcp.json`, `.cursor` and the rest) where it stands, in a
 git checkout or not - a project directory with no repository still has a
-`.claude/settings.json` whose hooks run on the host when it is opened. The cost to legitimate work is the
-enclosing checkout's already: inside the run, a directory holding a nested repo
+`.claude/settings.json` whose hooks run on the host when it is opened. A symlinked
+entry is refused rather than shielded (the run could replace the link itself), and a
+write grant that is itself such an entry is refused as one inside a shield. The cost to legitimate work is the
+enclosing checkout's already: inside the run, a directory holding a nested repo or agent config
 cannot be renamed, and `rm -rf` of it stops at the shield mounts.
 
 Four shapes stay fence residuals. Agent config the run creates where there was none -

@@ -1897,26 +1897,34 @@ func union(a, b []string) []string {
 // mergeExisting reads the file after the run, so without this a grant the program
 // appended, or a whole manifest it wrote where there was none, would be merged and shown
 // as kept from the existing manifest: the author's own words, as the reviewer reads them.
+//
+// The entry is compared as well as the bytes: the write follows a link at --out, so a
+// link the program planted - even a dangling one, which reads as absent - would carry the
+// manifest wherever it points.
 type outSnapshot struct {
 	path    string
 	content []byte
 	absent  bool
+	link    string
 }
 
 func snapshotOut(path string) outSnapshot {
 	b, err := os.ReadFile(path)
-	return outSnapshot{path: path, content: b, absent: errors.Is(err, fs.ErrNotExist)}
+	link, _ := os.Readlink(path)
+	return outSnapshot{path: path, content: b, absent: errors.Is(err, fs.ErrNotExist), link: link}
 }
 
 // unchanged refuses a --out the profiled program created or rewrote. A read error either
 // side counts as changed: the merge would otherwise run on a file nobody vouched for.
 func (s outSnapshot) unchanged() error {
 	b, err := os.ReadFile(s.path)
+	link, _ := os.Readlink(s.path)
 	absent := errors.Is(err, fs.ErrNotExist)
-	if absent && s.absent {
+	switch {
+	case link != s.link:
+	case absent && s.absent:
 		return nil
-	}
-	if err == nil && !s.absent && bytes.Equal(b, s.content) {
+	case err == nil && !s.absent && bytes.Equal(b, s.content):
 		return nil
 	}
 	return fmt.Errorf("refusing to merge: %s changed while the profiled program ran, so its content is not a manifest anyone wrote - "+
