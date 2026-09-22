@@ -189,3 +189,22 @@ func TestTheAliasScanResolvesAsTheShieldSetDoes(t *testing.T) {
 		t.Error("the scan did not anchor on the store where the shield set's FS puts it")
 	}
 }
+
+// aliasBudget's rationale is a cost per entry, so what holds it is a count: Check's scan
+// stops at aliasBudget entries however large the tree, and says which grant it cut short.
+// The walks' own tests hand them an allowance; this is the one that pins the allowance
+// Check hands them.
+func TestCheckStopsItsScanAtAliasBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a tree larger than aliasBudget")
+	}
+	root, _ := budgetHome(t)
+	big := filepath.Join(root, "cache")
+	for i := range aliasBudget/1000 + 1 {
+		fill(t, filepath.Join(big, fmt.Sprint(i)), 1000)
+	}
+	_, short, partial := credentialAliases(hostSet(t), []string{big}, nil)
+	if !partial || !slices.Equal(short, []string{big}) {
+		t.Errorf("a tree of %d entries under a %d-entry budget must come back partial with the grant named; got %v (partial %v)", (aliasBudget/1000+1)*1001, aliasBudget, short, partial)
+	}
+}
