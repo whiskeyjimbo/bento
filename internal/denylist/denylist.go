@@ -1704,8 +1704,9 @@ func Relocated(defaults []Rule, anchors []string) []Rule {
 // in the Home table, which grows with every credential class added.
 //
 // It rests on rule paths being clean, which Index already requires of every rule this
-// package builds. The walk stops short of the root: a prefix test against "/"+"/" never
-// matched, and a DenyAll on the root is not a rule Shieldable lets through.
+// package builds, and on the paths asked about being clean, which every Relocated emit
+// site's Join or Clean makes them. The walk stops short of the root: no DenyAll rule sits
+// there, since Home's are anchor-relative and every relocated one passes Shieldable.
 type denyAllTrees struct {
 	// at holds every DenyAll rule's own path; dirs the directory rules among them, the only
 	// kind that reaches below itself.

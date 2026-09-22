@@ -105,10 +105,32 @@ func TestRelocatedScalesLinearlyInTheDefaults(t *testing.T) {
 		}
 		return best
 	}
-	small, large := fastest(defaults(400)), fastest(defaults(4000))
-	t.Logf("400 defaults %v, 4000 defaults %v", small, large)
+	// Large enough that the small side is not dominated by map growth and GC pacing, which
+	// at a few hundred defaults moved the ratio anywhere from 11x to 30x on an idle host.
+	small, large := fastest(defaults(2000)), fastest(defaults(20000))
+	t.Logf("2000 defaults %v, 20000 defaults %v", small, large)
 	if ratio := float64(large) / float64(small); ratio > 30 {
 		t.Errorf("ten times the defaults cost %.0fx the time (%v -> %v); a screen linear in them costs about 10x", ratio, small, large)
+	}
+}
+
+// covered() has to see what Relocated has already emitted, not only the defaults: two file
+// variables naming one target would otherwise both emit it, and the enclosure sweep at the
+// end drops only rules INSIDE a DenyAll tree, never one equal to another.
+func TestRelocatedScreensAgainstWhatItAlreadyEmitted(t *testing.T) {
+	for _, e := range relocationEnvs() {
+		t.Setenv(e, "")
+	}
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/x/creds")
+	t.Setenv("AWS_CONFIG_FILE", "/x/creds")
+	var at []Rule
+	for _, r := range Relocated(Home("/home/u"), []string{"/home/u"}) {
+		if r.Path == "/x/creds" {
+			at = append(at, r)
+		}
+	}
+	if len(at) != 1 {
+		t.Errorf("two variables naming one target emitted %d rules there, want 1: %+v", len(at), at)
 	}
 }
 
