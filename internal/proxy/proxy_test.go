@@ -1370,6 +1370,28 @@ func TestGateAdmissionCarriesNoLiteralGrant(t *testing.T) {
 	}
 }
 
+// literalGrantFor runs on every allowlisted CONNECT, and re-parsing each rule host there
+// allocated once per hostname rule on an IP-literal target. The literal rules are parsed
+// once in New; a hostname target with no literal rule to match skips the parse entirely.
+func TestLiteralGrantDoesNotReparseRules(t *testing.T) {
+	rules := make([]policy.NetworkRule, 0, 2000)
+	for i := range 1999 {
+		rules = append(rules, policy.NetworkRule{Host: fmt.Sprintf("host-%d.example.com", i), Port: "443"})
+	}
+	p := New(append(rules, policy.NetworkRule{Host: "10.0.0.5", Port: "443"}))
+	if p.literalGrantFor("10.0.0.5", "443") == nil {
+		t.Fatal("the literal's own rule must grant it")
+	}
+	// The one allocation left is parsing the target itself.
+	if n := testing.AllocsPerRun(20, func() { p.literalGrantFor("10.0.0.5", "443") }); n > 1 {
+		t.Errorf("literalGrantFor over %d rules allocated %v times, want <= 1", len(rules)+1, n)
+	}
+	hostOnly := New(rules)
+	if n := testing.AllocsPerRun(20, func() { hostOnly.literalGrantFor("host-1.example.com", "443") }); n != 0 {
+		t.Errorf("literalGrantFor with no literal rules allocated %v times on a hostname target, want 0", n)
+	}
+}
+
 // An IPv6 zone id makes net.ParseIP return nil; the guard must strip it and
 // classify the underlying address rather than fail open. The mapped-IPv4 form
 // reaches the IPv4 cloud-metadata endpoint and host loopback (the kernel dials

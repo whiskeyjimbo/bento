@@ -167,6 +167,10 @@ func (d Decision) GuardRefused() bool {
 type Proxy struct {
 	rules []policy.NetworkRule
 
+	// literalRules is the subset of rules whose host is an IP literal, parsed once in
+	// New so literalGrantFor does not re-parse every rule on every CONNECT.
+	literalRules []literalRule
+
 	// dial opens the upstream connection. It is a seam so tests can supply a fake
 	// upstream without real network access; production uses net.Dialer.
 	dial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -330,6 +334,11 @@ func WithoutEgress() Option {
 // New returns a proxy that permits only the given rules.
 func New(rules []policy.NetworkRule, opts ...Option) *Proxy {
 	p := &Proxy{rules: rules}
+	for _, r := range rules {
+		if ip := net.ParseIP(r.Host); ip != nil {
+			p.literalRules = append(p.literalRules, literalRule{ip: ip, port: r.Port})
+		}
+	}
 	// ControlContext fires just before each upstream connect with the resolved
 	// address, so the allowlisted-name-resolves-to-internal-IP hole is closed
 	// against the actual IP being dialed, with no separate resolve step to race.
@@ -571,6 +580,9 @@ func literalGrantOf(ctx context.Context) net.IP {
 // hostname rule matching a literal target grants nothing: the exemption is for a
 // rule that deliberately names the address.
 func (p *Proxy) literalGrantFor(host, port string) net.IP {
+	if len(p.literalRules) == 0 {
+		return nil
+	}
 	// Strip an IPv6 zone id, as guardUpstream does, so the two layers agree on the
 	// address a zoned literal names rather than diverging on the spelling.
 	if i := strings.IndexByte(host, '%'); i >= 0 {
@@ -580,12 +592,18 @@ func (p *Proxy) literalGrantFor(host, port string) net.IP {
 	if ip == nil {
 		return nil
 	}
-	for _, r := range p.rules {
-		if rip := net.ParseIP(r.Host); rip != nil && rip.Equal(ip) && policy.PortMatches(r.Port, port) {
+	for _, r := range p.literalRules {
+		if r.ip.Equal(ip) && policy.PortMatches(r.port, port) {
 			return ip
 		}
 	}
 	return nil
+}
+
+// literalRule is a rule naming an IP literal, with its address already parsed.
+type literalRule struct {
+	ip   net.IP
+	port string
 }
 
 // ipClass groups a resolved address by how the egress guard treats it.
