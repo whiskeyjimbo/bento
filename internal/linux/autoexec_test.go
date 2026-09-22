@@ -655,14 +655,14 @@ func TestHookRunnerDirsAgreesWithGitPerGrant(t *testing.T) {
 				t.Fatal(err)
 			}
 			gitIn(t, m, "init", "-q")
-			gitIn(t, m, "commit", "-q", "--allow-empty", "-m", "init")
+			gitIn(t, m, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
 			gitIn(t, m, "worktree", "add", "-q", filepath.Join(root, "wt"))
 			return mkdirs(t, root, ".", "x", "wt/sub")
 		}},
 		"submodule": {2, func(t *testing.T, root string) []string {
 			upstream := t.TempDir()
 			gitIn(t, upstream, "init", "-q")
-			gitIn(t, upstream, "commit", "-q", "--allow-empty", "-m", "init")
+			gitIn(t, upstream, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init")
 			gitIn(t, root, "init", "-q")
 			gitIn(t, root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
 			return mkdirs(t, root, ".", "x", "sub/d")
