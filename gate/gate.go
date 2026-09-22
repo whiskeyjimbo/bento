@@ -729,8 +729,12 @@ func ShieldCarveProblems(set shield.Set, reads, writes []string) []string {
 		// A nonexistent one is shielded only where a write grant could otherwise create
 		// it, which is also what makes its parent a read-write bind - so reachability
 		// from the writes is the whole of shieldNeeded that survives here, the
-		// grant-reachability half being implied by it.
-		if _, err := os.Stat(mount); err == nil || !reachableFrom(mount, resolved) {
+		// grant-reachability half being implied by it. Reachability first: it is pure, and
+		// most rules are reached by no grant, so the stat is paid only where it can matter.
+		if !reachableFrom(mount, resolved) {
+			continue
+		}
+		if _, err := os.Stat(mount); err == nil {
 			continue
 		}
 		// An exact opt-in read grant wins over a DenyAll shield, so no mount point is

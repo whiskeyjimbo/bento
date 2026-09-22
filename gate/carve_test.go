@@ -96,3 +96,23 @@ func TestTheDerivedHalfOfTheCarveCheckIsReportedUnknown(t *testing.T) {
 		}
 	}
 }
+
+// The carve check stats a mount point only where a write grant reaches it: reachability is
+// pure, and on a real host almost no rule is reached by any one grant, so statting first
+// paid a syscall per rule - ~545 per call on validate's path - to answer nothing. A stat
+// allocates, so a check that stats every rule allocates at least once per rule.
+func TestShieldCarveProblemsStatsOnlyReachedMountPoints(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	set := hostShieldSet(t)
+	mounts := len(set.Mount(set.Rules()))
+	if mounts < 100 {
+		t.Fatalf("only %d mount points: too few for the per-rule cost to stand out from the fixed one", mounts)
+	}
+	// A sibling of the home, so no rule sits under the grant or above it.
+	writes := []string{t.TempDir()}
+
+	allocs := testing.AllocsPerRun(10, func() { gate.ShieldCarveProblems(set, nil, writes) })
+	if allocs >= float64(mounts) {
+		t.Errorf("ShieldCarveProblems allocated %v times over %d mount points no grant reaches; it is paying a stat per rule before asking whether any grant reaches it", allocs, mounts)
+	}
+}
