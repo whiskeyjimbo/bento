@@ -364,6 +364,8 @@ func TestValidateRejectsANewlineInEveryFingerprintedString(t *testing.T) {
 			for i := 0; i < v.NumField(); i++ {
 				visit(join(name, v.Type().Field(i).Name), v.Field(i), each)
 			}
+		default:
+			// Numbers and bools carry no newline, so there is nothing to forge with.
 		}
 	}
 	var names []string
