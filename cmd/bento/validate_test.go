@@ -931,6 +931,18 @@ func TestValidateShowsInterpreterArgs(t *testing.T) {
 	}
 }
 
+// With no interpreter the entrypoint is executed directly, which covers a #! script as
+// much as a compiled binary; calling every such entrypoint a binary is false for the
+// commonest one and undercuts the lines around it.
+func TestValidateDoesNotCallAnUninterpretedEntrypointABinary(t *testing.T) {
+	var buf strings.Builder
+	writePolicySummary(&buf, "m.yaml", &policy.Policy{Entrypoint: "./build.sh"}, nil, gate.RefusalSet{}, nil, true)
+	out := buf.String()
+	if strings.Contains(out, "compiled binary") || !strings.Contains(out, "executed directly") {
+		t.Errorf("the interpreter line must say the entrypoint is executed directly; got:\n%s", out)
+	}
+}
+
 // A fleet approves one manifest per agent class and reuses it in every worktree, which
 // holds only while every path anchors to the manifest's own directory. --relocatable is
 // what checks it, and the check must read the manifest as written: the resolved policy

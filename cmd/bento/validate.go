@@ -973,7 +973,7 @@ func writePolicySummary(w io.Writer, path string, p, resolved *policy.Policy, re
 			fmt.Fprintf(w, "  args passed to the interpreter, before the entrypoint: %s\n", quotedList(p.InterpreterArgs))
 		}
 	} else {
-		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is a compiled binary)\n")
+		fmt.Fprintf(w, "interpreter:  (none - the entrypoint is executed directly; a #! line, if it has one, names its interpreter)\n")
 	}
 	// Only when set: an absent workdir means the entrypoint's own directory, which every
 	// manifest written before the key got, and a line saying so on every manifest would

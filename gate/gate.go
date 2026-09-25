@@ -170,7 +170,8 @@ func CheckAgainst(set shield.Set, refused RefusalSet, resolved *policy.Policy) R
 	if _, err := os.Stat(resolved.Entrypoint); err != nil {
 		r.Problems = append(r.Problems, fmt.Sprintf("entrypoint %q: %v", resolved.Entrypoint, err))
 	}
-	// An empty interpreter means the entrypoint runs itself: a compiled binary. LookPath
+	// An empty interpreter means the entrypoint is executed directly - a compiled binary, or
+	// a script whose #! line the kernel follows. LookPath
 	// covers both spellings the backend accepts - a bare name searched on PATH, and a
 	// path checked where it points.
 	if resolved.Interpreter != "" {
