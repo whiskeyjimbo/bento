@@ -279,7 +279,7 @@ func TestRunReportsTheAutoExecFilesTheTargetChanged(t *testing.T) {
 	}
 }
 
-// bwrap leaves a shield mount point on the host for a .git the grant did not have, and
+// A run leaves a .git on the host above the hooks shield for a grant that had none, and
 // the checkout search counts any .git as a checkout it could not read. So the compare
 // must run after the mount points are reclaimed, or every shielded run over a plain
 // directory reports that directory unresolved.

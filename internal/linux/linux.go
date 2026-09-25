@@ -331,9 +331,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// ran to completion for, and a late cancel does not unmake that.
 	// Stamped once for every arm below: the target has finished on all of them, so the
 	// answer is the same whichever one returns.
-	// After the reclaim: a mount point bwrap left for an absent .git reads to the checkout
-	// search as a checkout git would not read, so a plain directory would come back
-	// unresolved. One the target filled is kept by the reclaim and still counts.
+	// After the reclaim: the .git made to hold the hooks shield for a grant without one reads
+	// to the checkout search as a checkout git would not read, so a plain directory would come
+	// back unresolved. One the target filled is kept by the reclaim and still counts.
 	reclaimShields()
 	changedAuto, redirected, unresolvedHooks := autoExecBefore.changed(preflight.writes)
 
