@@ -182,7 +182,7 @@ func newRunCmd() *cobra.Command {
 				// re-stamp a widened policy for its next run.
 				ReadOnlyPaths: []string{mt.RealPath},
 			})
-			return writeRunResult(os.Stderr, asJSON, mt.RealPath, p, env, res, &notes, stream, err)
+			return writeRunResult(os.Stderr, asJSON, args[0], p, env, res, &notes, stream, err)
 		},
 	}
 

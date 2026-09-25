@@ -2202,15 +2202,21 @@ func TestProfileHintsReproduceTheRun(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "src", "build.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	written := &policy.Policy{Entrypoint: "./src/build.sh", Args: []string{"-c"}, ExtraArgs: true, Workdir: ".", Exec: policy.ExecAll}
+	written := &policy.Policy{Entrypoint: "./src/build.sh", Interpreter: "/bin/bash", Args: []string{"-c"}, ExtraArgs: true, Workdir: ".", Exec: policy.ExecAll}
 	data, err := manifest.Marshal(written, manifest.Provenance{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "build.manifest.yaml")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "build.manifest.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Reached through a symlinked directory, the way a worktree or ~/bin link is: the run
+	// resolves the entrypoint through the name it was given, so the hint must too.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(link, "build.manifest.yaml")
 	doc, _, err := loadDocument(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2255,6 +2261,9 @@ func TestProfileHintsReproduceTheRun(t *testing.T) {
 			out, _ := cmd.Flags().GetString("out")
 			network, _ := cmd.Flags().GetBool("allow-network")
 			target := cmd.Flags().Args()
+			if interp, _ := cmd.Flags().GetString("interpreter"); interp != p.Interpreter {
+				t.Errorf("profile must keep the manifest's interpreter %q, got %q from: %s", p.Interpreter, interp, line)
+			}
 			if out != path || network != tc.allowNetwork {
 				t.Errorf("want --out %q and --allow-network=%v, got %q and %v from: %s", path, tc.allowNetwork, out, network, line)
 			}
@@ -2262,8 +2271,8 @@ func TestProfileHintsReproduceTheRun(t *testing.T) {
 				t.Errorf("profile would run %q, not the failed run %q, from: %s", target, want, line)
 			}
 			existing, err := existingForMerge(out, target[0])
-			if err != nil || existing == nil || existing.Workdir != dir {
-				t.Errorf("profile must merge into the manifest and start in its workdir %q; got %+v, %v", dir, existing, err)
+			if err != nil || existing == nil || existing.Workdir != link {
+				t.Errorf("profile must merge into the manifest and start in its workdir %q; got %+v, %v", link, existing, err)
 			}
 		})
 	}

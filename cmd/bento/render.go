@@ -991,7 +991,9 @@ func writeProfileHint(w io.Writer, profileCmd string, p *policy.Policy, res enfo
 
 // profileCommand is the profile invocation that reproduces a run of the manifest at
 // manifestPath: its entrypoint with its own args and the run's extra args, and --out
-// naming the manifest. --out is what makes profile start in the manifest's workdir and
+// naming the manifest by the name the run resolved it through, since profile resolves the
+// entrypoint the same way and refuses a manifest whose entrypoint it spells differently.
+// --out is what makes profile start in the manifest's workdir and
 // merge into the file the user runs; without it profile writes a second manifest beside
 // the entrypoint, which for a system binary is a directory the user cannot write.
 //
@@ -1009,6 +1011,11 @@ func profileCommand(manifestPath string, p *policy.Policy, extra []string, allow
 	words := []string{"bento", "profile", "--out", quote(manifestPath)}
 	if allowNetwork {
 		words = append(words, "--allow-network")
+	}
+	// Pinned, or profile guesses from the shebang and the merge replaces the manifest's
+	// interpreter with the guess.
+	if p.Interpreter != "" {
+		words = append(words, "--interpreter", quote(p.Interpreter))
 	}
 	words = append(words, "--", quote(p.Entrypoint))
 	for _, a := range slices.Concat(p.Args, extra) {
