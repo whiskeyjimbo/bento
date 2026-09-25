@@ -169,6 +169,34 @@ func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 	}
 }
 
+// The hook takes no --allow-unapproved, so a deny naming it sends the operator to a flag
+// that makes every later call a misconfiguration deny. Both refusals must point at approve
+// and at nothing the hook rejects.
+func TestHookApprovalDenyNamesNoFlagTheHookRejects(t *testing.T) {
+	edited := agentPolicy()
+	edited.Exec = policy.ExecNone
+	data, err := manifest.Marshal(edited, manifest.Provenance{Approves: agentPolicy().Fingerprint()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := os.WriteFile(stale, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, m := range map[string]string{"stale": stale, "unstamped": writeAgentManifest(t, agentPolicy(), false)} {
+		t.Run(name, func(t *testing.T) {
+			r, raw := runHook(t, m, `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`, false)
+			reason := r.HookSpecificOutput.PermissionDecisionReason
+			if r.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(reason, "bento approve") {
+				t.Fatalf("want a deny pointing at bento approve, got %s", raw)
+			}
+			if strings.Contains(reason, "--allow-unapproved") {
+				t.Errorf("the hook rejects --allow-unapproved, so its deny must not offer it: %q", reason)
+			}
+		})
+	}
+}
+
 // A hook configured without its manifest must still answer. Failing as a usage error
 // exits non-zero, which Claude Code treats as non-blocking - the original command then
 // runs unconfined, from a settings file that looks like it sandboxes everything.

@@ -143,7 +143,7 @@ var hookManifestCheck = func(abs string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireApproval(doc, false); err != nil {
+	if err := approvalRefusal(doc); err != nil {
 		return err
 	}
 	if !doc.Policy.ExtraArgs {

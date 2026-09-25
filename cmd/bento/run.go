@@ -765,18 +765,28 @@ func requireApproval(doc *manifest.Document, allow bool) error {
 	if allow {
 		return nil
 	}
+	if err := approvalRefusal(doc); err != nil {
+		return fmt.Errorf("%w, or pass --allow-unapproved", err)
+	}
+	return nil
+}
+
+// approvalRefusal is requireApproval without the bypass, for the hook: it has no
+// --allow-unapproved, so a reason offering one sends the operator to a flag that turns
+// every later call into a misconfiguration deny.
+func approvalRefusal(doc *manifest.Document) error {
 	switch trust.CheckApproval(doc) {
 	case trust.ApprovalCurrent:
 		return nil
 	case trust.ApprovalStale:
 		return fmt.Errorf("refusing to run: the manifest's permissions changed since it was approved; %s - "+
-			"re-review it there, or pass --allow-unapproved", noStampDiff)
+			"re-review it there", noStampDiff)
 	case trust.ApprovalUnstamped:
 	}
 	// Unstamped, and the state the enum does not name yet: refused, so a value added to
 	// trust.ApprovalState cannot open a run - strictApprovalError already lands that way round.
-	return fmt.Errorf("refusing to run: the manifest is not approved; " +
-		"review it and run `bento approve`, or pass --allow-unapproved")
+	return errors.New("refusing to run: the manifest is not approved; " +
+		"review it and run `bento approve`")
 }
 
 func parseEnvFlags(flags []string) (map[string]string, error) {
