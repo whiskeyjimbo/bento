@@ -858,3 +858,56 @@ func mkdirs(t *testing.T, root string, paths ...string) []string {
 	}
 	return out
 }
+
+// A checkout nested below a grant is a project of its own, and its hooks, .husky and
+// package.json run on the host exactly as the grant root's do.
+func TestNestedCheckoutAutoExecIsReported(t *testing.T) {
+	root := resolved(t.TempDir())
+	gitIn(t, root, "init", "-q")
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, inner, "init", "-q")
+	gitIn(t, inner, "config", "core.hooksPath", "hk")
+	paths := []string{"hk/pre-commit", ".husky/pre-commit", "package.json"}
+	for _, p := range paths {
+		writeFile(t, filepath.Join(inner, p), "a")
+	}
+	b := baselineAutoExec([]string{root})
+	time.Sleep(10 * time.Millisecond)
+	for _, p := range paths {
+		writeFile(t, filepath.Join(inner, p), "changed")
+	}
+	changed, _, _ := b.changed([]string{root})
+	for _, p := range paths {
+		if !slices.Contains(changed, filepath.Join(inner, p)) {
+			t.Errorf("nested %s not reported; changed = %v", p, changed)
+		}
+	}
+}
+
+// A file .git/config includes is config by another name, so setting core.fsmonitor in it
+// runs a command on the host at the next git status.
+func TestIncludedGitConfigIsReported(t *testing.T) {
+	root := resolved(t.TempDir())
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "config", "include.path", "../.gitconfig.local")
+	inc := filepath.Join(root, ".gitconfig.local")
+	writeFile(t, inc, "")
+	b := baselineAutoExec([]string{root})
+	writeFile(t, inc, "[core]\n\tfsmonitor = /tmp/evil\n")
+	if changed, _, _ := b.changed([]string{root}); !slices.Contains(changed, inc) {
+		t.Errorf("changed = %v; core.fsmonitor set through the included %s was not reported", changed, inc)
+	}
+}
+
+func writeFile(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

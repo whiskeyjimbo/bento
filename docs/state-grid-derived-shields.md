@@ -86,9 +86,9 @@ Per-cell test: is every executed path either shielded (S) or reported (R)? Neith
 | H11 | HANDLED | S: WorkspaceGitfile shields the gitfile denylist.go:1960; gitdir (config.worktree) outside grant | VERIFIED BY READING |
 | H12 | HANDLED | R: bare join autoexec.go:143; gitDirShields not applicable (no `.git`) - **but** a bare repo as a write grant has its `hooks/` and `config` writable and only reported, not shielded; allowed by the report arm | VERIFIED BY READING |
 | H13 | HANDLED | S: derivedWorkspaceRules shields.go:277-285 gives the nested checkout Workspace rules | VERIFIED BY READING |
-| **H14** | **UNHANDLED** | nested checkout's in-tree core.hooksPath dir: not shielded (shields.go:436 residual) AND not reported - hookRunnerDirs autoexec.go:411 asks git only from each grant, never from nestedCheckouts, so the nested repo's hooks dir is never stamped | **VERIFIED BY SPIKE** |
-| **H15** | **UNHANDLED** | nested `.husky/` (autoExecDirs) and nested `package.json` etc. (autoExecNames): snapshotAutoExec autoexec.go:354-361 stamps only at each grant root | **VERIFIED BY SPIKE** |
-| **H16** | **UNHANDLED** | in-tree file named by `include.path` in the shielded `.git/config`: neither shielded (denylist.go:1880 lists only fixed names) nor stamped. Spike: run writes `core.fsmonitor` there, git honours it, changed and redirected both empty. A core.hooksPath written there would at least surface as `redirected`; fsmonitor / sshCommand / pager / alias do not | **VERIFIED BY SPIKE** |
+| **H14** | **HANDLED** (bv2-fzujr: nested checkouts are roots in baselineAutoExec) | nested checkout's in-tree core.hooksPath dir: not shielded (shields.go:436 residual) AND not reported - hookRunnerDirs autoexec.go:411 asks git only from each grant, never from nestedCheckouts, so the nested repo's hooks dir is never stamped | **VERIFIED BY SPIKE** |
+| **H15** | **HANDLED** (bv2-mhiqa: nested checkouts are roots in baselineAutoExec) | nested `.husky/` (autoExecDirs) and nested `package.json` etc. (autoExecNames): snapshotAutoExec autoexec.go:354-361 stamps only at each grant root | **VERIFIED BY SPIKE** |
+| **H16** | **HANDLED** (bv2-w7o5l: includeTargets stamps include targets under a write grant) | in-tree file named by `include.path` in the shielded `.git/config`: neither shielded (denylist.go:1880 lists only fixed names) nor stamped. Spike: run writes `core.fsmonitor` there, git honours it, changed and redirected both empty. A core.hooksPath written there would at least surface as `redirected`; fsmonitor / sshCommand / pager / alias do not | **VERIFIED BY SPIKE** |
 | H17 | HANDLED | ~/.gitconfig covered by the Home denylist (autoexec.go:95-96 note); hooks dir it names under a grant is reported like H7 | VERIFIED BY READING |
 | H18 | HANDLED | redirectedHooks autoexec.go:464; TestHooksInARunCreatedRepoAreReported | VERIFIED BY READING |
 | H19 | HANDLED (report arm) | TestDegradedRunReportsTheAutoExecFilesTheTargetChanged; the degraded tier shields nothing, and redirection is named | VERIFIED BY READING |
@@ -111,7 +111,7 @@ Per-cell test: is every executed path either shielded (S) or reported (R)? Neith
 | **E10** | **UNHANDLED (documented for subdirs)** | package.json / conftest.py / build.rs below the grant root are not stamped (autoexec.go:55-58 "a recursive walk ... is what this deliberately is not"). For a NESTED CHECKOUT root this is H15 and not covered by that rationale, since nestedCheckouts is already a list bento walks | VERIFIED BY SPIKE (nested) / READING (subdir) |
 | E11 | HANDLED | nested checkout gets full Workspace incl. absent ProjectConfig shields.go:283 | VERIFIED BY READING |
 
-Counts: HANDLED 26, UNHANDLED 6 (H14, H15, H16 undocumented; E4, E5, E10-subdir documented), WRONG 0, IMPOSSIBLE 0.
+Counts: HANDLED 29, UNHANDLED 3 (E4, E5, E10-subdir documented), WRONG 0, IMPOSSIBLE 0.
 
 ## Re-open pass
 

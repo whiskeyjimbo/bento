@@ -55,7 +55,9 @@ var autoExecNames = []string{
 // The directories under a write grant whose every entry auto-executes, so no fixed name
 // reaches them. Each is listed one level deep, and a subdirectory that holds more of the
 // same is named in its own right rather than walked - a recursive walk of a grant is what
-// this deliberately is not.
+// this deliberately is not. The one walk the report does make is the one the shields
+// already make, for the git checkouts nested below a grant: each is a root of its own here,
+// with its own names, directories and hook directory - see nestedCheckoutRoots.
 //
 // The .husky names stay even though hookRunnerDir resolves core.hooksPath: husky's
 // directory is committed, and a clone whose `npm install` has not run yet has the hooks
@@ -92,9 +94,10 @@ var autoExecDirs = []string{
 // target can git init one of its own; resolving once is what answers that case too.
 // GIT_* is dropped below for the same reason
 // from the other direction - notably GIT_CONFIG_GLOBAL, which would name a global config
-// no shield covers - and the two commands asked, `rev-parse --git-path` and, outside a
-// work tree, `config --get core.hooksPath`, only read config, so none of git's
-// config-driven exec knobs (aliases, pager, fsmonitor, textconv) fire for them.
+// no shield covers - and the commands asked, `rev-parse --git-path`, outside a work tree
+// `config --get core.hooksPath`, and includeTargets' `config --get-regexp`, only read
+// config, so none of git's config-driven exec knobs (aliases, pager, fsmonitor, textconv)
+// fire for them.
 //
 // Answers outside every write grant are dropped: an absolute hooksPath into a checkout
 // the run cannot write is not a file the run can plant. The default .git/hooks is inside
@@ -180,13 +183,21 @@ func hookRunnerDir(grant string, resolvedWrites []string) (string, error) {
 		}
 	}
 	dir = resolved(dir)
-	for _, w := range resolvedWrites {
-		rel, err := filepath.Rel(w, dir)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
-			return dir, nil
-		}
+	if underAny(dir, resolvedWrites) {
+		return dir, nil
 	}
 	return "", nil
+}
+
+// underAny says whether the resolved path p is at or below one of the resolved grants.
+func underAny(p string, resolvedWrites []string) bool {
+	for _, w := range resolvedWrites {
+		rel, err := filepath.Rel(w, p)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return true
+		}
+	}
+	return false
 }
 
 // gitHooksAnswer is what git reports from one directory: its hooks path as git spells it
@@ -297,9 +308,14 @@ type autoExecState map[string]string
 // there as newly created - noise in a hint the operator is told to read, which is how a
 // hint stops being read. So the answer is taken once, before the target runs, and the
 // after-snapshot walks that.
+//
+// nested and includes are fixed the same way, for the same reason: a run that could add a
+// checkout or an include directive would otherwise choose what the after-snapshot stamps.
 type autoExecBaseline struct {
 	state      autoExecState
 	hooks      []string
+	nested     []string
+	includes   []string
 	unresolved []string
 }
 
@@ -310,7 +326,8 @@ type autoExecBaseline struct {
 // different claims - one is a file this run wrote, the other a directory it may never have
 // touched - and a caller with one flat list can only word them alike.
 func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresolved []string) {
-	after, afterUnresolved := hookRunnerDirs(writes)
+	roots := append(slices.Clone(writes), b.nested...)
+	after, afterUnresolved := hookRunnerDirs(roots)
 	redirected = redirectedHooks(b.hooks, after)
 	slices.Sort(redirected)
 	// Either side's failure makes the redirect answer short: a grant unresolvable before
@@ -324,7 +341,7 @@ func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresol
 	// so a grant whose mount died during the run otherwise hangs Run forever with no
 	// output - the same total failure the baseline is wrapped against on both tiers.
 	state, err := bounded("the auto-exec snapshot of the write grants", func() (autoExecState, error) {
-		return snapshotAutoExec(writes, b.hooks), nil
+		return snapshotAutoExec(roots, b.hooks, b.includes), nil
 	})
 	if err != nil {
 		// An expired snapshot is empty, and comparing an empty one against the baseline
@@ -350,9 +367,10 @@ var autoExecStat = os.Stat
 // not have changed in a way the comparison would see, and a report is a hint - failing a
 // run over it would trade a fence's cost for a hint's benefit.
 //
-// hooks are the hook directories to stamp, which only the baseline discovers; every later
-// snapshot is handed the baseline's answer.
-func snapshotAutoExec(writes, hooks []string) autoExecState {
+// hooks are the hook directories to stamp and includes the config files git reads through
+// include directives, which only the baseline discovers; every later snapshot is handed the
+// baseline's answer.
+func snapshotAutoExec(writes, hooks, includes []string) autoExecState {
 	state := autoExecState{}
 	stamp := func(p string) {
 		if fi, err := autoExecStat(p); err == nil && fi.Mode().IsRegular() {
@@ -379,14 +397,129 @@ func snapshotAutoExec(writes, hooks []string) autoExecState {
 	for _, h := range hooks {
 		stampDir(h)
 	}
+	for _, p := range includes {
+		stamp(p)
+	}
 	return state
 }
 
 // baselineAutoExec is the preflight snapshot: the one that resolves core.hooksPath, per
 // grant, and keeps the answer for every snapshot after it.
 func baselineAutoExec(writes []string) autoExecBaseline {
-	hooks, unresolved := hookRunnerDirs(writes)
-	return autoExecBaseline{state: snapshotAutoExec(writes, hooks), hooks: hooks, unresolved: unresolved}
+	nested, unresolved := nestedCheckoutRoots(writes)
+	hooks, hooksUnresolved := hookRunnerDirs(append(slices.Clone(writes), nested...))
+	includes, includesUnresolved := includeTargets(append(slices.Clone(writes), nested...))
+	unresolved = append(append(unresolved, hooksUnresolved...), includesUnresolved...)
+	return autoExecBaseline{
+		state:      snapshotAutoExec(append(slices.Clone(writes), nested...), hooks, includes),
+		hooks:      hooks,
+		nested:     nested,
+		includes:   includes,
+		unresolved: unresolved,
+	}
+}
+
+// nestedCheckoutRoots is every git checkout below a write grant. A nested checkout is a
+// project of its own, with its own package.json, .husky and core.hooksPath, so each is
+// treated as a root the way a grant is. The list is the one the shields walk for, bounded
+// the same way by maxNestedCheckouts.
+//
+// A grant whose walk fails or expires is unresolved rather than refused: this is a report,
+// and the shields' own walk is what refuses a grant it cannot bound.
+//
+// ponytail: on the shielded tier this repeats the walk that fills sb.nestedCheckouts;
+// hand that list in if the second walk ever shows in a launch's cost.
+func nestedCheckoutRoots(writes []string) (nested, unresolved []string) {
+	for _, w := range writes {
+		found, err := bounded("the search of "+w+" for nested git checkouts", func() ([]string, error) {
+			c, _, err := findWorkspaceEntries(resolved(w))
+			return c, err
+		})
+		if err != nil {
+			unresolved = append(unresolved, w)
+			continue
+		}
+		for _, c := range found {
+			if !slices.Contains(nested, c) {
+				nested = append(nested, c)
+			}
+		}
+	}
+	return nested, unresolved
+}
+
+// includeTargets is every file the checkouts' own config pulls in through include.path or
+// includeIf.*.path, when it sits under a write grant. The shields hold .git/config down, but
+// a file it includes is config by another name: core.fsmonitor, core.sshCommand or an alias
+// set there runs on the host at the next git command, and nothing else stamps it. Every
+// directive is taken whatever its condition, since a condition that does not match here
+// may match in the next shell.
+//
+// git names the file it reads config from, which for a linked worktree is the common git
+// directory's, and follows the includes itself, so a chain of them is reported whole.
+// Missing targets are kept: creating one is the write that matters.
+func includeTargets(roots []string) (includes, unresolved []string) {
+	resolvedWrites := make([]string, 0, len(roots))
+	for _, r := range roots {
+		resolvedWrites = append(resolvedWrites, resolved(r))
+	}
+	asked := map[string]bool{}
+	for i, r := range roots {
+		stop := gitDiscoveryStop(resolvedWrites[i])
+		if stop != "" && asked[stop] {
+			continue
+		}
+		asked[stop] = true
+		found, err := includesOf(resolvedWrites[i])
+		if err != nil {
+			unresolved = append(unresolved, r)
+			continue
+		}
+		for _, p := range found {
+			if p = resolved(p); underAny(p, resolvedWrites) && !slices.Contains(includes, p) {
+				includes = append(includes, p)
+			}
+		}
+	}
+	return includes, unresolved
+}
+
+// includesOf asks git, in dir, for the include targets of the repository config it reads.
+func includesOf(dir string) ([]string, error) {
+	config, err := runGit(dir, "rev-parse", "--git-path", "config")
+	if err != nil {
+		return nil, err
+	}
+	if config = strings.TrimSpace(config); !filepath.IsAbs(config) {
+		config = filepath.Join(dir, config)
+	}
+	// --show-origin names each directive's file as given, so an absolute --file makes the
+	// origin absolute, and a relative value is relative to that file's directory.
+	out, err := runGit(dir, "config", "--file", config, "--includes", "--show-origin", "--type=path", "-z", "--get-regexp", `^include(if\..*)?\.path$`)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
+	if len(fields)%2 != 0 {
+		return nil, fmt.Errorf("git config in %s: want origin and entry pairs, got %q", dir, out)
+	}
+	var targets []string
+	for i := 0; i < len(fields); i += 2 {
+		origin, ok := strings.CutPrefix(fields[i], "file:")
+		_, value, entry := strings.Cut(fields[i+1], "\n")
+		if !ok || !entry || value == "" {
+			return nil, fmt.Errorf("git config in %s: unexpected entry %q from %q", dir, fields[i+1], fields[i])
+		}
+		if !filepath.IsAbs(value) {
+			value = filepath.Join(filepath.Dir(origin), value)
+		}
+		targets = append(targets, value)
+	}
+	return targets, nil
 }
 
 // hookRunnerDirs is every hook directory the write grants resolve to, deduplicated. The
