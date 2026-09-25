@@ -1903,8 +1903,9 @@ func TestRunForwardsReadOnlyPaths(t *testing.T) {
 }
 
 // The degraded tier has no mount namespace, so a read-only file inside a write grant would
-// be writable there: refused. Outside every write grant nothing can write it anyway, so the
-// same option must not cost a degraded run whose manifest sits elsewhere.
+// be writable there: refused. Outside every write grant only a second hard link inside one
+// could write it, and the manifest gate refuses a multiply-linked manifest before a run, so
+// the same option must not cost a degraded run whose manifest sits elsewhere.
 func TestDegradedTierRefusesReadOnlyPathsUnderAWriteGrant(t *testing.T) {
 	// A grant spelled through a symlink covers the resolved path it binds, and the read-only
 	// path arrives resolved, so the comparison has to resolve the grant too.
