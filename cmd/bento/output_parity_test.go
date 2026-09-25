@@ -295,7 +295,7 @@ func parityRunVerdict(t *testing.T) (string, map[string]any) {
 		AcceptedAliases: []enforce.CredentialAlias{{Path: "/backup/id_rsa", Credential: "/home/u/.ssh/id_rsa"}},
 		ChangedAutoExec: []string{"/work/package.json"},
 		RedirectedHooks: []string{"/work/hooks"},
-		UnresolvedHooks: []string{"/work/other"},
+		UnresolvedHooks: []enforce.UnresolvedGrant{{Path: "/work/other", Reason: enforce.UnresolvedTimedOut}},
 		GuardBlocked:    hp, Denied: hp, GateDenied: hp, Untunneled: hp,
 		GuardBlockedMetadata: hp,
 		ExecRecord:           &enforce.ExecRecord{Watched: true, Complete: true, Runs: []enforce.ExecRun{{Pid: 1, Exe: "/x", Argv: []string{"x"}}}},

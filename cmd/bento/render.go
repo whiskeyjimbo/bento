@@ -346,6 +346,21 @@ func toShieldedGrantsJSON(grants []enforce.ShieldedGrant) []shieldedGrantJSON {
 	return out
 }
 
+// unresolvedGrantJSON is one grant the hook report could not read whole. Reason is one of
+// the enforce.UnresolvedReason phrases.
+type unresolvedGrantJSON struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+func toUnresolvedGrantsJSON(grants []enforce.UnresolvedGrant) []unresolvedGrantJSON {
+	var out []unresolvedGrantJSON
+	for _, g := range grants {
+		out = append(out, unresolvedGrantJSON{Path: g.Path, Reason: string(g.Reason)})
+	}
+	return out
+}
+
 // toGrantTargetsJSON pairs each grant with what it reaches, for the entries where the
 // two differ. The differing ones are the whole point: an agent gating on the envelope
 // otherwise reads the spelling and never the store, which for a shield opt-in under a
@@ -1751,10 +1766,10 @@ func writeChangedAutoExecNotice(w io.Writer, res enforce.Result) {
 // because nothing was asked rather than because nothing was found.
 func writeRedirectedHooksNotice(w io.Writer, res enforce.Result) {
 	if len(res.UnresolvedHooks) > 0 {
-		fmt.Fprintln(w, "[bento] note: bento could not read these grants whole this run - git did not")
-		fmt.Fprintln(w, "[bento] answer where they run their hooks, or they stopped answering at all:")
-		for _, p := range res.UnresolvedHooks {
-			fmt.Fprintf(w, "[bento]   %q\n", p)
+		fmt.Fprintln(w, "[bento] note: bento could not read these grants whole this run, so their hook")
+		fmt.Fprintln(w, "[bento] directories and auto-exec files went unchecked:")
+		for _, g := range res.UnresolvedHooks {
+			fmt.Fprintf(w, "[bento]   %q: %s\n", g.Path, g.Reason)
 		}
 	}
 	if len(res.RedirectedHooks) == 0 {

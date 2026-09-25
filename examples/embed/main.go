@@ -501,7 +501,7 @@ func writeFacts(w io.Writer, res enforce.Result) {
 	// UnresolvedHooks: the grants that could not be read whole, so the two lists above are
 	// short. Silence here would have an empty hook report read as a clean one.
 	for _, g := range res.UnresolvedHooks {
-		fmt.Fprintf(w, "embed: could not read %q whole this run, so its hook directory and auto-exec files went unchecked\n", g)
+		fmt.Fprintf(w, "embed: could not read %q whole this run (%s), so its hook directory and auto-exec files went unchecked\n", g.Path, g.Reason)
 	}
 	// Exposed: the shielded paths the target could reach anyway. The same contract as
 	// ShieldedGrants - bento does not refuse, so silence here hides the exposure.

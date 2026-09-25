@@ -354,10 +354,10 @@ func TestAGitThatCannotAnswerNamesTheGrant(t *testing.T) {
 	if len(hooks) != 0 {
 		t.Errorf("hookRunnerDirs named %v, want none; git could not answer", hooks)
 	}
-	if !slices.Contains(unresolved, grant) {
+	if !slices.Contains(unresolvedPaths(unresolved), grant) {
 		t.Errorf("unresolved = %v, want it to name %s", unresolved, grant)
 	}
-	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolved, grant) {
+	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolvedPaths(unresolved), grant) {
 		t.Errorf("changed reported unresolved = %v, want it to name %s", unresolved, grant)
 	}
 }
@@ -432,7 +432,7 @@ func TestTheAfterRunAutoExecSnapshotIsBounded(t *testing.T) {
 	done := make(chan []string, 1)
 	go func() {
 		changed, _, unresolved := before.changed([]string{grant})
-		done <- append(changed, unresolved...)
+		done <- append(changed, unresolvedPaths(unresolved)...)
 	}()
 	select {
 	case got := <-done:
@@ -802,9 +802,8 @@ func TestAGrantWhoseWorkTreeGitCannotNameIsUnresolved(t *testing.T) {
 			slices.Reverse(reversed)
 			for _, order := range [][]string{grants, reversed} {
 				got, unresolved := hookRunnerDirs(order)
-				slices.Sort(unresolved)
 				want := slices.Sorted(slices.Values(order))
-				if len(got) != 0 || !slices.Equal(unresolved, want) {
+				if len(got) != 0 || !slices.Equal(unresolvedPaths(unresolved), want) {
 					t.Errorf("grants %v: hookRunnerDirs = %v, unresolved %v; want no hook directory and every grant unresolved", order, got, unresolved)
 				}
 			}
@@ -965,7 +964,7 @@ func TestAGitRefusalIsNotTakenForNoCheckout(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolved, grant) {
+			if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolvedPaths(unresolved), grant) {
 				t.Errorf("unresolved = %v, want it to name %s", unresolved, grant)
 			}
 		})
@@ -985,5 +984,54 @@ func TestAGrantOutsideAnyCheckoutIsResolvedInAnyLocale(t *testing.T) {
 	grant := t.TempDir()
 	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); len(unresolved) != 0 {
 		t.Errorf("unresolved = %v, want none; git was not asked in the C locale", unresolved)
+	}
+}
+
+// unresolvedPaths is the grants of an unresolved list, for tests asking which grants and
+// not why.
+func unresolvedPaths(u []enforce.UnresolvedGrant) []string {
+	var out []string
+	for _, g := range u {
+		out = append(out, g.Path)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// The note names why a grant went unread, because the fix differs: install git, repair the
+// checkout git refused, or chase the mount that timed out. A git killed on its deadline
+// must not read as one that refused.
+func TestAnUnresolvedGrantSaysWhy(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep on this host: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		git  string
+		want enforce.UnresolvedReason
+	}{
+		{"missing", "", enforce.UnresolvedGitMissing},
+		{"refused", "#!/bin/sh\nexit 1\n", enforce.UnresolvedGitRefused},
+		{"timed out", "#!/bin/sh\nexec " + sleep + " 30\n", enforce.UnresolvedTimedOut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shim := t.TempDir()
+			if tc.git != "" {
+				if err := os.WriteFile(filepath.Join(shim, "git"), []byte(tc.git), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", shim)
+			hookResolveTimeout = 100 * time.Millisecond
+			t.Cleanup(func() { hookResolveTimeout = 5 * time.Second })
+
+			grant := t.TempDir()
+			_, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant})
+			want := []enforce.UnresolvedGrant{{Path: grant, Reason: tc.want}}
+			if !slices.Equal(unresolved, want) {
+				t.Errorf("unresolved = %v, want %v", unresolved, want)
+			}
+		})
 	}
 }

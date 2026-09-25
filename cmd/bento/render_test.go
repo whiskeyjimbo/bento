@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -2282,5 +2283,18 @@ func TestProfileHintsReproduceTheRun(t *testing.T) {
 	forged := profileCommand(path, &policy.Policy{Entrypoint: "/x\n[bento] all clear"}, []string{"a\nb"}, false)
 	if strings.Contains(forged, "\n") {
 		t.Errorf("a control byte reached the hint raw: %q", forged)
+	}
+}
+
+// An unread grant's fix depends on why it went unread, so the reason travels with the
+// grant to both the note and --json.
+func TestUnresolvedHooksCarryTheirReason(t *testing.T) {
+	human, doc := parityRunVerdict(t)
+	if !strings.Contains(human, `"/work/other": timed out`) {
+		t.Errorf("the note must name the grant's reason; got:\n%s", human)
+	}
+	got, _ := json.Marshal(doc["unresolved_hooks"])
+	if want := `[{"path":"/work/other","reason":"timed out"}]`; string(got) != want {
+		t.Errorf("unresolved_hooks = %s, want %s", got, want)
 	}
 }

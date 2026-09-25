@@ -549,7 +549,7 @@ func writeRedirectedHooks(w io.Writer, t theme, res enforce.Result) {
 	if len(res.UnresolvedHooks) > 0 {
 		fmt.Fprintf(w, "\n%s\n", t.warn("bento could not read these grants whole this run, so their hook directories and auto-exec files went unchecked:"))
 		for _, g := range res.UnresolvedHooks {
-			fmt.Fprintf(w, "  %s\n", t.bold(strconv.Quote(g)))
+			fmt.Fprintf(w, "  %s: %s\n", t.bold(strconv.Quote(g.Path)), g.Reason)
 		}
 	}
 	if len(res.RedirectedHooks) == 0 {

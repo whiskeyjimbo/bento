@@ -382,9 +382,9 @@ type streamRefusalJSON struct {
 	// RedirectedHooks travels beside it for the same reason, and separately from it because
 	// it is a different claim; see enforce.Result.
 	RedirectedHooks []string `json:"redirected_hooks,omitempty"`
-	// The grants whose hook directory git could not resolve, so a consumer can tell a
+	// The grants the hook report could not read whole and why, so a consumer can tell a
 	// short report from a clean one; see enforce.Result.UnresolvedHooks.
-	UnresolvedHooks []string `json:"unresolved_hooks,omitempty"`
+	UnresolvedHooks []unresolvedGrantJSON `json:"unresolved_hooks,omitempty"`
 	// The shield audit is the failed event's alone as well, and under the verdict's names.
 	// A run that began engaged its boundary, and on the degraded tier left credentials
 	// reachable; dropping the record because the run then failed reports the exposure as
@@ -460,7 +460,7 @@ func failJSON(stderr io.Writer, stream *eventStream, asJSON bool, res enforce.Re
 	// A run that failed before any stage existed (an invalid policy, a nil enforcer)
 	// carries the zero Report; toReportJSON answers that with noReport rather than the
 	// clean posture !HasDegradation() would read as.
-	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toRunReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: res.UnresolvedHooks, Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed,
+	stream.emitTerminal(streamRefusalJSON{Event: "failed", Reason: runErr.Error(), Report: toRunReportJSON(res.Report), ChangedAutoExec: res.ChangedAutoExec, RedirectedHooks: res.RedirectedHooks, UnresolvedHooks: toUnresolvedGrantsJSON(res.UnresolvedHooks), Shields: toShieldsJSON(res.Shields), Exposed: toShieldsJSON(res.Exposed), ShieldedGrants: toShieldedGrantsJSON(res.ShieldedGrants), AcceptedAliases: toAliasesJSON(res.AcceptedAliases), ShadowedPathDirs: shadowed,
 		TargetNeverRan:    res.Setup == enforce.SetupSilent && len(res.Report.Layers) == 0,
 		EgressConnections: res.EgressConnections, GuardBlocked: toHostPortsJSON(res.GuardBlocked), GuardBlockedMetadata: toHostPortsJSON(res.GuardBlockedMetadata), EgressDenied: toHostPortsJSON(res.Denied),
 		Untunneled: toHostPortsJSON(res.Untunneled), ExecRecord: toExecRecordJSON(res.ExecRecord), runNotesJSON: notes})
@@ -626,9 +626,9 @@ func writeRunResult(stderr io.Writer, asJSON bool, manifestPath string, p *polic
 			// The hook directories the run pointed the checkout at. Separate from the list
 			// above because it is a different claim; see enforce.Result.RedirectedHooks.
 			RedirectedHooks []string `json:"redirected_hooks,omitempty"`
-			// The grants whose hook directory git could not resolve; see
+			// The grants the hook report could not read whole and why; see
 			// enforce.Result.UnresolvedHooks.
-			UnresolvedHooks []string `json:"unresolved_hooks,omitempty"`
+			UnresolvedHooks []unresolvedGrantJSON `json:"unresolved_hooks,omitempty"`
 			// ExecRecord is present only for a run that asked with --record-exec, and is
 			// then present whatever came back: a run the recorder could not watch reports
 			// that and why, which is the answer an empty list would misreport as "nothing
@@ -655,7 +655,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, manifestPath string, p *polic
 			// no shield can follow, which the shield summary warns about.
 			UnshieldableRelocations map[string]string `json:"unshieldable_relocations,omitempty"`
 			*runNotesJSON
-		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.GuardBlockedMetadata), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, res.UnresolvedHooks, toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, shadowedPathDirs(p, env), res.Setup == enforce.SetupTargetUnreached, verdictRelocations(res), notes})
+		}{"verdict", res.ExitCode, res.Signal, res.EgressConnections, toShieldedGrantsJSON(res.ShieldedGrants), toHostPortsJSON(res.GuardBlocked), toHostPortsJSON(res.GuardBlockedMetadata), toHostPortsJSON(res.Denied), toHostPortsJSON(res.GateDenied), toHostPortsJSON(res.Untunneled), toShieldsJSON(res.Shields), toShieldsJSON(res.Exposed), toAliasesJSON(res.AcceptedAliases), res.ChangedAutoExec, res.RedirectedHooks, toUnresolvedGrantsJSON(res.UnresolvedHooks), toExecRecordJSON(res.ExecRecord), toRunReportJSON(res.Report), shortfall != nil, shadowedPathDirs(p, env), res.Setup == enforce.SetupTargetUnreached, verdictRelocations(res), notes})
 	} else {
 		writeAcceptedAliasWarning(stderr, res)
 		writeShieldSummary(stderr, res)

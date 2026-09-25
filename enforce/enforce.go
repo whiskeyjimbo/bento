@@ -234,6 +234,30 @@ type CredentialAlias struct {
 	Credential string
 }
 
+// UnresolvedGrant is one write grant the auto-exec report could not read whole, and why.
+// See Result.UnresolvedHooks.
+type UnresolvedGrant struct {
+	Path   string
+	Reason UnresolvedReason
+}
+
+// UnresolvedReason is why a grant went unread: one of the constants below, each a phrase a
+// frontend can print as is.
+type UnresolvedReason string
+
+const (
+	UnresolvedGitMissing UnresolvedReason = "git is not installed"
+	// UnresolvedGitRefused is git exiting with an error: an unreadable .git, a
+	// safe.directory refusal, a config it could not parse.
+	UnresolvedGitRefused UnresolvedReason = "git refused to answer"
+	// UnresolvedTimedOut is git or the grant's filesystem not answering within the bound,
+	// which is what a dead mount looks like.
+	UnresolvedTimedOut UnresolvedReason = "timed out"
+	// UnresolvedUnreadable is any other failure to read the grant, such as a permission
+	// error walking it.
+	UnresolvedUnreadable UnresolvedReason = "could not be read"
+)
+
 // ShieldedGrant is one always-shielded path a policy explicitly granted, so the backend
 // honored the grant over its own shield. See Result.ShieldedGrants.
 type ShieldedGrant struct {
@@ -598,15 +622,16 @@ type Result struct {
 	// UnresolvedHooks names the write GRANTS the run could not read whole: git did not
 	// answer where they run their hooks, or the grant itself stopped answering and the
 	// after-run snapshot of its auto-executing files gave up on it. Either way the two
-	// lists above are short for that grant, which is the one thing a reader needs to know
-	// and the same thing whichever seam went quiet. It is what keeps them readable:
-	// both are empty on a clean run and equally empty on a host where the question was
-	// never answered, and only this says which happened. An operator told to read the
-	// hook report has to know when the report is short.
+	// lists above are short for that grant. It is what keeps them readable: both are
+	// empty on a clean run and equally empty on a host where the question was never
+	// answered, and only this says which happened. An operator told to read the hook
+	// report has to know when the report is short, and each entry's Reason says what to
+	// fix: a missing git, a git that refused the checkout, or a mount that timed out.
 	//
-	// Sorted, and carried on the same arms as the two lists it qualifies. The same quoting
-	// caveat applies: a grant path can carry bytes a prior run chose.
-	UnresolvedHooks []string
+	// Sorted by path, one entry per grant, and carried on the same arms as the two lists
+	// it qualifies. The same quoting caveat applies: a grant path can carry bytes a prior
+	// run chose.
+	UnresolvedHooks []UnresolvedGrant
 	// Residue names the host paths this run left standing that it created itself: a
 	// write-grant directory made for a run whose target never started, and a shield
 	// mount point the post-run reclaim could not remove. It is the same account a

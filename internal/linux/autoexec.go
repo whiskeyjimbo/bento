@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/whiskeyjimbo/bento/enforce"
 )
 
 // hookResolveTimeout bounds one `git rev-parse --git-path hooks`, so a grant whose
@@ -272,6 +274,10 @@ func runGit(dir string, args ...string) (string, error) {
 	// first: the parent is Background and noteProbeDeadline's live-parent test is free.
 	noteProbeDeadline(context.Background(), ctx)
 	if err != nil {
+		// The deadline's kill surfaces as an exit error, which would read as git refusing.
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return "", fmt.Errorf("git %s in %s: %w", strings.Join(args, " "), dir, err)
 	}
 	return string(out), nil
@@ -319,7 +325,7 @@ type autoExecBaseline struct {
 	hooks      []string
 	nested     []string
 	includes   []string
-	unresolved []string
+	unresolved []enforce.UnresolvedGrant
 }
 
 // changed re-stamps the same paths the baseline stamped and names what the run altered,
@@ -328,7 +334,7 @@ type autoExecBaseline struct {
 // not the silence: see redirectedHooks. The two answers stay apart because they are
 // different claims - one is a file this run wrote, the other a directory it may never have
 // touched - and a caller with one flat list can only word them alike.
-func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresolved []string) {
+func (b autoExecBaseline) changed(writes []string) (changed, redirected []string, unresolved []enforce.UnresolvedGrant) {
 	roots := append(slices.Clone(writes), b.nested...)
 	after, afterUnresolved := hookRunnerDirs(roots)
 	redirected = redirectedHooks(b.hooks, after)
@@ -351,13 +357,34 @@ func (b autoExecBaseline) changed(writes []string) (changed, redirected, unresol
 		// names every file it stamped as removed - a report invented out of a mount that
 		// stopped answering, which is worse than the silence. The grants go into
 		// unresolved instead, which already says the report is short.
-		unresolved = append(unresolved, writes...)
+		for _, w := range writes {
+			unresolved = append(unresolved, enforce.UnresolvedGrant{Path: w, Reason: unresolvedReason(err)})
+		}
 	} else {
 		changed = changedAutoExec(b.state, state)
 	}
 	slices.Sort(changed)
-	slices.Sort(unresolved)
-	return slices.Compact(changed), slices.Compact(redirected), slices.Compact(unresolved)
+	// One entry per grant, and the first reason recorded for it: the baseline's comes
+	// before the after-run ask's, and is the failure that left the grant with no baseline.
+	slices.SortStableFunc(unresolved, func(a, b enforce.UnresolvedGrant) int { return strings.Compare(a.Path, b.Path) })
+	unresolved = slices.CompactFunc(unresolved, func(a, b enforce.UnresolvedGrant) bool { return a.Path == b.Path })
+	return slices.Compact(changed), slices.Compact(redirected), unresolved
+}
+
+// unresolvedReason says which of the operator's problems err is, so the note can point at
+// the fix rather than only at the grant.
+func unresolvedReason(err error) enforce.UnresolvedReason {
+	var exit *exec.ExitError
+	switch {
+	case errors.Is(err, errDidNotAnswer), errors.Is(err, context.DeadlineExceeded):
+		return enforce.UnresolvedTimedOut
+	case errors.Is(err, exec.ErrNotFound):
+		return enforce.UnresolvedGitMissing
+	case errors.As(err, &exit):
+		return enforce.UnresolvedGitRefused
+	default:
+		return enforce.UnresolvedUnreadable
+	}
 }
 
 // autoExecStat is the snapshot's stat behind a var, for probe.go's reason: it is a raw
@@ -432,14 +459,14 @@ func baselineAutoExec(writes []string) autoExecBaseline {
 //
 // ponytail: on the shielded tier this repeats the walk that fills sb.nestedCheckouts;
 // hand that list in if the second walk ever shows in a launch's cost.
-func nestedCheckoutRoots(writes []string) (nested, unresolved []string) {
+func nestedCheckoutRoots(writes []string) (nested []string, unresolved []enforce.UnresolvedGrant) {
 	for _, w := range writes {
 		found, err := bounded("the search of "+w+" for nested git checkouts", func() ([]string, error) {
 			c, _, err := findWorkspaceEntries(resolved(w))
 			return c, err
 		})
 		if err != nil {
-			unresolved = append(unresolved, w)
+			unresolved = append(unresolved, enforce.UnresolvedGrant{Path: w, Reason: unresolvedReason(err)})
 			continue
 		}
 		for _, c := range found {
@@ -465,7 +492,7 @@ func nestedCheckoutRoots(writes []string) (nested, unresolved []string) {
 // A linked worktree's config.worktree is asked too, whether or not extensions.worktreeConfig
 // is on here: turning it on is itself one config write away.
 // Missing targets are kept: creating one is the write that matters.
-func includeTargets(roots []string) (includes, unresolved []string) {
+func includeTargets(roots []string) (includes []string, unresolved []enforce.UnresolvedGrant) {
 	resolvedWrites := make([]string, 0, len(roots))
 	for _, r := range roots {
 		resolvedWrites = append(resolvedWrites, resolved(r))
@@ -480,7 +507,7 @@ func includeTargets(roots []string) (includes, unresolved []string) {
 		found, err := includesOf(resolvedWrites[i])
 		if err != nil {
 			if !outsideAnyCheckout(resolvedWrites[i], err) {
-				unresolved = append(unresolved, r)
+				unresolved = append(unresolved, enforce.UnresolvedGrant{Path: r, Reason: unresolvedReason(err)})
 			}
 			continue
 		}
@@ -544,7 +571,7 @@ func includesOf(dir string) ([]string, error) {
 // checkout are one answer, and each ask is an exec. The answer shared is the finished one,
 // absolute and already tested for containment against every grant, so no part of it
 // depends on which grant asked.
-func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
+func hookRunnerDirs(writes []string) (hooks []string, unresolved []enforce.UnresolvedGrant) {
 	resolvedWrites := make([]string, 0, len(writes))
 	for _, w := range writes {
 		resolvedWrites = append(resolvedWrites, resolved(w))
@@ -564,7 +591,7 @@ func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
 			}
 		}
 		if a.err != nil && !outsideAnyCheckout(resolvedWrites[i], a.err) {
-			unresolved = append(unresolved, w)
+			unresolved = append(unresolved, enforce.UnresolvedGrant{Path: w, Reason: unresolvedReason(a.err)})
 			continue
 		}
 		if a.dir != "" && !slices.Contains(hooks, a.dir) {

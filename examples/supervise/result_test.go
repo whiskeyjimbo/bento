@@ -51,7 +51,7 @@ func populatedResult() enforce.Result {
 		RedirectedHooks: []string{"/repo/\x1b[2Khooks"},
 		// A grant that could not be read whole, which is what tells the two lists above
 		// apart from a clean pair.
-		UnresolvedHooks: []string{"/repo/\x1b[2Kvendor"},
+		UnresolvedHooks: []enforce.UnresolvedGrant{{Path: "/repo/\x1b[2Kvendor", Reason: enforce.UnresolvedTimedOut}},
 		// A shield mount point the reclaim could not account for, standing inside a
 		// checkout whose directory names a prior run chose.
 		Residue: []string{"/repo/\x1b[2K.git/hooks"},
