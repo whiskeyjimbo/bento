@@ -319,6 +319,11 @@ func TestApprovalCalloutsNameWhatDeservesReview(t *testing.T) {
 			t.Errorf("callouts missing %q; got:\n%s", want, got)
 		}
 	}
+	// bento run binds the manifest read-only, so a callout saying the script can rewrite it
+	// is false for the run the approval is for, and teaches the reviewer to discount the rest.
+	if strings.Contains(got, "so the script can rewrite the policy") || !strings.Contains(got, "binds it read-only") {
+		t.Errorf("the manifest callout must say bento run keeps it read-only; got:\n%s", got)
+	}
 
 	// A write reaching the entrypoint but not the manifest still lets the script rewrite
 	// its own code after the approval attests it.

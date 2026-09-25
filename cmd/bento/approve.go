@@ -333,7 +333,10 @@ func writeApprovalCallouts(w io.Writer, realPath, namedPath string, p, resolved 
 	} else {
 		coversManifest, coversEntrypoint := selfWriteGrants(realPath, namedPath, resolved)
 		for _, g := range coversManifest {
-			notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself, so the script can rewrite the policy that governs it - and the stamp you are about to write.", g))
+			// `bento run` binds the manifest read-only and refuses the shapes that reach around
+			// that bind (gate.ManifestProblems), so the script itself cannot rewrite it there.
+			// Worth saying anyway: an embedder of enforce binds it only if it asks to.
+			notes = append(notes, fmt.Sprintf("write: %q covers the manifest itself. `bento run` binds it read-only, so the script cannot rewrite it there, but a program embedding bento without that bind, or anything else holding this access, can rewrite the policy - and the stamp you are about to write.", g))
 		}
 		for _, g := range coversEntrypoint {
 			notes = append(notes, fmt.Sprintf("write: %q covers the entrypoint, so the script can rewrite its own code after this approval.", g))
