@@ -38,12 +38,13 @@ var observeSupported = observe.Supported
 // traffic, so profiling untrusted code cannot exfiltrate; allowNetwork forwards
 // it for a faithful run of code whose later behavior depends on the response.
 //
-// It has no admission seam ahead of it the way Run has enforce.Run, and it needs none:
-// there is no weaker tier to substitute (a host without bwrap or the observation
-// backend is refused outright, not degraded), and the layers admission judges do not
-// describe this run - profiling observes exec rather than blocking it, and its proxy
-// records rather than allowlisting. What it does share with Run is that a requested
-// resource limit protects the host, so that one is enforced and refused here directly.
+// It has no admission seam ahead of it the way Run has enforce.Run, and needs only two
+// pieces of one: there is no weaker tier to substitute (a host without bwrap or the
+// observation backend is refused outright, not degraded), and the layers admission judges
+// do not describe this run - profiling observes exec rather than blocking it, and its
+// proxy records rather than allowlisting. What it does share with Run is the extra-args
+// admission, since compile appends proc.ExtraArgs for both, and that a requested resource
+// limit protects the host; both are enforced and refused here directly.
 func (e *Enforcer) Profile(ctx context.Context, p *policy.Policy, proc enforce.Process, allowNetwork bool, denyPaths, acceptAliasesUnder []string) (obs profile.Observation, err error) {
 	if err := p.Validate(); err != nil {
 		return profile.Observation{}, err

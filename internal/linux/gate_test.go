@@ -328,8 +328,32 @@ func TestRunAdmitsExtraArgsItself(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Run: err = %v, want %q", err, tc.want)
 			}
-			// Profile appends the same ExtraArgs through compile, with no enforce.Run ahead of it.
-			_, err = New().Profile(ctx, p, enforce.Process{ExtraArgs: tc.extra}, false, nil, nil)
+		})
+	}
+}
+
+// Profile appends proc.ExtraArgs through the same compile as Run, with no enforce.Run ahead
+// of it, so it admits them itself.
+func TestProfileAdmitsExtraArgsItself(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		opted bool
+		extra []string
+		want  string
+	}{
+		{"not opted in", false, []string{"--x"}, "does not set extra_args"},
+		{"NUL byte", true, []string{"a\x00b"}, "NUL byte"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", ExtraArgs: tc.opted}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := New().Profile(ctx, p, enforce.Process{ExtraArgs: tc.extra}, false, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Profile: err = %v, want %q", err, tc.want)
 			}
