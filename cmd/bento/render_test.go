@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/internal/denylist"
 	"github.com/whiskeyjimbo/bento/internal/shield"
+	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -475,7 +477,7 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 
 	var errOut bytes.Buffer
 	p := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}}
-	_ = writeRunResult(&errOut, false, p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, "", p, nil, enforce.Result{ExitCode: 1, Report: r}, nil, nil, nil)
 	got := errOut.String()
 	hint := strings.Index(got, "denies silently")
 	shapes := strings.Index(got, "Read-only file system")
@@ -491,7 +493,7 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	// the claim of silence and its mapping are never separated.
 	errOut.Reset()
 	shell := &policy.Policy{Entrypoint: "/work/t.sh", Interpreter: "/bin/sh", Read: []string{"/data"}}
-	_ = writeRunResult(&errOut, false, shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, "", shell, nil, enforce.Result{ExitCode: 127, Report: r}, nil, nil, nil)
 	got = errOut.String()
 	if !strings.Contains(got, "PATH is not passed through") {
 		t.Fatalf("the PATH miss must still be explained; got:\n%s", got)
@@ -504,7 +506,7 @@ func TestFailingRunGetsTheHintThenTheShapes(t *testing.T) {
 	// filter that killed the run, and the generic hint never speaks there.
 	errOut.Reset()
 	limited := &policy.Policy{Entrypoint: "/work/t.py", Read: []string{"/data"}, Limits: policy.Limits{Memory: "64M"}}
-	_ = writeRunResult(&errOut, false, limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, "", limited, nil, enforce.Result{ExitCode: 137, Signaled: true, Signal: 9, Report: r}, nil, nil, nil)
 	got = errOut.String()
 	if !strings.Contains(got, "killed by signal 9") {
 		t.Fatalf("the kill must still be named; got:\n%s", got)
@@ -537,7 +539,7 @@ func TestProfileHintNamesTheExecMode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
-			if !writeProfileHint(&b, tc.p, tc.res) {
+			if !writeProfileHint(&b, "bento profile", tc.p, tc.res) {
 				t.Fatalf("a failing run gets the hint: %q", b.String())
 			}
 			out := b.String()
@@ -558,7 +560,7 @@ func TestProfileHintNamesTheExecMode(t *testing.T) {
 		})
 	}
 	var b bytes.Buffer
-	if writeProfileHint(&b, &policy.Policy{}, enforce.Result{}) {
+	if writeProfileHint(&b, "bento profile", &policy.Policy{}, enforce.Result{}) {
 		t.Errorf("a clean run is not the hint's subject: %q", b.String())
 	}
 }
@@ -911,18 +913,18 @@ func TestWriteUntunneledWarningQuotesTheHost(t *testing.T) {
 // Hosts are quoted for the same reason the guard-blocked notice quotes them.
 func TestWriteDeniedWarning(t *testing.T) {
 	var b bytes.Buffer
-	if writeDeniedWarning(&b, &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{}) || b.Len() != 0 {
+	if writeDeniedWarning(&b, profileCommand("m.yaml", &policy.Policy{Entrypoint: "./t.py"}, nil, true), enforce.Result{}) || b.Len() != 0 {
 		t.Errorf("a run the allowlist refused nothing on must print nothing; got %q", b.String())
 	}
 
-	if !writeDeniedWarning(&b, &policy.Policy{Entrypoint: "./t.py"}, enforce.Result{Denied: []enforce.HostPort{
+	if !writeDeniedWarning(&b, profileCommand("m.yaml", &policy.Policy{Entrypoint: "./t.py"}, nil, true), enforce.Result{Denied: []enforce.HostPort{
 		{Host: "api.github.com", Port: "443"},
 		{Host: "evil.example\n[bento] nothing was denied", Port: "80"},
 	}}) {
 		t.Error("a denial must be reported")
 	}
 	out := b.String()
-	for _, want := range []string{"api.github.com", "443", `bento profile "./t.py" --allow-network`} {
+	for _, want := range []string{"api.github.com", "443", `bento profile --out 'm.yaml' --allow-network -- './t.py'`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the notice must contain %q; got %q", want, out)
 		}
@@ -2182,5 +2184,94 @@ func TestEveryLiteralAccessNoteReasonIsDocumented(t *testing.T) {
 		if !strings.Contains(documented, code) {
 			t.Errorf("a --json note carries reason %q that the Reason field's list does not name", code)
 		}
+	}
+}
+
+// Both hints hand the reader a profile command to paste, and it has to reproduce the run
+// that failed: the manifest's own args and the run's extra args, and --out naming the
+// manifest, which is what makes profile start in its workdir and merge into the file the
+// user runs. Built from the entrypoint alone it profiled a bare shell from the wrong
+// directory and wrote a second manifest beside the entrypoint - under /usr/bin for a
+// system binary. The line is split by a real shell and parsed by profile's own flags, so
+// quoting and flag order are checked where the reader meets them.
+func TestProfileHintsReproduceTheRun(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "build.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	written := &policy.Policy{Entrypoint: "./src/build.sh", Args: []string{"-c"}, ExtraArgs: true, Workdir: ".", Exec: policy.ExecAll}
+	data, err := manifest.Marshal(written, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "build.manifest.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, err := loadDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Policy
+	if err := manifest.Resolve(p, path); err != nil {
+		t.Fatal(err)
+	}
+	extra := []string{`echo "$HOME" 'it'"'"'s' ` + "`id`"}
+	var r enforce.Report
+	r.Add(enforce.LayerFilesystem, enforce.Enforced, "")
+	r.Add(enforce.LayerExec, enforce.Enforced, "")
+
+	for name, tc := range map[string]struct {
+		res          enforce.Result
+		allowNetwork bool
+	}{
+		"failed run":    {enforce.Result{ExitCode: 2, Report: r}, false},
+		"egress denial": {enforce.Result{ExitCode: 0, Report: r, Denied: []enforce.HostPort{{Host: "example.org", Port: "443"}}}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var errOut bytes.Buffer
+			_ = writeRunResult(&errOut, false, path, p, nil, tc.res, &runNotesJSON{ExtraArgs: extra}, nil, nil)
+			var line string
+			for l := range strings.SplitSeq(errOut.String(), "\n") {
+				if rest, ok := strings.CutPrefix(l, "[bento]   bento profile "); ok {
+					line = "bento profile " + rest
+				}
+			}
+			if line == "" {
+				t.Fatalf("no profile command in:\n%s", errOut.String())
+			}
+			split, err := exec.Command("/bin/sh", "-c", "set -- "+line+"\nprintf '%s\\0' \"$@\"").Output()
+			if err != nil {
+				t.Fatalf("the hint does not parse as a shell command (%v): %s", err, line)
+			}
+			argv := strings.Split(strings.TrimSuffix(string(split), "\x00"), "\x00")
+			cmd := newProfileCmd()
+			if err := cmd.ParseFlags(argv[2:]); err != nil {
+				t.Fatalf("profile rejects the hint's flags (%v): %s", err, line)
+			}
+			out, _ := cmd.Flags().GetString("out")
+			network, _ := cmd.Flags().GetBool("allow-network")
+			target := cmd.Flags().Args()
+			if out != path || network != tc.allowNetwork {
+				t.Errorf("want --out %q and --allow-network=%v, got %q and %v from: %s", path, tc.allowNetwork, out, network, line)
+			}
+			if want := slices.Concat([]string{p.Entrypoint}, p.Args, extra); !slices.Equal(target, want) {
+				t.Errorf("profile would run %q, not the failed run %q, from: %s", target, want, line)
+			}
+			existing, err := existingForMerge(out, target[0])
+			if err != nil || existing == nil || existing.Workdir != dir {
+				t.Errorf("profile must merge into the manifest and start in its workdir %q; got %+v, %v", dir, existing, err)
+			}
+		})
+	}
+
+	// A newline in manifest or caller text must not break the hint onto a line of its own,
+	// where it could pose as one of bento's.
+	forged := profileCommand(path, &policy.Policy{Entrypoint: "/x\n[bento] all clear"}, []string{"a\nb"}, false)
+	if strings.Contains(forged, "\n") {
+		t.Errorf("a control byte reached the hint raw: %q", forged)
 	}
 }

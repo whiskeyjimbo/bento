@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"text/tabwriter"
+	"unicode"
 
 	"github.com/whiskeyjimbo/bento/enforce"
 	"github.com/whiskeyjimbo/bento/gate"
@@ -966,7 +967,7 @@ func signalDeath(res enforce.Result) (sig int, certain bool) {
 // observes the attempt at all.
 // It reports whether it said anything, so the legend below knows this failure was left
 // generic rather than explained.
-func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
+func writeProfileHint(w io.Writer, profileCmd string, p *policy.Policy, res enforce.Result) bool {
 	if res.ExitCode == 0 {
 		return false
 	}
@@ -984,10 +985,36 @@ func writeProfileHint(w io.Writer, p *policy.Policy, res enforce.Result) bool {
 		"message is all you get. To see what it actually touches:", res.ExitCode, grants), textWidth-len("[bento] ")) {
 		fmt.Fprintf(w, "[bento] %s\n", line)
 	}
-	// Quoted: the entrypoint is manifest text, and a newline in it would otherwise forge a
-	// line of this hint.
-	fmt.Fprintf(w, "[bento]   bento profile %q\n", p.Entrypoint)
+	fmt.Fprintf(w, "[bento]   %s\n", profileCmd)
 	return true
+}
+
+// profileCommand is the profile invocation that reproduces a run of the manifest at
+// manifestPath: its entrypoint with its own args and the run's extra args, and --out
+// naming the manifest. --out is what makes profile start in the manifest's workdir and
+// merge into the file the user runs; without it profile writes a second manifest beside
+// the entrypoint, which for a system binary is a directory the user cannot write.
+//
+// Each word is shell-quoted so the line pastes as-is, since extra args are commonly shell
+// text carrying $ and quotes. A word holding a control byte is Go-quoted instead: a
+// newline inside shell quotes would still break the hint across lines and let manifest
+// or caller text forge a line of bento's own, and such a word needs hand-editing anyway.
+func profileCommand(manifestPath string, p *policy.Policy, extra []string, allowNetwork bool) string {
+	quote := func(s string) string {
+		if strings.ContainsFunc(s, unicode.IsControl) {
+			return strconv.Quote(s)
+		}
+		return shellQuote(s)
+	}
+	words := []string{"bento", "profile", "--out", quote(manifestPath)}
+	if allowNetwork {
+		words = append(words, "--allow-network")
+	}
+	words = append(words, "--", quote(p.Entrypoint))
+	for _, a := range slices.Concat(p.Args, extra) {
+		words = append(words, quote(a))
+	}
+	return strings.Join(words, " ")
 }
 
 // writeRefusal prints a pre-run refusal in the shape main's generic error printer gives
@@ -1556,7 +1583,7 @@ func writeGuardBlockedWarning(w io.Writer, res enforce.Result) {
 //
 // It reports whether it said anything, so no second explanation of the same failure
 // stacks on top of it.
-func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool {
+func writeDeniedWarning(w io.Writer, profileCmd string, res enforce.Result) bool {
 	if len(res.Denied) == 0 {
 		return false
 	}
@@ -1566,8 +1593,7 @@ func writeDeniedWarning(w io.Writer, p *policy.Policy, res enforce.Result) bool 
 	}
 	fmt.Fprintln(w, "[bento] the script saw only a 403 from the proxy. To allow one, add it under network: in")
 	fmt.Fprintln(w, "[bento] the manifest and re-approve. To rediscover them, profile with egress forwarded -")
-	// Quoted for the reason writeProfileHint quotes it: the entrypoint is manifest text.
-	fmt.Fprintf(w, "[bento]   bento profile %q --allow-network\n", p.Entrypoint)
+	fmt.Fprintf(w, "[bento]   %s\n", profileCmd)
 	fmt.Fprintln(w, "[bento] the default records destinations without forwarding them, so a plain re-profile")
 	fmt.Fprintln(w, "[bento] reproduces this same failure.")
 	return true

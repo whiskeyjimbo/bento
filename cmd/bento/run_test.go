@@ -38,7 +38,7 @@ func asExitError(t *testing.T, err error) *exitError {
 func TestWriteRunResultPassesTargetExitCode(t *testing.T) {
 	for _, code := range []int{0, 1, 7, 42, bentoFailed} {
 		var stderr bytes.Buffer
-		err := writeRunResult(&stderr, false, validPolicy(), nil,
+		err := writeRunResult(&stderr, false, "", validPolicy(), nil,
 			enforce.Result{ExitCode: code}, nil, nil, nil)
 		if got := asExitError(t, err).code; got != code {
 			t.Errorf("target exit %d passed up as %d", code, got)
@@ -57,7 +57,7 @@ func TestWriteRunResultRefusalJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	// A non-zero target code in the (unused) Result must not leak through: a refused
 	// run never produced one.
-	err := writeRunResult(&stderr, true, validPolicy(), nil,
+	err := writeRunResult(&stderr, true, "", validPolicy(), nil,
 		enforce.Result{ExitCode: 7}, nil, newEventStream(&stdout), refusal)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("refusal exit code = %d, want %d", got, bentoFailed)
@@ -92,7 +92,7 @@ func TestWriteRunResultRefusalHuman(t *testing.T) {
 		}},
 	}
 	var stderr bytes.Buffer
-	err := writeRunResult(&stderr, false, validPolicy(), nil,
+	err := writeRunResult(&stderr, false, "", validPolicy(), nil,
 		enforce.Result{ExitCode: 7}, nil, nil, refusal)
 
 	var ee *exitError
@@ -128,7 +128,7 @@ func TestWriteRunResultExecRefusalNamesAllowDegraded(t *testing.T) {
 		Waivable: true,
 	}
 	var stderr bytes.Buffer
-	_ = writeRunResult(&stderr, false, validPolicy(), nil,
+	_ = writeRunResult(&stderr, false, "", validPolicy(), nil,
 		enforce.Result{}, nil, nil, refusal)
 	if !strings.Contains(stderr.String(), "--allow-degraded") {
 		t.Errorf("a waivable exec refusal named no way past; got:\n%s", stderr.String())
@@ -164,7 +164,7 @@ func TestWriteRunResultReportsShadowedPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stderr bytes.Buffer
-			_ = writeRunResult(&stderr, false, validPolicy(), env, tc.res, nil, nil, tc.runErr)
+			_ = writeRunResult(&stderr, false, "", validPolicy(), env, tc.res, nil, nil, tc.runErr)
 			if !strings.Contains(stderr.String(), "PATH is passed through, but the box does not carry") {
 				t.Errorf("shadowed PATH note missing; got %q", stderr.String())
 			}
@@ -178,7 +178,7 @@ func TestWriteRunResultReportsShadowedPath(t *testing.T) {
 func TestWriteRunResultSetupErrorPropagates(t *testing.T) {
 	setupErr := errors.New("enforce: nil enforcer")
 	var stderr bytes.Buffer
-	err := writeRunResult(&stderr, false, validPolicy(), nil,
+	err := writeRunResult(&stderr, false, "", validPolicy(), nil,
 		enforce.Result{}, nil, nil, setupErr)
 	if !errors.Is(err, setupErr) {
 		t.Errorf("setup error must propagate verbatim; got %v", err)
@@ -201,7 +201,7 @@ func TestWriteRunResultMidFlightFailureJSON(t *testing.T) {
 	runErr := errors.New("the sandbox stage died while the target ran")
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	err := writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("mid-flight failure exit code = %d, want %d", got, bentoFailed)
 	}
@@ -243,7 +243,7 @@ func TestWriteRunResultMidFlightFailureCarriesTheAutoExecList(t *testing.T) {
 	runErr := errors.New("the run was cancelled before the target finished")
 
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
 	var env struct {
 		ChangedAutoExec []string `json:"changed_auto_exec"`
 	}
@@ -255,7 +255,7 @@ func TestWriteRunResultMidFlightFailureCarriesTheAutoExecList(t *testing.T) {
 	}
 
 	stderr.Reset()
-	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, runErr)
+	_ = writeRunResult(&stderr, false, "", validPolicy(), nil, res, nil, nil, runErr)
 	if !strings.Contains(stderr.String(), planted) {
 		t.Errorf("the human path must name the file too; got %q", stderr.String())
 	}
@@ -265,7 +265,7 @@ func TestWriteRunResultMidFlightFailureCarriesTheAutoExecList(t *testing.T) {
 // rendered as a fully-enforced posture on a run that never had one.
 func TestWriteRunResultMidFlightFailureJSONNoReport(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil,
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil,
 		enforce.Result{}, nil, newEventStream(&stdout), errors.New("enforce: nil enforcer"))
 
 	var env struct {
@@ -293,7 +293,7 @@ func TestWriteRunResultSuccessJSON(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	err := writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 	if got := asExitError(t, err).code; got != 3 {
 		t.Fatalf("success exit code = %d, want 3", got)
 	}
@@ -348,7 +348,7 @@ func TestWriteRunResultJSONNamesWhatOptedInGrantsReach(t *testing.T) {
 			{Path: "/run", Holds: "services"},
 		},
 	}
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 
 	var env struct {
 		ShieldedGrants []struct {
@@ -382,14 +382,14 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 		Shields:  []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}, {Path: "/home/u/.aws", Kind: "hidden"}, {Path: "/work/.git/hooks", Kind: "read-only"}},
 	}
 	var stderr bytes.Buffer
-	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, nil)
+	_ = writeRunResult(&stderr, false, "", validPolicy(), nil, res, nil, nil, nil)
 	got := stderr.String()
 	if !strings.Contains(got, "3 credential/host-service path(s) shielded") || !strings.Contains(got, "2 hidden, 1 read-only") {
 		t.Errorf("shield summary line missing or wrong: %q", got)
 	}
 
 	var none bytes.Buffer
-	_ = writeRunResult(&none, false, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, nil, nil)
+	_ = writeRunResult(&none, false, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, nil, nil)
 	if strings.Contains(none.String(), "sandbox engaged") {
 		t.Errorf("a run that shielded nothing must not print the summary: %q", none.String())
 	}
@@ -400,7 +400,7 @@ func TestWriteRunResultShieldSummaryHuman(t *testing.T) {
 // re-minted as a bento refusal. Guards the asymmetry between the two envelopes.
 func TestWriteRunResultSuccessDoesNotForgeRefusal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stderr, true, validPolicy(), nil,
+	err := writeRunResult(&stderr, true, "", validPolicy(), nil,
 		enforce.Result{ExitCode: bentoFailed}, nil, newEventStream(&stdout), nil)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Fatalf("exit code = %d, want %d passed through", got, bentoFailed)
@@ -439,7 +439,7 @@ func TestWriteRunResultStreamWriteFailureRefusesEveryOutcome(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stderr bytes.Buffer
-			err := writeRunResult(&stderr, true, validPolicy(), nil,
+			err := writeRunResult(&stderr, true, "", validPolicy(), nil,
 				tc.res, nil, newEventStream(failWriter{}), tc.err)
 			if got := asExitError(t, err).code; got != bentoFailed {
 				t.Errorf("a truncated stream reported %d, want %d - nothing on stdout can be trusted", got, bentoFailed)
@@ -466,7 +466,7 @@ func TestWriteRunResultStreamIntactKeepsTheEarnedCode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			err := writeRunResult(&stderr, true, validPolicy(), nil,
+			err := writeRunResult(&stderr, true, "", validPolicy(), nil,
 				enforce.Result{ExitCode: 5}, nil, newEventStream(&stdout), tc.err)
 			if got := asExitError(t, err).code; got != tc.want {
 				t.Errorf("exit code = %d, want %d", got, tc.want)
@@ -490,7 +490,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 	netPolicy := &policy.Policy{Entrypoint: "./x", Network: []policy.NetworkRule{{Host: "a.com", Port: "443"}}}
 
 	var stderr bytes.Buffer
-	err := writeRunResult(&stderr, false, netPolicy, nil, res, nil, nil, nil)
+	err := writeRunResult(&stderr, false, "", netPolicy, nil, res, nil, nil, nil)
 	if got := asExitError(t, err).code; got != 1 {
 		t.Fatalf("exit code = %d, want 1", got)
 	}
@@ -506,7 +506,7 @@ func TestWriteRunResultHumanSurfacesWarnings(t *testing.T) {
 // none (omitempty), so a machine consumer keying on the field's presence is not misled.
 func TestWriteRunResultSuccessOmitsEmptyShieldedGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var env map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -544,7 +544,7 @@ func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			_ = writeRunResult(&stderr, true, validPolicy(), env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), tc.runErr)
+			_ = writeRunResult(&stderr, true, "", validPolicy(), env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), tc.runErr)
 			var got struct {
 				ShadowedPathDirs []string `json:"shadowed_path_dirs"`
 			}
@@ -562,7 +562,7 @@ func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	granted := validPolicy()
 	granted.Read = append(granted.Read, toolchain)
-	_ = writeRunResult(&stderr, true, granted, env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", granted, env, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -579,7 +579,7 @@ func TestWriteRunResultReportsShadowedPathDirs(t *testing.T) {
 // missing_read_grants, and the envelope has to agree with that spelling.
 func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, &runNotesJSON{MissingReadGrants: []string{"/data/gone"}}, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, &runNotesJSON{MissingReadGrants: []string{"/data/gone"}}, newEventStream(&stdout), nil)
 	var env struct {
 		MissingReadGrants []string `json:"missing_read_grants"`
 	}
@@ -591,7 +591,7 @@ func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -606,7 +606,7 @@ func TestWriteRunResultReportsMissingReadGrants(t *testing.T) {
 func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	res := enforce.Result{ExitCode: 0, GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		GuardBlocked []struct {
 			Host string `json:"host"`
@@ -621,7 +621,7 @@ func TestWriteRunResultReportsGuardBlocked(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -642,7 +642,7 @@ func TestWriteRunResultReportsMetadataProbesInsideGuardBlocked(t *testing.T) {
 		GuardBlocked:         []enforce.HostPort{{Host: "169.254.169.254", Port: "80"}, {Host: "internal.example", Port: "443"}},
 		GuardBlockedMetadata: []enforce.HostPort{{Host: "169.254.169.254", Port: "80"}},
 	}
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		GuardBlocked         []hostPortJSON `json:"guard_blocked"`
 		GuardBlockedMetadata []hostPortJSON `json:"guard_blocked_metadata"`
@@ -659,7 +659,7 @@ func TestWriteRunResultReportsMetadataProbesInsideGuardBlocked(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0,
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0,
 		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}}}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -689,7 +689,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 		GuardBlocked: []enforce.HostPort{{Host: "internal.example", Port: "443"}},
 		Denied:       []enforce.HostPort{{Host: "api.githb.com", Port: "443"}},
 	}
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		GuardBlocked []hostPortJSON `json:"guard_blocked"`
 		EgressDenied []hostPortJSON `json:"egress_denied"`
@@ -705,7 +705,7 @@ func TestWriteRunResultKeepsDeniedAndGuardBlockedApart(t *testing.T) {
 	}
 
 	stdout.Reset()
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, newEventStream(&stdout), nil)
 	var raw map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("not JSON: %v", err)
@@ -901,7 +901,7 @@ func TestNoProfileHintAfterADenial(t *testing.T) {
 	var errOut bytes.Buffer
 	p := &policy.Policy{Entrypoint: "./t.py", Read: []string{"/data"}}
 	res := enforce.Result{ExitCode: 1, EgressConnections: 1, Denied: []enforce.HostPort{{Host: "api.githb.com", Port: "443"}}}
-	_ = writeRunResult(&errOut, false, p, nil, res, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, "", p, nil, res, nil, nil, nil)
 	if strings.Contains(errOut.String(), "the sandbox denies silently") {
 		t.Errorf("the generic profile hint must not follow a denial; got:\n%s", errOut.String())
 	}
@@ -943,7 +943,7 @@ func TestWriteRunResultShortfallOverABackendFailureReportsTheFailure(t *testing.
 	}
 
 	var stderr bytes.Buffer
-	err := writeRunResult(&stderr, false, validPolicy(), nil,
+	err := writeRunResult(&stderr, false, "", validPolicy(), nil,
 		enforce.Result{Report: report}, nil, nil, shortfall)
 	if !errors.Is(err, shortfall.Err) {
 		t.Errorf("human path returned %v, want the backend's own failure handed back for main to render", err)
@@ -962,7 +962,7 @@ func TestWriteRunResultShortfallOverABackendFailureReportsTheFailure(t *testing.
 
 	var stdout bytes.Buffer
 	stderr.Reset()
-	err = writeRunResult(&stderr, true, validPolicy(), nil,
+	err = writeRunResult(&stderr, true, "", validPolicy(), nil,
 		enforce.Result{Report: report}, nil, newEventStream(&stdout), shortfall)
 	if got := asExitError(t, err).code; got != bentoFailed {
 		t.Errorf("--json exit code = %d, want %d - the run failed, it did not complete under a lapsed posture", got, bentoFailed)
@@ -989,7 +989,7 @@ func TestWriteRunResultPostureShortfall(t *testing.T) {
 	shortfall := &enforce.Shortfall{Report: report, Short: report.Degradations()}
 
 	var stdout, stderr bytes.Buffer
-	err := writeRunResult(&stderr, false, validPolicy(), nil,
+	err := writeRunResult(&stderr, false, "", validPolicy(), nil,
 		enforce.Result{ExitCode: 0, Report: report}, nil, nil, shortfall)
 	if got := asExitError(t, err).code; got != postureShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d - never the target's own code", got, postureShortfall)
@@ -1000,7 +1000,7 @@ func TestWriteRunResultPostureShortfall(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	err = writeRunResult(&stderr, true, validPolicy(), nil,
+	err = writeRunResult(&stderr, true, "", validPolicy(), nil,
 		enforce.Result{ExitCode: 7, Report: report}, nil, newEventStream(&stdout), shortfall)
 	if got := asExitError(t, err).code; got != postureShortfall {
 		t.Fatalf("shortfall exit code = %d, want %d in --json too", got, postureShortfall)
@@ -1094,7 +1094,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 			if tc.shortfall {
 				runErr = &enforce.Shortfall{}
 			}
-			_ = writeRunResult(&errOut, false, tc.p, nil, tc.res, nil, nil, runErr)
+			_ = writeRunResult(&errOut, false, "", tc.p, nil, tc.res, nil, nil, runErr)
 			if got := strings.Contains(errOut.String(), "bento profile"); got != tc.want {
 				t.Errorf("profile hint emitted = %v, want %v; got:\n%s", got, tc.want, errOut.String())
 			}
@@ -1104,7 +1104,7 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 	// Suppressing the hints there must not leave the failure unexplained: the run ended
 	// with bento's code, and nothing else on that path says so.
 	var unreached bytes.Buffer
-	_ = writeRunResult(&unreached, false, granted, nil,
+	_ = writeRunResult(&unreached, false, "", granted, nil,
 		enforce.Result{ExitCode: 125, Setup: enforce.SetupTargetUnreached}, nil, nil, nil)
 	for _, want := range []string{"could not start the target", "exit 125 is bento's"} {
 		if !strings.Contains(unreached.String(), want) {
@@ -1119,14 +1119,14 @@ func TestProfileHintOnANonZeroExit(t *testing.T) {
 
 	// --json carries the outcome as a field, and the hint on stdout would corrupt it.
 	var out, errOut bytes.Buffer
-	_ = writeRunResult(&errOut, true, granted, nil, enforce.Result{ExitCode: 1}, nil, newEventStream(&out), nil)
+	_ = writeRunResult(&errOut, true, "", granted, nil, enforce.Result{ExitCode: 1}, nil, newEventStream(&out), nil)
 	if strings.Contains(out.String()+errOut.String(), "bento profile") {
 		t.Errorf("--json must not carry the hint; got:\n%s%s", out.String(), errOut.String())
 	}
 
 	// The counts are the point: they say how little was granted.
 	errOut.Reset()
-	_ = writeRunResult(&errOut, false, granted, nil, enforce.Result{ExitCode: 3}, nil, nil, nil)
+	_ = writeRunResult(&errOut, false, "", granted, nil, enforce.Result{ExitCode: 3}, nil, nil, nil)
 	for _, want := range []string{"exited 3", "1 read and 1 write"} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("hint missing %q; got:\n%s", want, errOut.String())
@@ -1143,7 +1143,7 @@ func TestEventStreamDropsOutputAfterTheTerminalObject(t *testing.T) {
 	out := stream.output("stdout")
 
 	fmt.Fprint(out, "before")
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, stream, nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{ExitCode: 0}, nil, stream, nil)
 	fmt.Fprint(out, "straggler")
 
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
@@ -1235,7 +1235,7 @@ func TestWriteRunResultMidFlightFailureCarriesTheExposureAudit(t *testing.T) {
 	runErr := errors.New("the run was cancelled before the target finished")
 
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
 	var env struct {
 		Exposed []shieldJSON `json:"exposed"`
 	}
@@ -1247,7 +1247,7 @@ func TestWriteRunResultMidFlightFailureCarriesTheExposureAudit(t *testing.T) {
 	}
 
 	stderr.Reset()
-	_ = writeRunResult(&stderr, false, validPolicy(), nil, res, nil, nil, runErr)
+	_ = writeRunResult(&stderr, false, "", validPolicy(), nil, res, nil, nil, runErr)
 	if !strings.Contains(stderr.String(), reachable) {
 		t.Errorf("the human path must name the exposed store too; got %q", stderr.String())
 	}
@@ -1296,11 +1296,11 @@ func TestWriteRunResultVerdictNamesAnUnshieldedRelocation(t *testing.T) {
 	res := enforce.Result{Shields: []enforce.ShieldApplied{{Path: "/home/u/.ssh", Kind: "hidden"}}}
 
 	var human, stdout, stderr bytes.Buffer
-	_ = writeRunResult(&human, false, validPolicy(), nil, res, nil, nil, nil)
+	_ = writeRunResult(&human, false, "", validPolicy(), nil, res, nil, nil, nil)
 	if !strings.Contains(human.String(), "$GNUPGHOME") {
 		t.Fatalf("precondition: the human warning must fire; got:\n%s", human.String())
 	}
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), nil)
 	var env struct {
 		UnshieldableRelocations map[string]string `json:"unshieldable_relocations"`
 	}
@@ -1325,7 +1325,7 @@ func TestWriteRunResultFailureCarriesTheNetworkAndExecRecords(t *testing.T) {
 	runErr := errors.New("the run was cancelled before the target finished")
 
 	var human bytes.Buffer
-	_ = writeRunResult(&human, false, validPolicy(), nil, res, nil, nil, runErr)
+	_ = writeRunResult(&human, false, "", validPolicy(), nil, res, nil, nil, runErr)
 	for _, want := range []string{"denied.example", "guarded.example", "plain.example", "ptrace refused"} {
 		if !strings.Contains(human.String(), want) {
 			t.Errorf("human failure output missing %q; got:\n%s", want, human.String())
@@ -1333,7 +1333,7 @@ func TestWriteRunResultFailureCarriesTheNetworkAndExecRecords(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+	_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
 	var env struct {
 		EgressConnections int            `json:"egress_connections"`
 		EgressDenied      []hostPortJSON `json:"egress_denied"`
@@ -1361,7 +1361,7 @@ func TestWriteRunResultSaysTheTargetNeverRan(t *testing.T) {
 	neverRan := func(t *testing.T, res enforce.Result, runErr error) bool {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		_ = writeRunResult(&stderr, true, validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
+		_ = writeRunResult(&stderr, true, "", validPolicy(), nil, res, nil, newEventStream(&stdout), runErr)
 		var env struct {
 			TargetNeverRan bool `json:"target_never_ran"`
 		}
@@ -1394,7 +1394,7 @@ func TestWriteRunResultRefusalSaysAllowDegradedWouldAdmit(t *testing.T) {
 	for _, waivable := range []bool{true, false} {
 		var stdout, stderr bytes.Buffer
 		refusal := &enforce.Refusal{Reason: "limits", Waivable: waivable}
-		_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{}, nil, newEventStream(&stdout), refusal)
+		_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{}, nil, newEventStream(&stdout), refusal)
 		var env struct {
 			AllowDegradedWouldAdmit bool `json:"allow_degraded_would_admit"`
 		}
@@ -1425,7 +1425,7 @@ func TestWriteRunResultCarriesThePreRunNotes(t *testing.T) {
 		"refusal": &enforce.Refusal{Reason: "short"},
 	} {
 		var stdout, stderr bytes.Buffer
-		_ = writeRunResult(&stderr, true, validPolicy(), nil, enforce.Result{}, notes, newEventStream(&stdout), runErr)
+		_ = writeRunResult(&stderr, true, "", validPolicy(), nil, enforce.Result{}, notes, newEventStream(&stdout), runErr)
 		var got runNotesJSON
 		if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 			t.Fatalf("%s: not JSON: %v\n%s", name, err, stdout.String())
@@ -1476,7 +1476,7 @@ func TestARefusalOnlyNamesRemediesAdmissionWouldAccept(t *testing.T) {
 		}
 
 		var stderr bytes.Buffer
-		_ = writeRunResult(&stderr, false, p, nil, enforce.Result{}, nil, nil, runErr)
+		_ = writeRunResult(&stderr, false, "", p, nil, enforce.Result{}, nil, nil, runErr)
 		// The printer wraps, so a remedy can straddle two lines.
 		flat := strings.Join(strings.Fields(stderr.String()), " ")
 		for _, dead := range []string{"to proceed anyway", "drop `limits:`"} {

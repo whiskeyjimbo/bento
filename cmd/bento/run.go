@@ -182,7 +182,7 @@ func newRunCmd() *cobra.Command {
 				// re-stamp a widened policy for its next run.
 				ReadOnlyPaths: []string{mt.RealPath},
 			})
-			return writeRunResult(os.Stderr, asJSON, p, env, res, &notes, stream, err)
+			return writeRunResult(os.Stderr, asJSON, mt.RealPath, p, env, res, &notes, stream, err)
 		},
 	}
 
@@ -498,7 +498,11 @@ func reportStreamed(stderr io.Writer, stream *eventStream, code int) error {
 // what the sandbox was actually given, not what the manifest allowed: a name the host
 // never set never reaches the box, so the notes that turn on a variable's absence have to
 // read the resolved map rather than p.Env.
-func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[string]string, res enforce.Result, notes *runNotesJSON, stream *eventStream, runErr error) error {
+func writeRunResult(stderr io.Writer, asJSON bool, manifestPath string, p *policy.Policy, env map[string]string, res enforce.Result, notes *runNotesJSON, stream *eventStream, runErr error) error {
+	var extra []string
+	if notes != nil {
+		extra = notes.ExtraArgs
+	}
 	var (
 		refusal   *enforce.Refusal
 		shortfall *enforce.Shortfall
@@ -542,7 +546,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// The network half and the exec record, in the clean path's order: a run hung
 			// on a denied host and then interrupted is the one the denial explains.
 			writeGuardBlockedWarning(stderr, res)
-			writeDeniedWarning(stderr, p, res)
+			writeDeniedWarning(stderr, profileCommand(manifestPath, p, extra, true), res)
 			writeUntunneledWarning(stderr, res)
 			writeExecRecord(stderr, res)
 			// The layers a shortfall named are rendered here, wrapped, for the reason the
@@ -670,7 +674,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 		// Before the bypass hint: each is a connection that DID reach the proxy, so it
 		// explains a network failure the hint would otherwise blame on a bypass.
 		writeGuardBlockedWarning(stderr, res)
-		denied := writeDeniedWarning(stderr, p, res)
+		denied := writeDeniedWarning(stderr, profileCommand(manifestPath, p, extra, true), res)
 		// After the denial for the reason the untunneled notice is: a run can have both,
 		// and this one has to say the manifest remedy the denial just named does not
 		// apply to its half.
@@ -703,7 +707,7 @@ func writeRunResult(stderr io.Writer, asJSON bool, p *policy.Policy, env map[str
 			// suspects a cause rather than establishing one.
 			writeSandboxHomeMiss(stderr, p, env, res)
 			writeSandboxPathMiss(stderr, p, env, res)
-			hinted = writeProfileHint(stderr, p, res)
+			hinted = writeProfileHint(stderr, profileCommand(manifestPath, p, extra, false), p, res)
 		}
 		// Outside the chain above, which explains failures: this covers the run that
 		// reported none, and the one the chain left with the generic hint - which says

@@ -267,9 +267,9 @@ func isZeroJSON(v any) bool {
 func renderRun(t *testing.T, p *policy.Policy, env map[string]string, res enforce.Result, runErr error) (string, map[string]any) {
 	t.Helper()
 	var human bytes.Buffer
-	_ = writeRunResult(&human, false, p, env, res, nil, nil, runErr)
+	_ = writeRunResult(&human, false, "", p, env, res, nil, nil, runErr)
 	var stdout, stderr bytes.Buffer
-	_ = writeRunResult(&stderr, true, p, env, res, nil, newEventStream(&stdout), runErr)
+	_ = writeRunResult(&stderr, true, "", p, env, res, nil, newEventStream(&stdout), runErr)
 	var machine map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &machine); err != nil {
 		t.Fatalf("run --json is not one JSON object (%v):\n%s", err, stdout.String())
