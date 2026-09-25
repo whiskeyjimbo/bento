@@ -577,15 +577,6 @@ func ValidateRunID(id string) error {
 	return &Refusal{Reason: fmt.Sprintf("run id %q must be 1-64 characters of letters, digits, or underscore", id)}
 }
 
-// admitEnv refuses a run whose resolved environment carries a name the manifest does
-// not declare. The backend emits --setenv for every key it is given and makes no
-// judgment about them, and ResolveEnv is where the allowlist is applied - so a map an
-// embedder assembled by any other path (os.Environ, or its own literal) reaches the
-// sandbox whole, and the manifest stops describing what the target can see.
-//
-// A Refusal, and settled before anything is probed: it is a mistake in what the caller
-// asked for, the category a supervisor must not retry. The names are sorted so the
-// message is the same on every run of the same mistake.
 // AdmitExtraArgs refuses arguments appended to a policy that did not opt in with
 // extra_args, and any argument exec could not carry. Backends call it too, since
 // their Run is an entry point an embedder can reach without Run.
@@ -603,6 +594,15 @@ func AdmitExtraArgs(p *policy.Policy, extra []string) error {
 	return nil
 }
 
+// admitEnv refuses a run whose resolved environment carries a name the manifest does
+// not declare. The backend emits --setenv for every key it is given and makes no
+// judgment about them, and ResolveEnv is where the allowlist is applied - so a map an
+// embedder assembled by any other path (os.Environ, or its own literal) reaches the
+// sandbox whole, and the manifest stops describing what the target can see.
+//
+// A Refusal, and settled before anything is probed: it is a mistake in what the caller
+// asked for, the category a supervisor must not retry. The names are sorted so the
+// message is the same on every run of the same mistake.
 func admitEnv(p *policy.Policy, proc Process) error {
 	var undeclared []string
 	for name := range proc.Env {
