@@ -9,6 +9,173 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
+## 0.4.0 (2026-09-25)
+
+A minor bump, for new surface and for three narrowed checks. Two manifest keys
+(`workdir`, `extra_args`), a new command (`bento hook claude-code`) and several
+new JSON fields arrive. Most of the boundary moved inward: coding agents' project
+config and nested checkouts are shielded, a run can no longer rewrite its own
+manifest, the degraded tier gains a capability fence and a System V IPC block,
+and far more of what a host could not do reaches `--json`. It moved outward in
+three places, each named below with its reason: the launcher's `/dev` fence and
+its hidden-shield emptiness check both accept mounts bento's own argv made, and
+`extra_args` lets an opted-in manifest take arguments its approval does not cover.
+No shield was removed and no layer moved from a shortfall to `Enforced`.
+
+### Boundary Hardening
+
+- **Coding agents' project config is write-denied in a checkout.** `.claude`,
+  `.mcp.json`, `.codex`, `.cursor`, `.gemini`, `.continue` and `.aider.conf.yml`
+  each declare hooks, MCP servers or commands an agent runs on the host at its
+  next session, so a run with a write grant on a checkout could plant one. Reads
+  stay allowed. The cost: Claude Code keeps worktrees under `.claude/worktrees`,
+  so a confined agent cannot create one there, and granting both a checkout and a
+  worktree inside it is refused. A worktree granted on its own still works.
+  Inward.
+- **Checkouts nested inside a write grant get their own workspace shields.**
+  Only the grant's enclosing checkout had its `.git/hooks`, `.git/config`, editor
+  task files and agent config shielded; a vendored or submodule checkout below it
+  had none. The walk is bounded and a run past the bound is refused rather than
+  shielded short. Agent and editor config found below a grant is shielded the same
+  way, and a nested shield reached through a redirect is refused. Inward.
+- **The directories above a shield are pinned.** A shield is a mount, and the
+  kernel refuses to rename a mount point but not a directory above one, so
+  `mv .git .git.old` carried the `.git/hooks` bind away and left a fresh
+  `.git/hooks` writable on the host. Each directory between a write grant and a
+  shield is now bound onto itself. Inward.
+- **A run can no longer rewrite the manifest it runs.** Approval is a stamp inside
+  the manifest, so a run whose write grant covered it could widen and re-stamp
+  the policy for its next run. The manifest is bound read-only, and a manifest a
+  write grant could still reach around that bind - through a writable parent, a
+  hard link, or a symlinked directory in its name - is refused. `bento profile`
+  likewise refuses an `--out` the profiled run wrote. Inward.
+- **Git's hook configuration is followed where git actually runs hooks.**
+  `core.hooksPath`, including one set through an include or `config.worktree`, is
+  resolved against the real grant, and a `hooksPath` with no work tree is
+  refused. Inward.
+- **`~/.sendgmail.json` is hidden**, the Gmail app password sendgmail keeps by
+  default. linphone's and emailidentities' entries now shield the files they
+  name rather than a directory of that name, and dotfile-farm link expansion
+  reaches small credential stores outside `~/.config`. Inward.
+- **A write shield on a case-folding directory is refused on both tiers.** The
+  byte-exact bind that shields it leaves the same path writable under another
+  spelling, so the tier split that let the full tier ro-bind it no longer holds.
+  A write grant above such a shield is dropped. Inward.
+- **The degraded tier fences its capability bound and blocks System V IPC.** It
+  empties the bounding set where the kernel allows and refuses the run where it
+  cannot and the caller holds capabilities in its permitted set - a root-started
+  run nothing refused before. SysV IPC was reachable on the degraded tier and
+  not on the full one; it is now blocked, and the divergence that remains is
+  disclosed. Inward.
+- **The launcher and its session runner are trust-checked before use.** A bwrap
+  resolved out of the current directory is refused, and `systemd-run` and the
+  probe canaries pass the same ownership check as bwrap before they execute.
+  Inward.
+- **Shields a killed run stranded are reclaimed.** A SIGKILL skips every deferred
+  teardown, so empty mount points - including a `.git/` in a directory that was
+  never a repository - stayed in the checkout and anchored the next run's
+  shields on a repository that did not exist. Their paths are now recorded on
+  disk before the run and swept by the next one, which trusts only its own
+  records. Inward.
+- **The `/dev` fence admits a grant under `/dev`.** Outward, and the reason: the
+  fence refused every name bwrap's `--dev` does not create, which refused
+  legitimate runs granting `/dev/dri` or `/dev/net/tun`. A name is now accepted
+  when a mount sits at or beneath it. The residual: a leaked host `/dev` shows
+  its own `mqueue` and `hugepages` submounts as mounts too, so those two pass;
+  every plain host device node is still named.
+- **The hidden-shield emptiness check accepts nested shields' mount points.**
+  Outward, and the reason: a credential store holding a symlink into itself gets
+  a nested rule of its own, bwrap has to create that mount point in the parent's
+  tmpfs, and the check refused the run as a shimmed argv. The residual: a store
+  whose every top-level entry is a nested shield's name would also pass with the
+  parent's tmpfs dropped. Each nested shield is still checked on its own, and a
+  store with any other entry still fails.
+
+### Running an Agent (`bento hook claude-code`)
+
+- **A Claude Code PreToolUse adapter.** `bento hook claude-code <manifest>`
+  reads the hook payload and rewrites each Bash call to run under the manifest,
+  so an agent's shell commands are confined without a prompt per call. Every
+  failure answers with a deny rather than an error exit, because Claude Code
+  does not block on an error: a wrong argument count, a binary it cannot locate,
+  a NUL byte in the command or cwd, and manifest checks that take longer than
+  five seconds. Under `--allow` it drops any `dangerouslyDisableSandbox` the
+  model set, since that consent was never shown to the user.
+
+### Writing a Manifest
+
+- **`workdir` sets the directory the target starts in.** It stays relocatable
+  with the manifest, is shown by `validate`, is carried into the approval stamp,
+  and is refused when this host does not have it or it is not a directory.
+  `bento profile` names a workdir the manifest grants nothing at.
+- **`extra_args` lets a run append arguments after the manifest's own.**
+  Outward by design, for a manifest that opts in: the arguments are an
+  invocation, not a permission, so they are not fingerprinted and the approval
+  does not cover them. A manifest without the key takes none, both tiers and
+  `bento profile` admit them at the backend entry, and a NUL byte is refused.
+  `--json` reports them as `extra_args`.
+- **Marshal caps what it writes at Parse's size limit**, so bento cannot write a
+  manifest it would refuse to read. Manifests are opened non-blocking so a FIFO
+  is refused rather than hanging the reader.
+
+### Reviewing a Manifest
+
+- **`validate` notes the layers this host falls short on** for the manifest, and
+  `approve` names every fatal location flaw at once. The trust check counts
+  `/etc/passwd` holders of an unnamed group, says when group reach cannot be
+  proved, and keeps world-writable unhedged by it.
+- **`bento profile` calls out directory grants it proposes from a listing**, and
+  stops calling host `/tmp` absent.
+- **An unlocated manifest defers to the Linux run.** Off Linux, where trust
+  cannot locate the file, `validate` no longer warns that nothing shows the write
+  grants cannot replace it: no run happens there, and the Linux run asks again.
+
+### What a Run Tells You
+
+- **A run reports the residue it leaves on the host.** Mount points created for
+  write grants and shields on all three tiers, the teardown the degraded tier
+  never runs, and each arm that never launched are carried on the result and
+  printed with quoted paths.
+- **Metadata-endpoint probes are reported apart from guard blocks**, in every
+  frontend, and the egress guard's refusals are split by cause.
+- **More verdicts worsen, none improve.** An unsampled scope worsens the limits
+  verdict, the degraded tier's scope limits are attested like the full tier's, a
+  failed or watched-but-empty recorder is partial rather than complete, an
+  `Unavailable` filesystem is not upgraded, the exec-strict fallback reports
+  degraded, and a backend's worse report-only verdict is kept. A run that failed
+  before setup produces no report, so no layer reads as enforced for a target
+  that never ran. `doctor` exits non-zero when the default manifest's exec block
+  is undeliverable. A cancelled `bento profile` is spared the unattested-scope
+  refusal, since a cancel leaves the same reading a broken manager does.
+- **Degraded-tier residuals are disclosed**: ABI and parity gaps, passed MPTCP
+  sockets, and the seccomp legend is keyed on the tier that actually ran.
+- **`--json` carries what stderr said.** Trust flaws and their hints, host notes,
+  unshielded and carve refusals, stamp notes, approve callouts, shield anchor
+  facts and relocations, walk-truncated credential stores, and the facts of a
+  failed or cancelled run.
+- **Remedies are screened against admission.** A suggested fix admission would
+  refuse is withdrawn and the live lever named instead, and every waivable
+  refusal names `--allow-degraded`.
+
+### Profiling (`bento profile`)
+
+- **Exec images are resolved the way the kernel does.** `#!` lines are decoded to
+  binfmt_script's rules, `PT_INTERP` is read from the program headers, images are
+  re-rooted with `openat2` `RESOLVE_IN_ROOT` in the tracee's namespace, and an
+  unparseable ELF is recorded as a loss rather than as no image.
+- **Faster tracing**: tracee memory is read with `process_vm_readv` and stops are
+  decoded from syscall info alone.
+
+### Development
+
+- **Shield derivation, validation and the proxy were profiled and trimmed**:
+  each host path is resolved and probed once per run, a run's shield rules are
+  derived once, and the proxy pools tunnel buffers and re-arms deadlines once per
+  window.
+- The nightly fuzz job runs one package per runner. The layering check scans
+  git's tracked set rather than the working tree. `denylist-audit` fails on
+  directives it cannot parse. The launcher builds on 32-bit Linux.
+
 ## 0.3.1 (2026-09-08)
 
 A patch bump: nothing about the boundary moved outward. One shield was added and
