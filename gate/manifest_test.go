@@ -188,3 +188,12 @@ func TestManifestProblemsJudgesTheLoadedFileNotTheNameAgain(t *testing.T) {
 		t.Errorf("want the symlink the load followed reported, got %q", got)
 	}
 }
+
+// Off Linux trust cannot locate a manifest, and validate there only lints; a blocking
+// problem would fail every manifest with a write grant in a macOS CI. The zero Manifest is
+// what trust.Inspect returns in that case.
+func TestManifestProblemsDefersAnUnlocatedManifest(t *testing.T) {
+	if got := gate.ManifestProblems("m.yaml", trust.Manifest{}, &policy.Policy{Write: []string{"/"}}); len(got) != 0 {
+		t.Errorf("want no problem for an unlocated manifest, got %q", got)
+	}
+}

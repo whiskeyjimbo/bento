@@ -27,12 +27,6 @@ import (
 // Exported for the reason WorkdirProblems is: run refuses these, so validate and approve
 // have to report and refuse the same set.
 func ManifestProblems(name string, m trust.Manifest, resolved *policy.Policy) []string {
-	// Only where trust could not locate the file, which is off Linux: no run happens there
-	// to bind anything, a run on Linux asks again, and trust's LocationFlaws already warns
-	// that the location went unjudged.
-	if m.RealPath == "" {
-		return nil
-	}
 	real := m.RealPath
 	writable := func(p string) bool {
 		return len(writeGrantsCovering(resolved, p)) > 0
