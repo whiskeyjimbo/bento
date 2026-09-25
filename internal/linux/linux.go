@@ -927,7 +927,8 @@ func newSandbox(p *policy.Policy, selfPath string, gated bool, denyPaths, readOn
 		return sandbox{}, noop, fmt.Errorf("entrypoint %q: %w", p.Entrypoint, err)
 	}
 
-	// An empty interpreter means the entrypoint runs itself: a compiled binary.
+	// An empty interpreter means the entrypoint is executed directly - a compiled binary, or
+	// a script whose #! line the kernel follows.
 	var interp, interpName string
 	if p.Interpreter != "" {
 		found, err := bounded("the PATH lookup of "+p.Interpreter, func() (string, error) {
