@@ -138,15 +138,8 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := admitEnv(p, proc); err != nil {
 		return Result{}, err
 	}
-	if len(proc.ExtraArgs) > 0 && !p.ExtraArgs {
-		return Result{}, fmt.Errorf("enforce: the policy does not set extra_args, so a run of it takes no arguments beyond its own")
-	}
-	for _, a := range proc.ExtraArgs {
-		// The one thing an argv element cannot carry; exec would fail on it after the
-		// sandbox was built.
-		if strings.ContainsRune(a, 0) {
-			return Result{}, fmt.Errorf("enforce: extra argument %q contains a NUL byte, which no argument can carry", a)
-		}
+	if err := AdmitExtraArgs(p, proc.ExtraArgs); err != nil {
+		return Result{}, err
 	}
 	wanted := requiredLayers(p, opts)
 	probed := ProbeFor(ctx, e, wanted)
@@ -593,6 +586,23 @@ func ValidateRunID(id string) error {
 // A Refusal, and settled before anything is probed: it is a mistake in what the caller
 // asked for, the category a supervisor must not retry. The names are sorted so the
 // message is the same on every run of the same mistake.
+// AdmitExtraArgs refuses arguments appended to a policy that did not opt in with
+// extra_args, and any argument exec could not carry. Backends call it too, since
+// their Run is an entry point an embedder can reach without Run.
+func AdmitExtraArgs(p *policy.Policy, extra []string) error {
+	if len(extra) > 0 && !p.ExtraArgs {
+		return fmt.Errorf("enforce: the policy does not set extra_args, so a run of it takes no arguments beyond its own")
+	}
+	for _, a := range extra {
+		// The one thing an argv element cannot carry; exec would fail on it after the
+		// sandbox was built.
+		if strings.ContainsRune(a, 0) {
+			return fmt.Errorf("enforce: extra argument %q contains a NUL byte, which no argument can carry", a)
+		}
+	}
+	return nil
+}
+
 func admitEnv(p *policy.Policy, proc Process) error {
 	var undeclared []string
 	for name := range proc.Env {

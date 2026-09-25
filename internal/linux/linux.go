@@ -61,6 +61,9 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err := p.RequireExpanded(); err != nil {
 		return enforce.Result{}, err
 	}
+	if err := enforce.AdmitExtraArgs(p, proc.ExtraArgs); err != nil {
+		return enforce.Result{}, err
+	}
 	if err := e.screenRunID(ctx, p, opts.RunID); err != nil {
 		return enforce.Result{}, err
 	}
