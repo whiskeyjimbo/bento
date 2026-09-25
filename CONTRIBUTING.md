@@ -25,9 +25,21 @@ needs a genuine reason and a license compatible with Apache-2.0.
 
 ## Development setup
 
-You need Go (see the version in [`go.mod`](go.mod)) and, on Linux, `bubblewrap`
-with unprivileged user namespaces enabled. `make race` needs a C toolchain for
-the race detector.
+`make check` needs, on Linux:
+
+- Go (see the version in [`go.mod`](go.mod)).
+- `bubblewrap`, with unprivileged user namespaces enabled. On Ubuntu 23.10 and
+  later AppArmor denies them to unconfined binaries such as `bwrap`; either load
+  a profile that permits `bwrap` or set
+  `sysctl kernel.apparmor_restrict_unprivileged_userns=0`, which is what CI does.
+- `firejail` and `apparmor`, whose installed profiles the denylist tests diff
+  against.
+- `python3` and `setsid` (util-linux), which the example scripts drive.
+- A C toolchain, for `make race`.
+- Network access, for `make vuln` and `make audit`.
+
+[`.github/workflows/gate.yml`](.github/workflows/gate.yml) is the reference: its
+setup steps install exactly this and probe each lever before running the gate.
 
 This checkout is not part of the parent `go.work`, so every `go` command needs
 `GOWORK=off`. The Makefile sets it for you - prefer the make targets over bare
@@ -35,7 +47,7 @@ This checkout is not part of the parent `go.work`, so every `go` command needs
 
 ```bash
 make build   # reproducible static binary
-make check   # the full gate: vet, crossbuild, lint, test, race, audit, examples, vuln
+make check   # the full gate; `make help` lists every leg it runs
 ```
 
 `make check` is the bar before merging. Get it green before opening a PR. It needs
@@ -51,7 +63,11 @@ make vet
 make lint        # golangci-lint, pinned
 make race        # the proxy's concurrency tests under the race detector
 make audit       # denylist parity against the firejail reference definitions
+                 # (./scripts/denylist-audit.sh -v lists the paths it only counts)
+make layering    # the architectural import boundaries
 make crossbuild  # the tree still compiles for darwin and linux/arm64
+make bentoprobe  # the landlock preset hooks under the bentoprobe build tag
+make bench       # one iteration of every benchmark
 make examples    # each examples/*/verify.sh, which the root go test does not reach
 make vuln        # govulncheck over both modules; needs network
 make cover       # whole-tree coverage with -coverpkg; see "Coverage" below
@@ -67,9 +83,10 @@ Two of these are easy to underestimate:
 - **`make test` needs host state to mean anything.** The suite runs real probes
   inside real bubblewrap sandboxes, and the denylist audit diffs against the
   locally installed firejail and AppArmor profiles. Without them those tests
-  skip, and a green run proves less than it appears to. Install `bubblewrap` and
-  `firejail`; set `BENTO_REQUIRE_TEST_DEPS` to turn a skip into a failure, which
-  is what CI does.
+  skip, and a green run proves less than it appears to - so `make test`,
+  `make race` and `make examples` set `BENTO_REQUIRE_TEST_DEPS`, which turns
+  each such skip into a failure. A plain `GOWORK=off go test ./...` leaves it
+  unset and skips them.
 
 CI runs the same gate on every push and pull request - see
 [`.github/workflows/gate.yml`](.github/workflows/gate.yml), which is the single

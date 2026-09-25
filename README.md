@@ -610,19 +610,24 @@ A denied path does not announce itself as denied: it reads as absent, empty, or 
 Run tests and checks locally:
 
 ```sh
-make test       # unit and integration tests (sandbox tests skip if bwrap/userns are missing;
-                # the denylist parity tests also want firejail and its apparmor profiles)
+make test       # unit and integration tests; FAILS, rather than skips, the sandbox tests
+                # when bwrap/userns, firejail or its apparmor profiles are missing (a plain
+                # `GOWORK=off go test ./...` skips them instead)
 make vet
 make lint       # golangci-lint, pinned
 make audit      # denylist parity against upstream firejail reference definitions
+                # (./scripts/denylist-audit.sh -v lists the paths it only counts)
 make layering   # the import boundaries: kernel enforcement stays in the backend, and
                 # shield assembly stays in internal/shield
 make vuln       # govulncheck over both modules (needs network)
 make race       # the proxy's concurrency tests under the race detector (needs a C toolchain)
 make crossbuild # the tree still compiles for darwin and linux/arm64
-make examples   # each examples/*/verify.sh; the root go test does not reach them
+make bentoprobe # the landlock preset hooks under the bentoprobe build tag
+make bench      # one iteration of every benchmark, so a fixture that broke fails
+make examples   # each examples/*/verify.sh; the root go test does not reach them. Like
+                # make test, it fails rather than skips a sandboxed run the host cannot do
 
-make check      # every gate above - the bar before merging
+make check      # every gate above - the bar before merging (`make help` lists its legs)
 
 make fuzz       # every Fuzz* target for FUZZTIME each (default 30s); nightly in CI, not
                 # in check, because the run is time-boxed rather than deterministic
