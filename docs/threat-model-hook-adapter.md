@@ -39,7 +39,8 @@ document covers only whether a model-proposed Bash call reliably becomes one.
    prompt Claude Code would otherwise show. The bento sandbox still wraps the command, so the
    gain is lost defence in depth, not an escape. The copy is deliberate (`hook_test.go:62-63`,
    "updatedInput replaces the input whole"), but nothing weighs it against `--allow`.
-   Detection: SILENT.
+   Detection: SILENT. FIXED: under `--allow` the hook drops `dangerouslyDisableSandbox`
+   (`TestHookAllowStripsDisableSandbox`); under ask it still passes through, shown in the prompt.
 3. **NUL bytes reach the emitted line (VERIFIED BY SPIKE for emission, BY READING for effect,
    informational).** `"command":"echo a\u0000; id"` and a NUL in `cwd` both yield `allow`
    with the NUL inside the quoted script; exec of the line fails (`fork/exec ... invalid
@@ -47,7 +48,8 @@ document covers only whether a model-proposed Bash call reliably becomes one.
    either errors or leaves the remainder inside the single-quoted region or unterminated, so
    nothing reaches the host shell outside `bento run`. Held only by `shellQuote`
    (`hook.go:136-138`) placing the NUL inside quotes; nothing rejects it. Denying on NUL would
-   be cheaper to reason about.
+   be cheaper to reason about. FIXED: a NUL in `command` or `cwd` is now denied
+   (`TestHookDeniesWhatItCannotSandbox/NUL_in_*`).
 
 No crossing observed: every Bash payload tried came back deny, or with the entire
 model-controlled text as one argv element after `--`.
@@ -71,10 +73,10 @@ the model doing so via the unconfined Write tool is disclosed at `hook.go:39-40`
 |---|---|---|---|---|
 | `claudecodehook/shell-injection` (command) | ENFORCED `hook.go:115-116,136-138` whole script single-quoted | host shell runs model text outside bento | n/a | EXECUTION `TestHookQuotingSurvivesHostileCommands`; SPIKE (newline, surrogate) |
 | `claudecodehook/shell-injection` (cwd) | ENFORCED `hook.go:115` | same | n/a | SPIKE: `cwd="/w\n; id #"` stays one argv |
-| `claudecodehook/input-unvalidated` (NUL) | PARTIAL: quoted, not rejected, `hook.go:136-138` | none found | SILENT | SPIKE + READING, finding 3 |
+| `claudecodehook/input-unvalidated` (NUL) | ENFORCED: denied in `claudeCodeHook` | none found | reason | EXECUTION `TestHookDeniesWhatItCannotSandbox/NUL_in_*`, finding 3 |
 | `claudecodehook/input-unvalidated` (non-string/null `command`, null `tool_input`) | ENFORCED `hook.go:79-82` -> deny | line with no command | reason | SPIKE |
 | `claudecodehook/input-unvalidated` (lone surrogate) | decoder maps to U+FFFD, still quoted | none | n/a | SPIKE |
-| `claudecodehook/input-unvalidated` (extra keys) | BY-DESIGN `hook_test.go:62-63` | finding 2 | SILENT | SPIKE |
+| `claudecodehook/input-unvalidated` (extra keys) | BY-DESIGN `hook_test.go:62-63`; `dangerouslyDisableSandbox` dropped under `--allow` | finding 2 | SILENT | EXECUTION `TestHookAllowStripsDisableSandbox` |
 | `claudecodehook/input-unvalidated` (`Command` casing twin) | ENFORCED: exact map lookup `hook.go:79`, only `command` rewritten | none; twin passed through (Claude Code ignoring it is inferred) | n/a | SPIKE |
 | `claudecodehook/authz-bypass` (non-Bash, `bash` casing) | BY-DESIGN `hook.go:39-40,76-78` no output | Read/Write/WebFetch unconfined | SILENT | EXECUTION `TestHookPassesNonBashToolsThrough`; SPIKE (`bash` -> no output) |
 | `claudecodehook/fail-open` (malformed JSON) | ENFORCED `hook.go:73-75` deny | original runs | reason | EXECUTION `TestHookDeniesWhatItCannotSandbox/malformed_payload` |

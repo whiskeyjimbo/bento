@@ -120,6 +120,19 @@ func TestHookAllowIsOptIn(t *testing.T) {
 	}
 }
 
+// Under --allow no prompt shows what the model asked for, so the model must not be able to
+// switch Claude Code's own sandbox off along the way. Under ask the user sees it and decides.
+func TestHookAllowStripsDisableSandbox(t *testing.T) {
+	m := writeAgentManifest(t, agentPolicy(), true)
+	payload := `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls","dangerouslyDisableSandbox":true}}`
+	if r, raw := runHook(t, m, payload, true); r.HookSpecificOutput.UpdatedInput["dangerouslyDisableSandbox"] != nil {
+		t.Errorf("--allow passed dangerouslyDisableSandbox through: %s", raw)
+	}
+	if r, raw := runHook(t, m, payload, false); r.HookSpecificOutput.UpdatedInput["dangerouslyDisableSandbox"] != true {
+		t.Errorf("ask dropped dangerouslyDisableSandbox the user is shown: %s", raw)
+	}
+}
+
 // Claude Code treats a hook that exits non-zero (other than 2) as a non-blocking error and
 // runs the ORIGINAL command, unsandboxed. So every way the hook cannot vouch for a run
 // answers deny, with no updatedInput, rather than failing.
@@ -138,6 +151,8 @@ func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 		"malformed payload":    {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":`, "payload"},
 		"no cwd":               {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "cwd"},
 		"no command":           {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{}}`, "command"},
+		"NUL in command":       {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"echo a\u0000; id"}}`, "NUL"},
+		"NUL in cwd":           {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w\u0000x","tool_input":{"command":"ls"}}`, "NUL"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, raw := runHook(t, tc.manifest, tc.payload, true)
