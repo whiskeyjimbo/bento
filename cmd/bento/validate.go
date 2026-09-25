@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -155,7 +156,10 @@ func newValidateCmd() *cobra.Command {
 // something once there is a stamp to devalue, which is not knowable until it is parsed.
 // See warnStampAtRisk.
 func loadDocument(path string) (*manifest.Document, trust.Manifest, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK so a FIFO opens at once and trust.Inspect refuses it as not a regular file;
+	// a blocking open waits for a writer, and a hook still waiting when Claude Code's timeout
+	// fires lets the original command run unsandboxed.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, trust.Manifest{}, err
 	}

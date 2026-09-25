@@ -33,7 +33,8 @@ func newClaudeCodeHookCmd() *cobra.Command {
 			"The manifest must be approved and set extra_args: true; see examples/agent for one.\n\n" +
 			"By default it answers \"ask\", so Claude Code still prompts, and shows the rewritten\n" +
 			"command. --allow answers \"allow\" instead: every Bash call runs without a prompt,\n" +
-			"confined by the manifest. Claude Code matches its permission rules against the\n" +
+			"confined by the manifest, and drops any dangerouslyDisableSandbox the model set, since\n" +
+			"no prompt shows it. Claude Code matches its permission rules against the\n" +
 			"rewritten line, which starts with bento, so a rule keyed on a command prefix\n" +
 			"such as Bash(git push:*) no longer matches it.\n\n" +
 			"Only the Bash tool is rewritten. Claude Code's built-in Read, Edit, Write and WebFetch\n" +
@@ -83,6 +84,11 @@ func claudeCodeHook(in io.Reader, out io.Writer, manifestPath, bentoPath string,
 	if payload.Cwd == "" {
 		return writeHookDecision(out, "deny", "bento: the hook payload carried no cwd, so the command's starting directory is unknown", nil)
 	}
+	// No exec can carry a NUL, so such a line only fails later; refusing it here keeps the
+	// hook's safety from resting on where shellQuote happens to put the byte.
+	if strings.ContainsRune(command, 0) || strings.ContainsRune(payload.Cwd, 0) {
+		return writeHookDecision(out, "deny", "bento: the command or cwd contains a NUL byte, which no command line can carry", nil)
+	}
 	abs, err := filepath.Abs(manifestPath)
 	if err != nil {
 		return writeHookDecision(out, "deny", fmt.Sprintf("bento: %v", err), nil)
@@ -116,6 +122,9 @@ func claudeCodeHook(in io.Reader, out io.Writer, manifestPath, bentoPath string,
 	decision := "ask"
 	if allow {
 		decision = "allow"
+		// --allow grants bento's sandbox in place of the prompt; it is not the user's consent
+		// to the model also switching Claude Code's own sandbox off for the call.
+		delete(updated, "dangerouslyDisableSandbox")
 	}
 	return writeHookDecision(out, decision, "bento: runs under "+abs, updated)
 }

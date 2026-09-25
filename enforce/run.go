@@ -73,8 +73,8 @@ type Options struct {
 	// the caller knows which name it will trust afterwards.
 	//
 	// The degraded tier applies no shields, so a run that lands there with one of these
-	// under a write grant is refused. Outside every write grant nothing can write it
-	// anyway, and the run proceeds.
+	// under a write grant is refused. Outside every write grant only another hard link
+	// could write it, which the caller's gate already refused, and the run proceeds.
 	ReadOnlyPaths []string
 
 	// RecordExec asks for a record of the execs the run performed, returned in
@@ -138,15 +138,8 @@ func Run(ctx context.Context, e Enforcer, p *policy.Policy, proc Process, opts O
 	if err := admitEnv(p, proc); err != nil {
 		return Result{}, err
 	}
-	if len(proc.ExtraArgs) > 0 && !p.ExtraArgs {
-		return Result{}, fmt.Errorf("enforce: the policy does not set extra_args, so a run of it takes no arguments beyond its own")
-	}
-	for _, a := range proc.ExtraArgs {
-		// The one thing an argv element cannot carry; exec would fail on it after the
-		// sandbox was built.
-		if strings.ContainsRune(a, 0) {
-			return Result{}, fmt.Errorf("enforce: extra argument %q contains a NUL byte, which no argument can carry", a)
-		}
+	if err := AdmitExtraArgs(p, proc.ExtraArgs); err != nil {
+		return Result{}, err
 	}
 	wanted := requiredLayers(p, opts)
 	probed := ProbeFor(ctx, e, wanted)
@@ -582,6 +575,23 @@ func ValidateRunID(id string) error {
 		return nil
 	}
 	return &Refusal{Reason: fmt.Sprintf("run id %q must be 1-64 characters of letters, digits, or underscore", id)}
+}
+
+// AdmitExtraArgs refuses arguments appended to a policy that did not opt in with
+// extra_args, and any argument exec could not carry. Backends call it too, since
+// their Run is an entry point an embedder can reach without Run.
+func AdmitExtraArgs(p *policy.Policy, extra []string) error {
+	if len(extra) > 0 && !p.ExtraArgs {
+		return fmt.Errorf("enforce: the policy does not set extra_args, so a run of it takes no arguments beyond its own")
+	}
+	for _, a := range extra {
+		// The one thing an argv element cannot carry; exec would fail on it after the
+		// sandbox was built.
+		if strings.ContainsRune(a, 0) {
+			return fmt.Errorf("enforce: extra argument %q contains a NUL byte, which no argument can carry", a)
+		}
+	}
+	return nil
 }
 
 // admitEnv refuses a run whose resolved environment carries a name the manifest does

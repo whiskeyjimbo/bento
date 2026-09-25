@@ -302,6 +302,36 @@ func TestRunValidatesThePolicyItself(t *testing.T) {
 	}
 }
 
+// The extra_args opt-in and the NUL refusal hold at the backend entry too, or an
+// embedder calling Enforcer.Run appends arguments the manifest never allowed.
+func TestRunAdmitsExtraArgsItself(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "p.sh")
+	if err := os.WriteFile(script, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		opted bool
+		extra []string
+		want  string
+	}{
+		{"not opted in", false, []string{"--x"}, "does not set extra_args"},
+		{"NUL byte", true, []string{"a\x00b"}, "NUL byte"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &policy.Policy{Entrypoint: script, Interpreter: "sh", ExtraArgs: tc.opted}
+			// Bounded for the same reason as TestRunValidatesThePolicyItself.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := New().Run(ctx, p, enforce.Process{ExtraArgs: tc.extra}, enforce.RunOptions{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run: err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // A grant the run is going to refuse must not leave a directory behind. The write
 // grant here is legal on its own, so nothing but the ordering of the checks decides
 // whether prepareWriteDirs creates it before the /proc refusal fires - and that

@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -120,6 +122,19 @@ func TestHookAllowIsOptIn(t *testing.T) {
 	}
 }
 
+// Under --allow no prompt shows what the model asked for, so the model must not be able to
+// switch Claude Code's own sandbox off along the way. Under ask the user sees it and decides.
+func TestHookAllowStripsDisableSandbox(t *testing.T) {
+	m := writeAgentManifest(t, agentPolicy(), true)
+	payload := `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls","dangerouslyDisableSandbox":true}}`
+	if r, raw := runHook(t, m, payload, true); r.HookSpecificOutput.UpdatedInput["dangerouslyDisableSandbox"] != nil {
+		t.Errorf("--allow passed dangerouslyDisableSandbox through: %s", raw)
+	}
+	if r, raw := runHook(t, m, payload, false); r.HookSpecificOutput.UpdatedInput["dangerouslyDisableSandbox"] != true {
+		t.Errorf("ask dropped dangerouslyDisableSandbox the user is shown: %s", raw)
+	}
+}
+
 // Claude Code treats a hook that exits non-zero (other than 2) as a non-blocking error and
 // runs the ORIGINAL command, unsandboxed. So every way the hook cannot vouch for a run
 // answers deny, with no updatedInput, rather than failing.
@@ -138,6 +153,8 @@ func TestHookDeniesWhatItCannotSandbox(t *testing.T) {
 		"malformed payload":    {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":`, "payload"},
 		"no cwd":               {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "cwd"},
 		"no command":           {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{}}`, "command"},
+		"NUL in command":       {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"echo a\u0000; id"}}`, "NUL"},
+		"NUL in cwd":           {writeAgentManifest(t, agentPolicy(), true), `{"tool_name":"Bash","cwd":"/w\u0000x","tool_input":{"command":"ls"}}`, "NUL"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, raw := runHook(t, tc.manifest, tc.payload, true)
@@ -178,5 +195,31 @@ func hookDeniesWith(t *testing.T, args []string) {
 	}
 	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
 		t.Errorf("a hook with no manifest must deny; got %q", out.String())
+	}
+}
+
+// A hook still blocked when Claude Code's timeout fires lets the original command run
+// unsandboxed, so a manifest name that resolves to a FIFO must be refused rather than
+// waited on for a writer that never comes.
+func TestHookDeniesAFIFOManifest(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan hookReply, 1)
+	go func() {
+		var out strings.Builder
+		_ = claudeCodeHook(strings.NewReader(`{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`), &out, fifo, "/opt/bin/bento", true)
+		var r hookReply
+		_ = json.Unmarshal([]byte(out.String()), &r)
+		got <- r
+	}()
+	select {
+	case r := <-got:
+		if o := r.HookSpecificOutput; o.PermissionDecision != "deny" || !strings.Contains(o.PermissionDecisionReason, "regular file") {
+			t.Fatalf("a FIFO manifest must be denied, got %+v", r.HookSpecificOutput)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook blocked opening a FIFO manifest")
 	}
 }
