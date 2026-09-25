@@ -185,7 +185,8 @@ func (p *Policy) Problems() []error {
 	}
 	// Without an interpreter the entrypoint is executed directly (a compiled binary, or a
 	// script whose #! line the kernel follows), so there is nothing for these to be passed
-	// to. The enforcer would drop them and run the entrypoint bare - a manifest that reads as declaring options nobody applies.
+	// to. The enforcer would drop them and run the entrypoint bare - a manifest that reads
+	// as declaring options nobody applies.
 	if p.Interpreter == "" && len(p.InterpreterArgs) > 0 {
 		probs = append(probs, fmt.Errorf("policy: interpreter_args is set but interpreter is not; these are the interpreter's own options, and the script's own arguments go in args"))
 	}
