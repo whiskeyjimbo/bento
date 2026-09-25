@@ -1035,3 +1035,19 @@ func TestAnUnresolvedGrantSaysWhy(t *testing.T) {
 		})
 	}
 }
+
+// A grant unread both before and after the run keeps the baseline's reason: that failure
+// is the one that left it with nothing to compare against.
+func TestAnUnresolvedGrantKeepsTheBaselineReason(t *testing.T) {
+	shim := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	grant := t.TempDir()
+	b := autoExecBaseline{unresolved: []enforce.UnresolvedGrant{{Path: grant, Reason: enforce.UnresolvedTimedOut}}}
+	_, _, unresolved := b.changed([]string{grant})
+	if want := []enforce.UnresolvedGrant{{Path: grant, Reason: enforce.UnresolvedTimedOut}}; !slices.Equal(unresolved, want) {
+		t.Errorf("unresolved = %v, want %v", unresolved, want)
+	}
+}

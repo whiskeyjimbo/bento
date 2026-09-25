@@ -96,7 +96,9 @@ The stamp lives in the manifest file, so the example also does what `bento run` 
 to keep a target from rewriting it: it binds the manifest read-only
 (`enforce.Options.ReadOnlyPaths`) even under a write grant covering it, and refuses a
 manifest whose bind a write grant could reach around (`gate.ManifestProblems`). An
-embedder that skips both lets a target widen and re-stamp its own policy.
+embedder that skips both lets a target widen and re-stamp its own policy. On a host where only
+the degraded tier is available, a write grant covering the manifest is refused, since
+that tier cannot hold the bind.
 
 ### 1. Declarative box - undeclared egress is denied
 
