@@ -36,6 +36,7 @@ import (
 	"github.com/whiskeyjimbo/bento/gate"
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
+	"github.com/whiskeyjimbo/bento/trust"
 )
 
 func main() {
@@ -108,6 +109,14 @@ func run(manifestPath string, allowUnapproved bool) int {
 		return 2
 	}
 	defer f.Close()
+	// Where the manifest really lives, taken from the open file rather than the name, so
+	// the read-only bind below lands on the bytes that were parsed and not on whatever a
+	// symlink leads to by then.
+	mt, err := trust.Inspect(f, manifestPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+		return 2
+	}
 
 	// manifest.Parse -> the validated *policy.Policy plus the provenance block the
 	// stamp lives in. The whole enforcement API takes domain values like this; a
@@ -146,6 +155,15 @@ func run(manifestPath string, allowUnapproved bool) int {
 	// compiles, and refuses every approved manifest carrying a relative path.
 	if err := manifest.Resolve(p, manifestPath); err != nil {
 		fmt.Fprintf(os.Stderr, "embed: %v\n", err)
+		return 2
+	}
+	// The approval is a stamp in the manifest itself, and the stamp is an unkeyed hash, so
+	// a target that can write the file can widen its own policy and re-stamp it for the
+	// next run. ReadOnlyPaths below binds it read-only under any write grant; these are
+	// the shapes that reach around that bind - a symlink or a second hard link a grant can
+	// replace, or a directory above it a grant can rename - and are refused outright.
+	if problems := gate.ManifestProblems(manifestPath, mt, p); len(problems) > 0 {
+		fmt.Fprintf(os.Stderr, "embed: refusing to run: the read-only bind over the manifest would not hold:\n  %s\n", strings.Join(problems, "\n  "))
 		return 2
 	}
 
@@ -223,7 +241,7 @@ func run(manifestPath string, allowUnapproved bool) int {
 	// (e.g. exec-block unavailable, so the target can spawn subprocesses) is reported
 	// but the run proceeds. An embedder confining genuinely untrusted code wants
 	// Strict: true, which refuses unless every layer, hardening included, is enforced.
-	res, err := enforce.Run(context.Background(), e, p, proc, enforce.Options{NetworkGate: netGate})
+	res, err := enforce.Run(context.Background(), e, p, proc, enforce.Options{NetworkGate: netGate, ReadOnlyPaths: []string{mt.RealPath}})
 
 	var refusal *enforce.Refusal
 	var shortfall *enforce.Shortfall

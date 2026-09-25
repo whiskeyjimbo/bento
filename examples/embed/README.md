@@ -92,6 +92,12 @@ is the fingerprint of the permissions a human approved, and running one without 
 is running permissions nobody signed off on. The flag is the profile-then-run inner
 loop, where nothing has been stamped yet.
 
+The stamp lives in the manifest file, so the example also does what `bento run` does
+to keep a target from rewriting it: it binds the manifest read-only
+(`enforce.Options.ReadOnlyPaths`) even under a write grant covering it, and refuses a
+manifest whose bind a write grant could reach around (`gate.ManifestProblems`). An
+embedder that skips both lets a target widen and re-stamp its own policy.
+
 ### 1. Declarative box - undeclared egress is denied
 
 ```sh
@@ -312,6 +318,9 @@ the full rationale under "The two models (and why they differ)", and builds both
 - `main.go` `supervisor` - the interactive layer: prompt, session cache, ctx-aware
   cancellation, hostname sanitization.
 - `main.go` `writeResult()` - every honesty field of a `Result`, in one place.
+- `approval_test.go` - proves the approval stamp is checked against the manifest as
+  written, that a target cannot rewrite its manifest under a covering write grant, and
+  that a grant reaching around the read-only bind is refused.
 - `supervisor_test.go` - proves prompt-once-per-host, pre-approval, and that a
   prompt returns (as a denial) when the run's context is cancelled.
 - `result_test.go` - proves every honesty field reaches the output, that host-supplied
