@@ -25,7 +25,7 @@ func TestReportFlagsUncoveredInScopeShield(t *testing.T) {
 	content := "# top secret\nblacklist ${HOME}/.some-new-secret-store\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 1 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000", false); code != 1 {
 		t.Fatalf("an uncovered in-scope shield must exit 1; got %d (%q)", code, b.String())
 	}
 	if !strings.Contains(b.String(), "/home/u/.some-new-secret-store") {
@@ -39,7 +39,7 @@ func TestReportPassesWhenShieldCovered(t *testing.T) {
 	content := liveSections() + "# top secret\nblacklist ${HOME}/.ssh\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000", false); code != 0 {
 		t.Fatalf("a covered shield must exit 0; got %d (%q)", code, b.String())
 	}
 }
@@ -275,11 +275,37 @@ func TestReportIgnoresOutOfScopeSection(t *testing.T) {
 	content := liveSections() + "# KDE config\nblacklist ${HOME}/.config/some-kde-thing\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 0 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000", false); code != 0 {
 		t.Fatalf("an out-of-scope shield must not fail the gate; got %d (%q)", code, b.String())
 	}
 	if !strings.Contains(b.String(), "out-of-scope") {
 		t.Errorf("the out-of-scope gap should be summarized, not dropped; got %q", b.String())
+	}
+}
+
+// A green run's verdict is the last thing on screen: the out-of-scope paths number in
+// the thousands against the live corpora, so they are counted by default and listed
+// only under -v, where two runs can still be diffed path by path.
+func TestReportListsOutOfScopePathsOnlyWhenVerbose(t *testing.T) {
+	content := liveSections() + "# KDE config\nblacklist ${HOME}/.config/some-kde-thing\n"
+	src := []audit.Source{{Content: content, Parse: audit.ParseFirejail}}
+	const path = "/home/u/.config/some-kde-thing"
+
+	var quiet bytes.Buffer
+	if code := report(&quiet, src, "/home/u", "/run/user/1000", false); code != 0 {
+		t.Fatalf("got %d (%q)", code, quiet.String())
+	}
+	if strings.Contains(quiet.String(), path) {
+		t.Errorf("a default run listed an out-of-scope path; the verdict gets buried: %q", quiet.String())
+	}
+	if !strings.Contains(quiet.String(), "-v") {
+		t.Errorf("a default run should say how to list the out-of-scope paths; got %q", quiet.String())
+	}
+
+	var verbose bytes.Buffer
+	report(&verbose, src, "/home/u", "/run/user/1000", true)
+	if !strings.Contains(verbose.String(), path) {
+		t.Errorf("-v did not list the out-of-scope path; got %q", verbose.String())
 	}
 }
 
@@ -306,7 +332,7 @@ func TestReportFailsOnStaleScopeKeyword(t *testing.T) {
 	content := strings.Replace(liveSections(), "# top secret\n", "# Sensitive material\n", 1)
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != 1 {
+	if code := report(&b, []audit.Source{{Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000", false); code != 1 {
 		t.Fatalf("a retitled section must fail the gate; got %d (%q)", code, b.String())
 	}
 	if !strings.Contains(b.String(), "top secret") {
@@ -411,7 +437,7 @@ func TestRunClearsTheRelocationEnvironment(t *testing.T) {
 		t.Setenv(v, "/srv/planted")
 	}
 	var b bytes.Buffer
-	run(func(string) (string, error) { return "", errors.New("offline") }, &b, &b)
+	run(func(string) (string, error) { return "", errors.New("offline") }, &b, &b, false)
 	for _, v := range denylist.RelocationVars() {
 		if got := os.Getenv(v); got != "" {
 			t.Errorf("$%s is still %q after run, so the audit's rule set is this host's", v, got)
@@ -425,7 +451,7 @@ func TestRunClearsTheRelocationEnvironment(t *testing.T) {
 // verdict rather than any refusal status, or the gate would report on a diff it skipped.
 func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 	var b bytes.Buffer
-	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b); code != exitFetchFailed {
+	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b, false); code != exitFetchFailed {
 		t.Errorf("run = %d over an unreachable upstream, want %d so the wrapper skips rather than reddens", code, exitFetchFailed)
 	}
 	b.Reset()
@@ -433,7 +459,7 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 	// exitFetchFailed: that status is the one the wrapper passes over, so the scheduled
 	// check would report the outage it exists to catch as a green skip.
 	t.Setenv(requireFetchVar, "1")
-	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b); code != exitFetchRequired {
+	if code := run(func(string) (string, error) { return "", errors.New("dial tcp: no route to host") }, &b, &b, false); code != exitFetchRequired {
 		t.Errorf("run = %d over an unreachable upstream with $%s set, want %d so the wrapper reddens", code, requireFetchVar, exitFetchRequired)
 	}
 	if !strings.Contains(b.String(), requireFetchVar) {
@@ -441,7 +467,7 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 	}
 	os.Unsetenv(requireFetchVar)
 	b.Reset()
-	if code := run(func(string) (string, error) { return "<html>404</html>", nil }, &b, &b); code != exitContentRefused {
+	if code := run(func(string) (string, error) { return "<html>404</html>", nil }, &b, &b, false); code != exitContentRefused {
 		t.Errorf("run = %d when a body is not the profile, want %d so the wrapper fails", code, exitContentRefused)
 	}
 	b.Reset()
@@ -453,7 +479,7 @@ func TestRunReportsTheStatusTheWrapperSwitchesOn(t *testing.T) {
 		}
 		return "", fmt.Errorf("no fixture for %s", url)
 	}
-	if code := run(healthy, &b, &b); code == exitFetchFailed || code == exitContentRefused {
+	if code := run(healthy, &b, &b, false); code == exitFetchFailed || code == exitContentRefused {
 		t.Errorf("run = %d with every source intact; a refusal status here would report a fetch problem over an audit that ran", code)
 	}
 }
@@ -573,7 +599,7 @@ func TestReportNamesWhatTheParserCouldNotRead(t *testing.T) {
 	content := liveSections() + "blacklist ${XDGDATA}/keyrings\n"
 
 	var b bytes.Buffer
-	if code := report(&b, []audit.Source{{Name: "disable-common.inc", Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000"); code != exitUnreadDirective {
+	if code := report(&b, []audit.Source{{Name: "disable-common.inc", Content: content, Parse: audit.ParseFirejail}}, "/home/u", "/run/user/1000", false); code != exitUnreadDirective {
 		t.Fatalf("an unread directive must exit %d so the wrapper reddens without grepping the banner; got %d (%q)", exitUnreadDirective, code, b.String())
 	}
 	if !strings.Contains(b.String(), "disable-common.inc: 1 of ") {

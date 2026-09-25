@@ -19,6 +19,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,13 +135,15 @@ const requireFetchVar = "BENTO_AUDIT_REQUIRE_FETCH"
 var errRefuse = errors.New("the response is not the upstream profile")
 
 func main() {
-	os.Exit(run(fetch, os.Stdout, os.Stderr))
+	verbose := flag.Bool("v", false, "list every glob for review and out-of-scope path, not just their counts")
+	flag.Parse()
+	os.Exit(run(fetch, os.Stdout, os.Stderr, *verbose))
 }
 
 // run is main with its two ends as parameters, so the status the CI wrapper switches on
 // is asserted without the network. A refusal from collect is the answer on its own - the
 // audit never ran, so there is no diff to report.
-func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
+func run(fetch func(url string) (string, error), stdout, stderr io.Writer, verbose bool) int {
 	// denylist.Home reads a couple of dozen relocation variables, so the rule set it
 	// returns for the fixed home above is the DEVELOPER's, not a canonical one: a shell
 	// carrying GNUPGHOME, CARGO_HOME or XDG_CONFIG_HOME adds rules CI does not have, any
@@ -162,7 +165,7 @@ func run(fetch func(url string) (string, error), stdout, stderr io.Writer) int {
 	if status != 0 {
 		return status
 	}
-	return report(stdout, sources, home, runUser)
+	return report(stdout, sources, home, runUser, verbose)
 }
 
 // collect fetches every upstream profile and checks each is the file it claims to be,
@@ -240,10 +243,12 @@ func isProfile(content, sentinel string) bool {
 // exitGap when any in-scope gap remains or a scope keyword has gone stale,
 // exitUnreadDirective when the diff was otherwise clean but a parser could not read part
 // of a corpus, 0 when the list already covers them and the classifier still matches every
-// section. It is separated
+// section. verbose lists the globs and out-of-scope paths that are otherwise only counted:
+// neither fails the gate, and listed they bury the verdict of a green run under a
+// thousand lines. It is separated
 // from main's network fetch so the gate's decision - the part CI depends on - is testable
 // without touching the network.
-func report(w io.Writer, sources []audit.Source, home, runUser string) int {
+func report(w io.Writer, sources []audit.Source, home, runUser string, verbose bool) int {
 	// One diff logic, two triggers: this CLI and the completeness test both go through
 	// audit.Audit, so they cannot reach contradictory verdicts on the same profile.
 	unclassified, globs, outOfScope := audit.Audit(sources, home, runUser)
@@ -289,17 +294,21 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 
 	// Globs are reported for review (bento cannot express a wildcard; it covers the
 	// class by shielding named instances) but do not fail the gate on their own.
-	for _, g := range globs {
-		fmt.Fprintf(w, "glob for review - verify bento's named instances cover it: %s [%s]\n", g.Path, g.Section)
+	if verbose {
+		for _, g := range globs {
+			fmt.Fprintf(w, "glob for review - verify bento's named instances cover it: %s [%s]\n", g.Path, g.Section)
+		}
+	} else if len(globs) > 0 {
+		fmt.Fprintf(w, "%d glob(s) for review, covered by bento's named instances rather than a wildcard; -v lists them\n", len(globs))
 	}
 
 	if len(unclassified) == 0 {
 		if len(stale) > 0 {
-			reportOutOfScope(w, outOfScope)
+			reportOutOfScope(w, outOfScope, verbose)
 			return exitGap
 		}
 		fmt.Fprintln(w, "no unclassified in-scope gaps: every secret/exec upstream shield is covered or excluded")
-		reportOutOfScope(w, outOfScope)
+		reportOutOfScope(w, outOfScope, verbose)
 		// A gap outranks this: both are red, and its banner points at the larger job.
 		if unread {
 			return exitUnreadDirective
@@ -325,7 +334,7 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 		}
 		fmt.Fprintf(w, "  %-42s %s\n", g.Path, note)
 	}
-	reportOutOfScope(w, outOfScope)
+	reportOutOfScope(w, outOfScope, verbose)
 	return exitGap
 }
 
@@ -337,9 +346,14 @@ func report(w io.Writer, sources []audit.Source, home, runUser string) int {
 // the bulk of this bucket comes from disable-programs.inc, whose "section" is the file's
 // own install-time header comment, so a newly-added credential store lands there and only
 // moves one number by one - which two runs cannot be diffed to notice. The paths can be.
-// The gaps arrive sorted, so the diff is the change and nothing else.
-func reportOutOfScope(w io.Writer, gaps []audit.Gap) {
+// The gaps arrive sorted, so the diff is the change and nothing else. That diff is -v's
+// job; a default run prints the count so a green gate's verdict stays readable.
+func reportOutOfScope(w io.Writer, gaps []audit.Gap, verbose bool) {
 	if len(gaps) == 0 {
+		return
+	}
+	if !verbose {
+		fmt.Fprintf(w, "%d out-of-scope gap(s) skipped (upstream's privacy/other-app/system scope); -v lists them by section\n", len(gaps))
 		return
 	}
 	fmt.Fprintf(w, "\n%d out-of-scope gap(s) skipped (upstream's privacy/other-app/system scope), by section:\n", len(gaps))

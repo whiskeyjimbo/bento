@@ -51,7 +51,7 @@ if ! GOWORK=off go build -o "$bin" ./cmd/denylist-audit; then
 	exit 1
 fi
 
-"$bin"
+"$bin" "$@"
 status=$?
 
 case "$status" in
