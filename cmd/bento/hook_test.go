@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
@@ -193,5 +195,31 @@ func hookDeniesWith(t *testing.T, args []string) {
 	}
 	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
 		t.Errorf("a hook with no manifest must deny; got %q", out.String())
+	}
+}
+
+// A hook still blocked when Claude Code's timeout fires lets the original command run
+// unsandboxed, so a manifest name that resolves to a FIFO must be refused rather than
+// waited on for a writer that never comes.
+func TestHookDeniesAFIFOManifest(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan hookReply, 1)
+	go func() {
+		var out strings.Builder
+		_ = claudeCodeHook(strings.NewReader(`{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`), &out, fifo, "/opt/bin/bento", true)
+		var r hookReply
+		_ = json.Unmarshal([]byte(out.String()), &r)
+		got <- r
+	}()
+	select {
+	case r := <-got:
+		if o := r.HookSpecificOutput; o.PermissionDecision != "deny" || !strings.Contains(o.PermissionDecisionReason, "regular file") {
+			t.Fatalf("a FIFO manifest must be denied, got %+v", r.HookSpecificOutput)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook blocked opening a FIFO manifest")
 	}
 }

@@ -16,22 +16,21 @@ document covers only whether a model-proposed Bash call reliably becomes one.
   a manifest planted in `t.TempDir()`, the rewritten line then unpacked by `sh -c 'set -- ...;
   printf'` (the technique `TestHookQuotingSurvivesHostileCommands` uses). Nothing ran under a
   real Claude Code or a real `bento run`.
-- **Rows:** 14. Stamps: VERIFIED BY SPIKE 7, VERIFIED BY EXECUTION (existing tests) 4,
-  VERIFIED BY READING 2, UNVERIFIED 1.
+- **Rows:** 14. Stamps: VERIFIED BY SPIKE 8, VERIFIED BY EXECUTION (existing tests) 4,
+  VERIFIED BY READING 2, UNVERIFIED 0 (the dead-mount half of finding 1 is not reproducible here).
 
 ## Findings (by effect)
 
-1. **Hook hang falls through to the unsandboxed command (UNVERIFIED, medium if real).**
-   `claudeCodeHook` has no deadline of its own. `loadDocument` does a blocking `os.Open` of
-   the manifest (`cmd/bento/validate.go:158`) and `gate.ManifestProblems` stats every
-   ancestor (`gate/manifest.go:41-65`). If the manifest name can be made to resolve to a FIFO
-   or a hung mount, the hook blocks until Claude Code's hook timeout. Whether Claude Code then
-   runs the original command is not established here; if a timeout is treated like any other
-   non-blocking hook error (the behaviour `hook.go:42-44` and `hook_test.go:123-125` already
-   defend against), this is a fail-open. Reaching it needs the manifest path's entry
-   replaced, which `ManifestProblems` refuses for write grants (`gate/manifest.go:50-61`), so
-   the likely trigger is a misconfiguration (manifest on a network mount) rather than the
-   model. Nothing in the hook stops it. Detection: SILENT. Hand-off: `failure-modes`.
+1. **Hook hang falls through to the unsandboxed command (FIFO: FIXED; dead mount: open, low).**
+   Claude Code's hooks reference says a timed-out `command` hook "doesn't block the tool call"
+   (default timeout 600s), so a hang is a fail-open. The FIFO case reproduced: a manifest name
+   resolving to a FIFO blocked `loadDocument`'s `os.Open` indefinitely. `loadDocument`
+   (`cmd/bento/validate.go`) now opens with `O_NONBLOCK`, so the open returns at once and
+   `trust.Inspect` refuses it as not a regular file; `TestHookDeniesAFIFOManifest` pins it.
+   `gate.ManifestProblems` no longer opens the manifest. What remains is a stat or open on a
+   hung network mount, which no userspace flag interrupts and which was not reproduced. Its
+   likely trigger is a manifest on a network mount (a misconfiguration), not the model, since
+   `ManifestProblems` refuses a manifest whose entry a write grant could replace.
 2. **`--allow` auto-approves every other `tool_input` field unread (VERIFIED BY SPIKE, low).**
    `hook.go:116-119` copies all keys through. A payload with
    `"dangerouslyDisableSandbox": true` came back `allow` with that key intact. Effect: under
@@ -83,14 +82,14 @@ the model doing so via the unconfined Write tool is disclosed at `hook.go:39-40`
 | `claudecodehook/fail-open` (bad args/flags) | ENFORCED `hook.go:46-48,56-58` | original runs | reason | EXECUTION `TestHookMisconfiguredStillDenies` |
 | `claudecodehook/fail-open` (manifest unapproved/no extra_args/replaceable/missing) | ENFORCED `hook.go:96-111` | allow of a swappable or refusing run | reason | EXECUTION `TestHookDeniesWhatItCannotSandbox` |
 | `claudecodehook/fail-open` (stdout write error) | UNENFORCED: error -> exit 125 `main.go:101` | original runs | stderr | READING; not reachable by `model` |
-| `claudecodehook/resource-unbounded` (hang) | UNENFORCED | finding 1 | SILENT | UNVERIFIED |
+| `claudecodehook/resource-unbounded` (hang) | FIFO: `cmd/bento/validate.go` loadDocument; dead mount: UNENFORCED | finding 1 | SILENT | FIFO VERIFIED BY SPIKE |
 | `claudecodehook/input-unvalidated` (trailing bytes after JSON) | first value used `hook.go:73` | none: bytes are Claude Code's | n/a | SPIKE; no attacker |
 
 ## Not spiked
 
 - Covered by existing tests: quoting, deny paths, non-Bash passthrough, `--allow` opt-in
   (all in `cmd/bento/hook_test.go`).
-- Not reachable without consent: end-to-end under real Claude Code (timeout behaviour, how it
+- Not reachable without consent: end-to-end under real Claude Code (how it
   hands a NUL-bearing command to bash) and a real `bento run` whose manifest entrypoint is not
   `sh -c` (by reading, the script becomes a plain argv and the run fails closed).
 
