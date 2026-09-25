@@ -40,7 +40,9 @@ holding it could be renamed away.
 
 By default the hook answers `ask`: Claude Code still prompts before each command, and
 the prompt shows the rewritten `bento run ...` line. `bento hook claude-code --allow`
-answers `allow`, so sandboxed commands run without a prompt.
+answers `allow`, so sandboxed commands run without a prompt. It also drops a
+`dangerouslyDisableSandbox` the model set on the call: `--allow` stands in for your
+prompt about bento's sandbox, not for consent to switching Claude Code's own off.
 
 Claude Code matches its permission rules against the rewritten line, and every
 rewritten line starts with `bento run`. A rule keyed on a command prefix, such as
@@ -50,7 +52,10 @@ stops the command. Keep `ask` if you rely on those rules.
 Anything the hook cannot turn into a sandboxed command - an unapproved or edited
 manifest, one without `extra_args`, a payload it cannot read - is answered `deny`
 with the reason. It never fails open: Claude Code runs the original command when a
-hook errors, and that would run it unconfined.
+hook errors, and that would run it unconfined. A hook that times out is treated the
+same way, so the hook denies a call whose manifest checks take longer than 5s (a
+manifest or grant on a hung network mount). Leave the hook's `timeout` in Claude Code
+above that.
 
 ## What this does not cover
 
