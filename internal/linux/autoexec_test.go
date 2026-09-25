@@ -930,3 +930,60 @@ func writeFile(t *testing.T, p, content string) {
 		t.Fatal(err)
 	}
 }
+
+// A write grant outside any checkout has no hooks and no config for git to name, so it
+// must not be reported unresolved: that note on every run of a plain directory teaches the
+// operator to ignore the one it exists to deliver.
+func TestAGrantOutsideAnyCheckoutIsResolved(t *testing.T) {
+	grant := t.TempDir()
+	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); len(unresolved) != 0 {
+		t.Errorf("unresolved = %v, want none for a directory git calls no repository", unresolved)
+	}
+}
+
+// Only git's own "not a git repository" with nothing git could have found on the way up
+// counts as no checkout. Anything else git exits 128 for - a safe.directory refusal, an
+// unreadable .git - is a checkout it would not read, and must stay unresolved.
+func TestAGitRefusalIsNotTakenForNoCheckout(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stderr string
+		dotGit bool
+	}{
+		"dubious ownership":                    {stderr: "fatal: detected dubious ownership in repository at '/x'", dotGit: false},
+		"not a repository beside a .git entry": {stderr: "fatal: not a git repository (or any of the parent directories): .git", dotGit: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			shim := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\necho %q >&2\nexit 128\n", tc.stderr)
+			if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", shim)
+			grant := t.TempDir()
+			if tc.dotGit {
+				if err := os.Mkdir(filepath.Join(grant, ".git"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); !slices.Contains(unresolved, grant) {
+				t.Errorf("unresolved = %v, want it to name %s", unresolved, grant)
+			}
+		})
+	}
+}
+
+// git translates "not a git repository", so the match only holds if git is asked in the C
+// locale; an operator's German one would otherwise bring the note back on every run.
+func TestAGrantOutsideAnyCheckoutIsResolvedInAnyLocale(t *testing.T) {
+	shim := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; else echo 'fatal: kein Git-Repository' >&2; fi\nexit 128\n"
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim)
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	grant := t.TempDir()
+	if _, _, unresolved := baselineAutoExec([]string{grant}).changed([]string{grant}); len(unresolved) != 0 {
+		t.Errorf("unresolved = %v, want none; git was not asked in the C locale", unresolved)
+	}
+}

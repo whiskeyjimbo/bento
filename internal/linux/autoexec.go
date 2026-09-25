@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -264,6 +265,8 @@ func runGit(dir string, args ...string) (string, error) {
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		return strings.HasPrefix(kv, "GIT_")
 	})
+	// outsideAnyCheckout matches git's English.
+	cmd.Env = append(cmd.Env, "LC_ALL=C")
 	out, err := cmd.Output()
 	// The deadline is this call's own (see above), so there is no caller to have given up
 	// first: the parent is Background and noteProbeDeadline's live-parent test is free.
@@ -476,7 +479,9 @@ func includeTargets(roots []string) (includes, unresolved []string) {
 		asked[stop] = true
 		found, err := includesOf(resolvedWrites[i])
 		if err != nil {
-			unresolved = append(unresolved, r)
+			if !outsideAnyCheckout(resolvedWrites[i], err) {
+				unresolved = append(unresolved, r)
+			}
 			continue
 		}
 		for _, p := range found {
@@ -558,7 +563,7 @@ func hookRunnerDirs(writes []string) (hooks, unresolved []string) {
 				asked[stop] = a
 			}
 		}
-		if a.err != nil {
+		if a.err != nil && !outsideAnyCheckout(resolvedWrites[i], a.err) {
 			unresolved = append(unresolved, w)
 			continue
 		}
@@ -613,6 +618,35 @@ func gitDiscoveryStop(dir string) string {
 		return ""
 	}
 	return stop
+}
+
+// outsideAnyCheckout says whether err is git finding no repository from dir, the one
+// failure that is an answer: there are no hooks and no config to name. It takes git's own
+// "not a git repository" only when no .git or HEAD entry exists at or above dir either,
+// because git reports the same thing for a .git it could not read, and a checkout it would
+// not read must stay unresolved. Every other exit - a safe.directory refusal, a git that is
+// missing, a deadline - is left a failure. The walk ignores filesystem changes, where git
+// stops, so an entry above a mount point only ever keeps a grant unresolved.
+func outsideAnyCheckout(dir string, err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 128 || !bytes.Contains(exit.Stderr, []byte("fatal: not a git repository")) {
+		return false
+	}
+	_, walkErr := bounded("the checkout search above "+dir, func() (struct{}, error) {
+		for {
+			for _, marker := range []string{".git", "HEAD"} {
+				if _, err := os.Lstat(filepath.Join(dir, marker)); !errors.Is(err, fs.ErrNotExist) {
+					return struct{}{}, fmt.Errorf("%s: %w", filepath.Join(dir, marker), err)
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return struct{}{}, nil
+			}
+			dir = parent
+		}
+	})
+	return walkErr == nil
 }
 
 // redirectedHooks names a hook directory the run itself put in play - the answer git gives
