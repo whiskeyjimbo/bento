@@ -73,8 +73,8 @@ type Options struct {
 	// the caller knows which name it will trust afterwards.
 	//
 	// The degraded tier applies no shields, so a run that lands there with one of these
-	// under a write grant is refused. Outside every write grant nothing can write it
-	// anyway, and the run proceeds.
+	// under a write grant is refused. Outside every write grant only another hard link
+	// could write it, which the caller's gate already refused, and the run proceeds.
 	ReadOnlyPaths []string
 
 	// RecordExec asks for a record of the execs the run performed, returned in

@@ -82,3 +82,60 @@ func TestManifestProblemsNamesEveryWayAroundTheBind(t *testing.T) {
 		})
 	}
 }
+
+// Another name for the manifest's inode can sit under a write grant's mount even when the
+// manifest itself sits under none, and the read-only bind covers only the one name.
+func TestManifestProblemsHardLinkOutsideEveryGrant(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	safe, w := filepath.Join(root, "safe"), filepath.Join(root, "w")
+	for _, d := range []string{safe, w} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := filepath.Join(safe, "m.yaml")
+	if err := os.WriteFile(m, []byte("entrypoint: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(m, filepath.Join(w, "copy.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	got := gate.ManifestProblems(m, &policy.Policy{Write: []string{w}})
+	if !strings.Contains(strings.Join(got, "\n"), "hard link") {
+		t.Errorf("want a hard-link problem for a manifest also named under %s, got %q", w, got)
+	}
+}
+
+// The kernel resolves x/lnk/../m.yaml by following lnk and stepping out of its target, so
+// the gate has to judge that file, not the x/m.yaml a lexical clean of the name lands on.
+func TestManifestProblemsDotDotAfterSymlink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := filepath.Join(root, "w")
+	deep := filepath.Join(w, "sub", "deeper")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w, "sub", "m.yaml"), []byte("entrypoint: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	x := filepath.Join(root, "x")
+	if err := os.Mkdir(x, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(x, "m.yaml"), []byte("decoy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(deep, filepath.Join(x, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	got := gate.ManifestProblems(x+"/lnk/../m.yaml", &policy.Policy{Write: []string{w}})
+	if !strings.Contains(strings.Join(got, "\n"), "renamed") {
+		t.Errorf("want the write grant above %s/sub reported, got %q", w, got)
+	}
+}
