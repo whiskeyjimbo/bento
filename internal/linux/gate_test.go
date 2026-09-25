@@ -328,6 +328,11 @@ func TestRunAdmitsExtraArgsItself(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Run: err = %v, want %q", err, tc.want)
 			}
+			// Profile appends the same ExtraArgs through compile, with no enforce.Run ahead of it.
+			_, err = New().Profile(ctx, p, enforce.Process{ExtraArgs: tc.extra}, false, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Profile: err = %v, want %q", err, tc.want)
+			}
 		})
 	}
 }
