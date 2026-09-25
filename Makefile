@@ -309,9 +309,13 @@ repro: ## Verify the binary builds byte-identically from a different source path
 # root `go test ./...` does not reach them and their tests can sit red indefinitely -
 # which is how the embed Result-completeness guard, the thing that keeps a new honesty
 # field from going unprinted, stayed failing unnoticed. The gate runs each verify.sh.
-examples: ## Build, vet and test every example module against the public API
+#
+# BENTO_REQUIRE_TEST_DEPS mirrors `make test`: each verify.sh skips its sandboxed runs on
+# a host without bwrap, setsid or python3 and exits 0, so without it this would print
+# "verified" over runs that never happened.
+examples: ## Build, vet and test every example module (requires bwrap, userns, setsid, python3)
 	@printf "$(CYAN)$(BOLD)==> Verifying example modules...$(RESET)\n"
-	@for f in examples/*/verify.sh; do "$$f" || exit 1; done
+	@for f in examples/*/verify.sh; do BENTO_REQUIRE_TEST_DEPS=1 "$$f" || exit 1; done
 	@printf "$(GREEN)$(BOLD)✓ Examples verified!$(RESET)\n"
 
 # One iteration of every benchmark, so the fixtures' own checks run and a benchmark that

@@ -5,6 +5,17 @@
 # build below cannot pass while reaching into internal/. The grep is a clearer
 # early failure for the same violation.
 set -eu
+
+# A host missing a dependency skips, unless BENTO_REQUIRE_TEST_DEPS says it is meant to
+# have them (make examples, and so CI): a skipped run exits 0 exactly like a verified one.
+skip() {
+	if [ -n "${BENTO_REQUIRE_TEST_DEPS:-}" ]; then
+		echo "FAIL: $1 (BENTO_REQUIRE_TEST_DEPS is set; unset it to skip instead)" >&2
+		exit 1
+	fi
+	echo "SKIP: $1" >&2
+	exit 0
+}
 cd "$(dirname "$0")"
 
 if grep -rn 'github.com/whiskeyjimbo/bento/internal/' . --include='*.go'; then
@@ -51,16 +62,14 @@ echo "OK: an unapproved manifest is refused by default"
 # question drawn on a terminal this script is not reading. A new session has no
 # controlling terminal to find.
 if ! command -v bwrap >/dev/null 2>&1 || ! command -v setsid >/dev/null 2>&1; then
-	echo "SKIP: demo run needs bwrap (bubblewrap) and setsid; the API checks above still ran" >&2
-	exit 0
+	skip "demo run needs bwrap (bubblewrap) and setsid; the API checks above still ran"
 fi
 # bwrap on the PATH does not mean the kernel grants the sandbox: a host can refuse
 # the user namespace, or grant it and refuse the procfs mount inside it (docker's
 # default masking of /proc). Either way the run is refused before the target speaks,
 # which is a host gap rather than the regression this guards.
 if ! bwrap --unshare-user --ro-bind / / --proc /proc true 2>/dev/null; then
-	echo "SKIP: demo run needs a host bubblewrap can build its sandbox on; the API checks above still ran" >&2
-	exit 0
+	skip "demo run needs a host bubblewrap can build its sandbox on; the API checks above still ran"
 fi
 
 out="$(setsid --wait "$bin" --allow-unapproved demo/reach.yaml 2>&1)" || {

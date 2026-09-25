@@ -5,16 +5,25 @@
 #
 # The checkout is a copy under a temp dir, because the run writes into it.
 set -eu
+
+# A host missing a dependency skips, unless BENTO_REQUIRE_TEST_DEPS says it is meant to
+# have them (make examples, and so CI): a skipped run exits 0 exactly like a verified one.
+skip() {
+	if [ -n "${BENTO_REQUIRE_TEST_DEPS:-}" ]; then
+		echo "FAIL: $1 (BENTO_REQUIRE_TEST_DEPS is set; unset it to skip instead)" >&2
+		exit 1
+	fi
+	echo "SKIP: $1" >&2
+	exit 0
+}
 cd "$(dirname "$0")"
 root="$(cd ../.. && pwd)"
 
 if ! command -v bwrap >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-	echo "SKIP: the agent example needs bwrap (bubblewrap) and python3" >&2
-	exit 0
+	skip "the agent example needs bwrap (bubblewrap) and python3"
 fi
 if ! bwrap --unshare-user --ro-bind / / --proc /proc true 2>/dev/null; then
-	echo "SKIP: the agent example needs a host bubblewrap can build its sandbox on" >&2
-	exit 0
+	skip "the agent example needs a host bubblewrap can build its sandbox on"
 fi
 
 work="$(mktemp -d)"

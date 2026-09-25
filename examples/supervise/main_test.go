@@ -347,16 +347,28 @@ func requireSandbox(t *testing.T) {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		t.Skip("bwrap not installed")
+		skipMissingDep(t, "bwrap not installed")
 	}
 	// bwrap in PATH is not enough: a host with unprivileged user namespaces disabled
 	// cannot create the namespace, and one that masks paths under /proc (docker's
 	// default) grants the namespace but refuses the procfs mount inside it - either way
 	// the trial fails to confine rather than shielding. Probe it the way admission does,
-	// so this skips (not fails) on those host classes.
+	// so this skips (not fails) on those host classes unless BENTO_REQUIRE_TEST_DEPS says
+	// the host is meant to have a sandbox.
 	if err := exec.Command(bwrap, "--unshare-user", "--unshare-net", "--bind", "/", "/", "--proc", "/proc", "/bin/true").Run(); err != nil {
-		t.Skip("the bwrap sandbox cannot be built on this host (user namespace or /proc mount refused)")
+		skipMissingDep(t, "the bwrap sandbox cannot be built on this host (user namespace or /proc mount refused)")
 	}
+}
+
+// skipMissingDep skips for a missing host dependency, or fails when
+// BENTO_REQUIRE_TEST_DEPS is set: a trial that self-skips reports a pass having asserted
+// nothing, which `make examples` and `make race` would otherwise print as verified.
+func skipMissingDep(t *testing.T, msg string) {
+	t.Helper()
+	if os.Getenv("BENTO_REQUIRE_TEST_DEPS") != "" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
 }
 
 // trialProfile must keep the untrusted script out of the permission store even when
