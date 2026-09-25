@@ -35,23 +35,23 @@ verdicts) before the bug history or tracker was read.
 
 | # | Reach | Verdict |
 |---|-------|---------|
-| M1 | no write grant reaches the manifest, single link | HANDLED - `gate/manifest.go:52` returns no problem; nothing in the sandbox can write it. READING |
-| M2 | write grant rooted at the manifest's own dir | HANDLED - `gate/manifest.go:56-60` allows it: the dir is the grant's mount point, cannot be renamed; bind at `cmd/bento/run.go:183` covers the leaf. READING |
-| M3 | write grant starting above the manifest's dir | HANDLED - refused `gate/manifest.go:57-59`. EXECUTION (existing `TestManifestProblemsNamesEveryWayAroundTheBind`) |
-| M4 | manifest leaf is a symlink in a writable dir | HANDLED - `gate/manifest.go:41-51`. EXECUTION (same test) |
+| M1 | no write grant reaches the manifest, single link | HANDLED - `gate/manifest.go` returns no problem; nothing in the sandbox can write it. READING |
+| M2 | write grant rooted at the manifest's own dir | HANDLED - `gate/manifest.go` allows it: the dir is the grant's mount point, cannot be renamed; bind at `cmd/bento/run.go:183` covers the leaf. READING |
+| M3 | write grant starting above the manifest's dir | HANDLED - refused `gate/manifest.go`. EXECUTION (existing `TestManifestProblemsNamesEveryWayAroundTheBind`) |
+| M4 | manifest leaf is a symlink in a writable dir | HANDLED - `gate/manifest.go`. EXECUTION (same test) |
 | M5 | a directory component is a symlink in a writable dir | HANDLED - trust's `pathDirs` walk records each symlink at its physical location, and the gate judges that `trust.Manifest` (`gate/manifest.go`). EXECUTION (same test) |
-| M6 | symlink component in a NON-writable dir, target under a grant | HANDLED - link not writable so not flagged, and the real file is then judged by M2/M3 at `gate/manifest.go:52-60`. READING |
-| M7 | manifest under a grant, nlink > 1 | HANDLED - `gate/manifest.go:61-65`. EXECUTION (same test) |
-| **M8** | manifest OUTSIDE every grant, second hard link INSIDE a write grant | **FIXED** - the hard-link check now runs whenever the run has any write grant, before the under-a-grant return; regression `TestManifestProblemsHardLinkOutsideEveryGrant`. Was WRONG (forbidden direction): `gate/manifest.go:52-54` returns before the link-count check at :61 whenever the real path is not under a write grant. The other name sits under the grant's RW mount, the RO bind is per-mount, so the run can rewrite and re-stamp its manifest in place. `enforce/run.go` ReadOnlyPaths comment ("Outside every write grant nothing can write it anyway") makes the same wrong assumption. VERIFIED BY SPIKE (gate returns no problem) + VERIFIED BY READING (per-mount RO semantics; no sandbox run executed) |
+| M6 | symlink component in a NON-writable dir, target under a grant | HANDLED - link not writable so not flagged, and the real file is then judged by M2/M3 at `gate/manifest.go`. READING |
+| M7 | manifest under a grant, nlink > 1 | HANDLED - `gate/manifest.go`. EXECUTION (same test) |
+| **M8** | manifest OUTSIDE every grant, second hard link INSIDE a write grant | **FIXED** - the hard-link check now runs whenever the run has any write grant, before the under-a-grant return; regression `TestManifestProblemsHardLinkOutsideEveryGrant`. Was WRONG (forbidden direction): `gate/manifest.go` returns before the link-count check at :61 whenever the real path is not under a write grant. The other name sits under the grant's RW mount, the RO bind is per-mount, so the run can rewrite and re-stamp its manifest in place. `enforce/run.go` ReadOnlyPaths comment ("Outside every write grant nothing can write it anyway") makes the same wrong assumption. VERIFIED BY SPIKE (gate returns no problem) + VERIFIED BY READING (per-mount RO semantics; no sandbox run executed) |
 | M9 | hard link created by the run after launch | IMPOSSIBLE - the manifest is visible in-sandbox only through its RO bind (a separate mount), and `linkat` across mounts fails EXDEV; where it is visible through the grant's own mount that is M2/M3/M7. Enforced by the kernel, not by bento code. VERIFIED BY READING |
 | M10 | name given relative | HANDLED - trust's `pathDirs` starts a relative name at the cwd, and the walk must land where the open descriptor is (`trust/trust.go` Inspect). READING |
-| **M11** | name contains `..` after a symlink component | **FIXED** - trust's `pathDirs` resolves the name component by component as the kernel does, and the gate judges the resulting `trust.Manifest` (real path and every symlink followed); regression `TestManifestProblemsDotDotAfterSymlink`. Was WRONG (forbidden direction): `run.go:88` opens `args[0]` with kernel (physical) `..` resolution, but `gate/manifest.go:26` `filepath.Abs` cleans `..` lexically, so the gate judges a different file (and a different symlink chain) than the one loaded and bound. With a decoy at the lexical path, a manifest below a write grant's root is admitted. Contrived (the operator must type such a name, or a wrapper must build one). Fix shape: judge `mt.RealPath` plus the chain of the name as the kernel walks it, not a re-cleaned string. VERIFIED BY SPIKE |
-| M12 | write grant spelled through a symlink | HANDLED - `resolvedGrant` `gate/manifest.go:81-86` resolves it as the sandbox binds it. READING |
-| M13 | write grant absent at launch | HANDLED - compared as spelled (`gate/manifest.go:85`); an absent grant cannot be an ancestor of an existing manifest's real path unless it is lexically one, which is then caught. READING |
-| M14 | nlink unreadable on this host | HANDLED - refused, `gate/manifest.go:61-62` (allowed direction). READING |
+| **M11** | name contains `..` after a symlink component | **FIXED** - trust's `pathDirs` resolves the name component by component as the kernel does, and the gate judges the resulting `trust.Manifest` (real path and every symlink followed); regression `TestManifestProblemsDotDotAfterSymlink`. Was WRONG (forbidden direction): `run.go:88` opens `args[0]` with kernel (physical) `..` resolution, but `gate/manifest.go` `filepath.Abs` cleans `..` lexically, so the gate judges a different file (and a different symlink chain) than the one loaded and bound. With a decoy at the lexical path, a manifest below a write grant's root is admitted. Contrived (the operator must type such a name, or a wrapper must build one). Fix shape: judge `mt.RealPath` plus the chain of the name as the kernel walks it, not a re-cleaned string. VERIFIED BY SPIKE |
+| M12 | write grant spelled through a symlink | HANDLED - `resolvedGrant` `gate/manifest.go` resolves it as the sandbox binds it. READING |
+| M13 | write grant absent at launch | HANDLED - compared as spelled (`gate/manifest.go`); an absent grant cannot be an ancestor of an existing manifest's real path unless it is lexically one, which is then caught. READING |
+| M14 | nlink unreadable on this host | HANDLED - the count comes from the fstat `trust.Inspect` already did, and a load whose fstat has no `Stat_t` fails (`trust/trust.go` factsOf); off Linux trust cannot locate the file and the gate defers to the Linux run (allowed direction). READING |
 | M15 | degraded tier with manifest under a write grant | HANDLED - refused per `enforce/run.go` ReadOnlyPaths contract. UNVERIFIED (read the doc comment only, not the refusal site) |
 | M16 | file swapped between load (`run.go:88`) and gate (`run.go:113`) | FIXED - the gate takes the `trust.Manifest` the load produced (its symlinks, and the link count from the open descriptor's fstat) instead of resolving the name again, so gate and bind share one walk; regression `TestManifestProblemsJudgesTheLoadedFileNotTheNameAgain`. Was UNHANDLED |
-| M17 | hook path | HANDLED - `cmd/bento/hook.go:86,93,102` Abs then load then gate, then emits `bento run <abs>`; inherits M8 and M11 (M11 only if `--manifest` carries `..`). READING |
+| M17 | hook path | HANDLED - `cmd/bento/hook.go` Abs, then `hookManifestCheck` (load, then gate on the loaded `trust.Manifest`) under `hookBudget`, then emits `bento run <abs>`; inherits M8 and M11 (M11 only if `--manifest` carries `..`). READING |
 
 ## Grid O - `bento profile --out`
 
@@ -109,35 +109,8 @@ UNVERIFIED-stamped HANDLED 1 (M15).
 assertion, confirming the finding. Recommended for graduation into
 `gate/manifest_test.go` as the regression tests for the two fixes.
 
-## Regression tests to graduate
+## Regression tests
 
-Package `gate_test`, `//go:build unix`. Both fail today; graduate into `gate/manifest_test.go`.
-
-```go
-// M8 (bv2-q1rmx)
-func TestSpikeHardlinkOutsideGrant(t *testing.T) {
-	root, _ := filepath.EvalSymlinks(t.TempDir())
-	safe := filepath.Join(root, "safe"); w := filepath.Join(root, "w")
-	os.Mkdir(safe, 0o755); os.Mkdir(w, 0o755)
-	m := filepath.Join(safe, "m.yaml")
-	os.WriteFile(m, []byte("entrypoint: x\n"), 0o644)
-	if err := os.Link(m, filepath.Join(w, "copy.yaml")); err != nil { t.Fatal(err) }
-	if p := gate.ManifestProblems(m, &policy.Policy{Write: []string{w}}); len(p) == 0 {
-		t.Errorf("no problem reported for a manifest writable through a hard link in %s", w)
-	}
-}
-
-// M11 (bv2-xlbhd)
-func TestSpikeDotDotAfterSymlink(t *testing.T) {
-	root, _ := filepath.EvalSymlinks(t.TempDir())
-	w := filepath.Join(root, "w"); deep := filepath.Join(w, "sub", "deeper")
-	os.MkdirAll(deep, 0o755)
-	os.WriteFile(filepath.Join(w, "sub", "m.yaml"), []byte("entrypoint: x\n"), 0o644)
-	x := filepath.Join(root, "x"); os.Mkdir(x, 0o755)
-	os.WriteFile(filepath.Join(x, "m.yaml"), []byte("decoy\n"), 0o644)
-	os.Symlink(deep, filepath.Join(x, "lnk"))
-	if p := gate.ManifestProblems(x+"/lnk/../m.yaml", &policy.Policy{Write: []string{w}}); len(p) == 0 {
-		t.Errorf("gate judged the lexical decoy, not the opened file under the write grant")
-	}
-}
-```
+Graduated into `gate/manifest_test.go` as `TestManifestProblemsHardLinkOutsideEveryGrant`
+(M8), `TestManifestProblemsDotDotAfterSymlink` (M11) and
+`TestManifestProblemsJudgesTheLoadedFileNotTheNameAgain` (M16).

@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package gate_test
 
