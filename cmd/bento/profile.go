@@ -419,6 +419,7 @@ func profileResultJSON(path string, proposed, written *policy.Policy, doc manife
 			KeptWrite:          merge.keptWrite,
 			KeptEnv:            merge.keptEnv,
 			KeptNetwork:        merge.keptNetwork,
+			AddedEnv:           merge.addedEnv,
 			ExecWidened:        merge.execWidened,
 			InterpreterWas:     merge.interpreterWas,
 			InterpreterArgsWas: merge.interpreterArgsWas,
@@ -1659,6 +1660,10 @@ type mergeOutcome struct {
 	// Named rather than counted: the whole point is that the reviewer can no longer
 	// assume the file describes what they just watched.
 	keptRead, keptWrite, keptEnv, keptNetwork []string
+	// addedEnv are the env names this run put into a manifest that did not pass them
+	// through. Named because it is the one widening a grant list does not show: HOME
+	// arriving here moves the script's home from the sandbox's to the host's.
+	addedEnv []string
 	// execWidened is whether the union escalated exec from a blocked mode to `all`.
 	execWidened bool
 	// interpreterWas and interpreterArgsWas are the invocation the existing manifest
@@ -1717,6 +1722,7 @@ func mergeExisting(path, script string, proposed *policy.Policy) (mergeOutcome, 
 		keptRead:    only(existing.Policy.Read, proposed.Read),
 		keptWrite:   only(existing.Policy.Write, proposed.Write),
 		keptEnv:     only(existing.Policy.Env, proposed.Env),
+		addedEnv:    only(proposed.Env, existing.Policy.Env),
 		keptNetwork: only(networkKeys(existing.Policy.Network), networkKeys(proposed.Network)),
 		execWidened: existing.Policy.Exec != policy.ExecAll && proposed.Exec == policy.ExecAll,
 		// The arguments are part of the invocation the manifest named, so a change to
@@ -1822,6 +1828,9 @@ func writeMergeNotice(w io.Writer, path string, m mergeOutcome) {
 		for _, g := range group.kept {
 			fmt.Fprintf(w, "[bento]   kept from the existing manifest, not shown by this run: %s %q\n", group.kind, g)
 		}
+	}
+	for _, name := range m.addedEnv {
+		fmt.Fprintf(w, "[bento]   added by this run: env %q - the run now passes the host's value through\n", name)
 	}
 	if m.execWidened {
 		fmt.Fprintf(w, "[bento] exec was widened to `all` by this run: the manifest no longer blocks subprocesses.\n")

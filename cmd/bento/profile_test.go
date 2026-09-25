@@ -1167,14 +1167,14 @@ func TestMergeNoticeReportsWideningAndVoidedApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Read: []string{filepath.Join(dir, "fresh")}, Exec: policy.ExecAll})
+	merged, err := mergeExisting(path, script, &policy.Policy{Entrypoint: script, Read: []string{filepath.Join(dir, "fresh")}, Env: []string{"HOME"}, Exec: policy.ExecAll})
 	if err != nil {
 		t.Fatalf("mergeExisting: %v", err)
 	}
 	var b strings.Builder
 	writeMergeNotice(&b, path, merged)
 	out := b.String()
-	for _, want := range []string{"already existed", "unioned with what was already there", filepath.Join(dir, "prior"), "exec was widened", "its approval is gone"} {
+	for _, want := range []string{"already existed", "unioned with what was already there", filepath.Join(dir, "prior"), `added by this run: env "HOME"`, "exec was widened", "its approval is gone"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("merge notice missing %q; got:\n%s", want, out)
 		}

@@ -233,6 +233,8 @@ type mergeJSON struct {
 	KeptWrite   []string `json:"kept_write,omitempty"`
 	KeptEnv     []string `json:"kept_env,omitempty"`
 	KeptNetwork []string `json:"kept_network,omitempty"`
+	// AddedEnv are the env names this run passed through that the manifest did not.
+	AddedEnv []string `json:"added_env,omitempty"`
 	// ExecWidened is whether the union escalated exec to `all`; ApprovalVoided whether the
 	// file carried a current approval that this write dropped.
 	ExecWidened    bool `json:"exec_widened"`

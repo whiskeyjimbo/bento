@@ -105,6 +105,7 @@ var parityRows = []parityRow{
 	// profiling a script under a real sandbox, which this table does not require. The call
 	// sites are covered instead by TestProfileSaysWhatItKeptAndWhatTheLocationIsWorth.
 	{writers: []string{"writeMergeNotice"}, fixture: "profile", marker: "kept from the existing manifest", key: "merged"},
+	{writers: []string{"writeMergeNotice"}, fixture: "profile", marker: "added by this run: env", key: "merged.added_env"},
 	{writers: []string{"warnUntrusted"}, fixture: "profile", marker: "attests only what whoever can write it leaves there", key: "location_flaws"},
 
 	// approve has no --json: its callouts are validate's (Grid A), and the rest is the
@@ -409,7 +410,7 @@ func parityDoctorDeepStore(t *testing.T) (string, map[string]any) {
 
 func parityProfile(t *testing.T) (string, map[string]any) {
 	p := &policy.Policy{Entrypoint: "main.py", Exec: "none", Read: []string{"./old"}}
-	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, policy: p}
+	merge := mergeOutcome{widened: true, keptRead: []string{"./old"}, addedEnv: []string{"HOME"}, policy: p}
 	flaws := []trust.Flaw{{Reason: "the directory holding it is writable by others"}}
 	var human bytes.Buffer
 	writeMergeNotice(&human, "m.yaml", merge)
