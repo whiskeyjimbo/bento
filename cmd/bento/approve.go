@@ -83,7 +83,7 @@ func newApproveCmd() *cobra.Command {
 				return err
 			}
 			if resolved != nil {
-				if problems := gate.ManifestProblems(path, resolved); len(problems) > 0 {
+				if problems := gate.ManifestProblems(path, mt, resolved); len(problems) > 0 {
 					return fmt.Errorf("not approved: run refuses a manifest its own write grants can replace, so a stamp would attest a run this host refuses:\n  %s", strings.Join(problems, "\n  "))
 				}
 			}

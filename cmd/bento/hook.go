@@ -139,7 +139,7 @@ var hookBudget = 5 * time.Second
 // so the agent reads why at once instead of a run that refuses after the user approved the
 // prompt. A variable so a test can stand in a check that never returns.
 var hookManifestCheck = func(abs string) error {
-	doc, _, err := loadDocument(abs)
+	doc, mt, err := loadDocument(abs)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ var hookManifestCheck = func(abs string) error {
 	if resolved == nil {
 		return errors.New("its grants could not be resolved on this host")
 	}
-	if problems := gate.ManifestProblems(abs, resolved); len(problems) > 0 {
+	if problems := gate.ManifestProblems(abs, mt, resolved); len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil

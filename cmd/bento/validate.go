@@ -84,7 +84,7 @@ func newValidateCmd() *cobra.Command {
 			}
 			run := gate.CheckAgainst(shields, refused, resolved)
 			if resolved != nil {
-				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], resolved)...)
+				run.Problems = append(run.Problems, gate.ManifestProblems(args[0], mt, resolved)...)
 			}
 			var posture []enforce.LayerStatus
 			if report, ok := probeHost(cmd.Context(), enforce.RequiredLayers(doc.Policy, enforce.Options{})); ok {

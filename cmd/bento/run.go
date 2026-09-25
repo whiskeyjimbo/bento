@@ -110,7 +110,7 @@ func newRunCmd() *cobra.Command {
 			if err := manifest.Resolve(p, args[0]); err != nil {
 				return refuse(err)
 			}
-			if problems := gate.ManifestProblems(args[0], p); len(problems) > 0 {
+			if problems := gate.ManifestProblems(args[0], mt, p); len(problems) > 0 {
 				return refuse(fmt.Errorf("refusing to run: the read-only bind over the manifest would not hold:\n  %s", strings.Join(problems, "\n  ")))
 			}
 			if extra := args[1:]; len(extra) > 0 {

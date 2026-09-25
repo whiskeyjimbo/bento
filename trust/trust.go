@@ -30,6 +30,9 @@ type fileFacts struct {
 	path string
 	mode fs.FileMode
 	uid  uint32
+	// nlink is the manifest's hard-link count, from the fstat of the open descriptor; zero
+	// on every other entry.
+	nlink uint64
 	// aclWrite is write granted to a named user or group by a POSIX ACL, which the mode
 	// cannot show: such a grant appears in the group-class bits and is indistinguishable
 	// there from the group write an ordinary umask leaves. Only the directories the path walk
@@ -54,7 +57,7 @@ func factsOf(path string, fi fs.FileInfo) (fileFacts, error) {
 	// group would say nothing about a named writer the mask lets through. The false positive
 	// that lookup exists to stop is not here either - the warning is only for a stamped
 	// manifest, and approve clamps group write off the ones it stamps.
-	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid}, nil
+	return fileFacts{path: path, mode: fi.Mode(), uid: st.Uid, nlink: uint64(st.Nlink)}, nil
 }
 
 // withGroup fills in group, and only where a group-write bit makes the answer matter:
@@ -228,6 +231,20 @@ func Inspect(f *os.File, path string) (Manifest, error) {
 	}
 	return Manifest{file: file, dir: dirs[0], chain: dirs[1:], links: links, RealPath: target, located: true}, nil
 }
+
+// Symlinks is every symlink the resolution of the opened name followed, each at its real
+// location, including those met inside another symlink's target.
+func (t Manifest) Symlinks() []string {
+	out := make([]string, len(t.links))
+	for i, l := range t.links {
+		out[i] = l.path
+	}
+	return out
+}
+
+// HardLinks is the opened manifest's link count, read from its descriptor rather than by
+// name, so it describes the file that was loaded.
+func (t Manifest) HardLinks() uint64 { return t.file.nlink }
 
 // InspectNew gathers what can be judged about a manifest that does not exist yet:
 // its location. The path is walked the same way as an existing manifest's, so the write lands
