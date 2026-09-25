@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -40,7 +41,9 @@ func newClaudeCodeHookCmd() *cobra.Command {
 			"Only the Bash tool is rewritten. Claude Code's built-in Read, Edit, Write and WebFetch\n" +
 			"tools do not run through a shell and are not confined by this hook.\n\n" +
 			"Any payload it cannot turn into a sandboxed command is answered with \"deny\" rather\n" +
-			"than an error, because Claude Code runs the original command when a hook fails.",
+			"than an error, because Claude Code runs the original command when a hook fails.\n" +
+			"The same holds for a hook that times out, so bento denies a call whose manifest checks\n" +
+			"take longer than 5s; a hook timeout configured below that reopens the gap.",
 		// Checked in RunE rather than by an Args validator: every failure here is answered
 		// with a deny, because an error exit is one Claude Code does not block on.
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -93,21 +96,14 @@ func claudeCodeHook(in io.Reader, out io.Writer, manifestPath, bentoPath string,
 	if err != nil {
 		return writeHookDecision(out, "deny", fmt.Sprintf("bento: %v", err), nil)
 	}
-	// The run's refusals that depend on the manifest alone, asked here too so the agent
-	// reads why at once instead of a run that refuses after the user approved the prompt.
-	doc, _, err := loadDocument(abs)
-	if err == nil {
-		err = requireApproval(doc, false)
-	}
-	if err == nil && !doc.Policy.ExtraArgs {
-		err = errors.New("the manifest does not set extra_args: true, so it cannot run a command it was not written with")
-	}
-	if err == nil {
-		if resolved := resolvedGrants(doc.Policy, abs); resolved == nil {
-			err = errors.New("its grants could not be resolved on this host")
-		} else if problems := gate.ManifestProblems(abs, resolved); len(problems) > 0 {
-			err = errors.New(strings.Join(problems, "; "))
-		}
+	// Buffered so a check still stuck in the kernel after the deadline can finish into it
+	// and exit, rather than leak blocked on a send nobody receives.
+	verdict := make(chan error, 1)
+	go func() { verdict <- hookManifestCheck(abs) }()
+	select {
+	case err = <-verdict:
+	case <-time.After(hookBudget):
+		err = fmt.Errorf("the manifest checks did not finish within %v (a hung mount under the manifest or a grant?)", hookBudget)
 	}
 	if err != nil {
 		return writeHookDecision(out, "deny", fmt.Sprintf("bento: %s: %v", abs, err), nil)
@@ -127,6 +123,40 @@ func claudeCodeHook(in io.Reader, out io.Writer, manifestPath, bentoPath string,
 		delete(updated, "dangerouslyDisableSandbox")
 	}
 	return writeHookDecision(out, decision, "bento: runs under "+abs, updated)
+}
+
+// hookBudget bounds the manifest checks, which stat and open paths that can sit on a hung
+// network mount. Claude Code runs the original command unsandboxed when a hook outlives its
+// timeout, so the hook answers deny first; a configured hook timeout shorter than this
+// budget reopens that hole.
+//
+// ponytail: a check stuck in an unkillable kernel wait keeps the fd table, and so stdout,
+// alive past exit, and Claude Code still sees a hang; run the checks in a re-exec'd child
+// that does not hold stdout, killed at the deadline, if that shows up in practice.
+var hookBudget = 5 * time.Second
+
+// hookManifestCheck is the run's refusals that depend on the manifest alone, asked here too
+// so the agent reads why at once instead of a run that refuses after the user approved the
+// prompt. A variable so a test can stand in a check that never returns.
+var hookManifestCheck = func(abs string) error {
+	doc, _, err := loadDocument(abs)
+	if err != nil {
+		return err
+	}
+	if err := requireApproval(doc, false); err != nil {
+		return err
+	}
+	if !doc.Policy.ExtraArgs {
+		return errors.New("the manifest does not set extra_args: true, so it cannot run a command it was not written with")
+	}
+	resolved := resolvedGrants(doc.Policy, abs)
+	if resolved == nil {
+		return errors.New("its grants could not be resolved on this host")
+	}
+	if problems := gate.ManifestProblems(abs, resolved); len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 func writeHookDecision(out io.Writer, decision, reason string, updated map[string]any) error {

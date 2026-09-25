@@ -21,14 +21,19 @@ document covers only whether a model-proposed Bash call reliably becomes one.
 
 ## Findings (by effect)
 
-1. **Hook hang falls through to the unsandboxed command (FIFO: FIXED; dead mount: open, low).**
+1. **Hook hang falls through to the unsandboxed command (FIFO: FIXED; dead mount: BOUNDED, low).**
    Claude Code's hooks reference says a timed-out `command` hook "doesn't block the tool call"
    (default timeout 600s), so a hang is a fail-open. The FIFO case reproduced: a manifest name
    resolving to a FIFO blocked `loadDocument`'s `os.Open` indefinitely. `loadDocument`
    (`cmd/bento/validate.go`) now opens with `O_NONBLOCK`, so the open returns at once and
    `trust.Inspect` refuses it as not a regular file; `TestHookDeniesAFIFOManifest` pins it.
-   `gate.ManifestProblems` no longer opens the manifest. What remains is a stat or open on a
-   hung network mount, which no userspace flag interrupts and which was not reproduced. Its
+   `gate.ManifestProblems` no longer opens the manifest. A stat or open on a hung network
+   mount is interrupted by no userspace flag, so the hook runs every manifest-dependent check
+   (`hookManifestCheck`) under a 5s budget (`hookBudget`) and answers deny when it runs out;
+   `TestHookDeniesWhenTheManifestChecksHang` pins it. Two residuals: a hook timeout configured
+   below 5s fails open again (the help text says so), and a check stuck in an unkillable
+   kernel wait keeps stdout open past exit, so Claude Code still sees a hang. NFS, CIFS and
+   FUSE waits are mostly killable; the hung mount itself was not reproduced. Its
    likely trigger is a manifest on a network mount (a misconfiguration), not the model, since
    `ManifestProblems` refuses a manifest whose entry a write grant could replace.
 2. **`--allow` auto-approves every other `tool_input` field unread (VERIFIED BY SPIKE, low).**

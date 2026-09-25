@@ -223,3 +223,30 @@ func TestHookDeniesAFIFOManifest(t *testing.T) {
 		t.Fatal("the hook blocked opening a FIFO manifest")
 	}
 }
+
+// A manifest check stuck on a hung mount must still be answered with a deny before Claude
+// Code's hook timeout, which would otherwise run the original command unsandboxed.
+func TestHookDeniesWhenTheManifestChecksHang(t *testing.T) {
+	release := make(chan struct{})
+	budget, check := hookBudget, hookManifestCheck
+	hookBudget = 50 * time.Millisecond
+	hookManifestCheck = func(string) error { <-release; return nil }
+	t.Cleanup(func() { close(release); hookBudget, hookManifestCheck = budget, check })
+
+	got := make(chan hookReply, 1)
+	go func() {
+		var out strings.Builder
+		_ = claudeCodeHook(strings.NewReader(`{"tool_name":"Bash","cwd":"/w","tool_input":{"command":"ls"}}`), &out, "/w/agent.yaml", "/opt/bin/bento", true)
+		var r hookReply
+		_ = json.Unmarshal([]byte(out.String()), &r)
+		got <- r
+	}()
+	select {
+	case r := <-got:
+		if o := r.HookSpecificOutput; o.PermissionDecision != "deny" || !strings.Contains(o.PermissionDecisionReason, "did not finish") {
+			t.Fatalf("a hung manifest check must be denied, got %+v", r.HookSpecificOutput)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook waited on a manifest check that never returns")
+	}
+}
