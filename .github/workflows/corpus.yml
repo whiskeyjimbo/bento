@@ -30,6 +30,7 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - run: make audit
+      # -v lists every out-of-scope path, so two weeks' logs can be diffed for what moved.
+      - run: ./scripts/denylist-audit.sh -v
         env:
           BENTO_AUDIT_REQUIRE_FETCH: '1'
