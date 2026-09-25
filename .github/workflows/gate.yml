@@ -38,8 +38,8 @@ jobs:
 
       # The test suite runs real probes inside real bwrap sandboxes, and the denylist
       # audit diffs against the locally installed firejail and AppArmor profiles, and
-      # the examples drive bento in the same sandboxes; without them those tests skip and the gate would pass without exercising the
-      # boundary. BENTO_REQUIRE_TEST_DEPS turns such a skip into a failure, so they
+      # the examples drive bento in the same sandboxes; without them those tests skip
+      # and the gate would pass without exercising the boundary. BENTO_REQUIRE_TEST_DEPS turns such a skip into a failure, so they
       # have to be present rather than merely nice to have.
       - name: Install sandbox test dependencies
         run: sudo apt-get update && sudo apt-get install -y bubblewrap firejail apparmor
