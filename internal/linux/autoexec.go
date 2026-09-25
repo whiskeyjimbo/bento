@@ -459,8 +459,8 @@ func nestedCheckoutRoots(writes []string) (nested, unresolved []string) {
 // directory's, and follows the includes itself, so a chain of them is reported as far as
 // git reads it - past a matching condition, not past one that does not match here.
 //
-// Residual: an include set in a worktree's config.worktree is not asked for, since
-// --file reads the one config file.
+// A linked worktree's config.worktree is asked too, whether or not extensions.worktreeConfig
+// is on here: turning it on is itself one config write away.
 // Missing targets are kept: creating one is the write that matters.
 func includeTargets(roots []string) (includes, unresolved []string) {
 	resolvedWrites := make([]string, 0, len(roots))
@@ -488,40 +488,44 @@ func includeTargets(roots []string) (includes, unresolved []string) {
 	return includes, unresolved
 }
 
-// includesOf asks git, in dir, for the include targets of the repository config it reads.
+// includesOf asks git, in dir, for the include targets of the repository config and the
+// worktree's config.worktree.
 func includesOf(dir string) ([]string, error) {
-	config, err := runGit(dir, "rev-parse", "--git-path", "config")
-	if err != nil {
-		return nil, err
-	}
-	if config = strings.TrimSpace(config); !filepath.IsAbs(config) {
-		config = filepath.Join(dir, config)
-	}
-	// --show-origin names each directive's file as given, so an absolute --file makes the
-	// origin absolute, and a relative value is relative to that file's directory.
-	out, err := runGit(dir, "config", "--file", config, "--includes", "--show-origin", "--type=path", "-z", "--get-regexp", `^include(if\..*)?\.path$`)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
-	if len(fields)%2 != 0 {
-		return nil, fmt.Errorf("git config in %s: want origin and entry pairs, got %q", dir, out)
-	}
 	var targets []string
-	for i := 0; i < len(fields); i += 2 {
-		origin, ok := strings.CutPrefix(fields[i], "file:")
-		_, value, entry := strings.Cut(fields[i+1], "\n")
-		if !ok || !entry || value == "" {
-			return nil, fmt.Errorf("git config in %s: unexpected entry %q from %q", dir, fields[i+1], fields[i])
+	for _, name := range []string{"config", "config.worktree"} {
+		config, err := runGit(dir, "rev-parse", "--git-path", name)
+		if err != nil {
+			return nil, err
 		}
-		if !filepath.IsAbs(value) {
-			value = filepath.Join(filepath.Dir(origin), value)
+		if config = strings.TrimSpace(config); !filepath.IsAbs(config) {
+			config = filepath.Join(dir, config)
 		}
-		targets = append(targets, value)
+		// --show-origin names each directive's file as given, so an absolute --file makes the
+		// origin absolute, and a relative value is relative to that file's directory. A file
+		// that is not there answers like one with no match.
+		out, err := runGit(dir, "config", "--file", config, "--includes", "--show-origin", "--type=path", "-z", "--get-regexp", `^include(if\..*)?\.path$`)
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
+		if len(fields)%2 != 0 {
+			return nil, fmt.Errorf("git config in %s: want origin and entry pairs, got %q", dir, out)
+		}
+		for i := 0; i < len(fields); i += 2 {
+			origin, ok := strings.CutPrefix(fields[i], "file:")
+			_, value, entry := strings.Cut(fields[i+1], "\n")
+			if !ok || !entry || value == "" {
+				return nil, fmt.Errorf("git config in %s: unexpected entry %q from %q", dir, fields[i+1], fields[i])
+			}
+			if !filepath.IsAbs(value) {
+				value = filepath.Join(filepath.Dir(origin), value)
+			}
+			targets = append(targets, value)
+		}
 	}
 	return targets, nil
 }

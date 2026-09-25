@@ -902,6 +902,25 @@ func TestIncludedGitConfigIsReported(t *testing.T) {
 	}
 }
 
+// A linked worktree reads config.worktree beside the common config, so an include set
+// there is config by another name just the same.
+func TestWorktreeConfigIncludeIsReported(t *testing.T) {
+	root := resolved(t.TempDir())
+	repo, wt := filepath.Join(root, "repo"), filepath.Join(root, "wt")
+	gitIn(t, root, "init", "-q", repo)
+	gitIn(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+	gitIn(t, repo, "worktree", "add", "-q", wt)
+	gitIn(t, repo, "config", "extensions.worktreeConfig", "true")
+	gitIn(t, wt, "config", "--worktree", "include.path", filepath.Join(wt, ".gitconfig.local"))
+	inc := filepath.Join(wt, ".gitconfig.local")
+	writeFile(t, inc, "")
+	b := baselineAutoExec([]string{wt})
+	writeFile(t, inc, "[core]\n\tfsmonitor = /tmp/evil\n")
+	if changed, _, _ := b.changed([]string{wt}); !slices.Contains(changed, inc) {
+		t.Errorf("changed = %v; core.fsmonitor set through %s, included from config.worktree, was not reported", changed, inc)
+	}
+}
+
 func writeFile(t *testing.T, p, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
