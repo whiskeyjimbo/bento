@@ -31,7 +31,8 @@ func newProfileCmd() *cobra.Command {
 	var (
 		interpreter string
 		// interpreterArgs are never a flag: they come from the shebang of a script whose
-		// interpreter bento guessed. See the guess below.
+		// interpreter bento guessed, or from an existing manifest at --out naming the same
+		// interpreter --interpreter pins. See the guess and the merge load below.
 		interpreterArgs []string
 		out             string
 		allowNetwork    bool
@@ -157,6 +158,13 @@ func newProfileCmd() *cobra.Command {
 			existing, err := existingForMerge(out, script)
 			if err != nil {
 				return refuse(err)
+			}
+			// The failed-run hint pins the manifest's interpreter with --interpreter, and there
+			// is no flag to restate its options, so without this a re-profile would drop
+			// `sh -eu` to plain `sh`. Only on a match: a different interpreter's options are
+			// no guide to this one's.
+			if existing != nil && cmd.Flags().Changed("interpreter") && existing.Interpreter == interpreter {
+				interpreterArgs = existing.InterpreterArgs
 			}
 			outBefore := snapshotOut(out)
 			workdir := ""

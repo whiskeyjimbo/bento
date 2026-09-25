@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/whiskeyjimbo/bento/backend"
 	"github.com/whiskeyjimbo/bento/enforce"
+	"github.com/whiskeyjimbo/bento/manifest"
 	"github.com/whiskeyjimbo/bento/policy"
 )
 
@@ -466,5 +468,38 @@ func TestProfileRefusesAnOutTheProfiledProgramRedirected(t *testing.T) {
 	}
 	if _, err := os.Lstat(victim); err == nil {
 		t.Error("profile wrote a manifest outside the grant, through the planted link")
+	}
+}
+
+// The failed-run hint re-profiles with --interpreter pinned to the manifest's, and profile
+// has no flag for interpreter_args, so the manifest's own must survive the round trip or
+// `sh -eu` silently becomes `sh`.
+func TestProfileKeepsTheManifestsInterpreterArgsUnderAMatchingPin(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tidy.sh")
+	if err := os.WriteFile(script, []byte("true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "m.yaml")
+	base := &policy.Policy{Entrypoint: script, Interpreter: "/bin/sh", InterpreterArgs: []string{"-eu"}}
+	data, err := manifest.Marshal(base, manifest.Provenance{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if msg, err := runProfileNonInteractively(t, "--interpreter", "/bin/sh", "--out", out, script); err != nil {
+		t.Fatalf("profile: %v\n%s", err, msg)
+	}
+	doc, _, err := loadDocument(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(doc.Policy.InterpreterArgs, []string{"-eu"}) {
+		t.Errorf("interpreter_args = %q, want the manifest's [-eu] kept under a matching --interpreter", doc.Policy.InterpreterArgs)
 	}
 }
