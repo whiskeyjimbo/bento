@@ -456,7 +456,11 @@ func nestedCheckoutRoots(writes []string) (nested, unresolved []string) {
 // may match in the next shell.
 //
 // git names the file it reads config from, which for a linked worktree is the common git
-// directory's, and follows the includes itself, so a chain of them is reported whole.
+// directory's, and follows the includes itself, so a chain of them is reported as far as
+// git reads it - past a matching condition, not past one that does not match here.
+//
+// Residual: an include set in a worktree's config.worktree is not asked for, since
+// --file reads the one config file.
 // Missing targets are kept: creating one is the write that matters.
 func includeTargets(roots []string) (includes, unresolved []string) {
 	resolvedWrites := make([]string, 0, len(roots))
