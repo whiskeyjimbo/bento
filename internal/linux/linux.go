@@ -166,8 +166,11 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	if err != nil {
 		return enforce.Result{}, err
 	}
+	// Once, so the auto-exec compare below can reclaim them before it looks, and the defer
+	// still reclaims them on every arm that returns before that.
+	reclaimShields := sync.OnceValue(func() []string { return removeCreatedShields(shieldDirs, shieldFiles) })
 	defer func() {
-		recordResidue(proc.Stderr, &res.Residue, "shield mount points it could not reclaim", removeCreatedShields(shieldDirs, shieldFiles))
+		recordResidue(proc.Stderr, &res.Residue, "shield mount points it could not reclaim", reclaimShields())
 		if shieldRecord != nil {
 			shieldRecord.Close()
 		}
@@ -328,6 +331,10 @@ func (e *Enforcer) Run(ctx context.Context, p *policy.Policy, proc enforce.Proce
 	// ran to completion for, and a late cancel does not unmake that.
 	// Stamped once for every arm below: the target has finished on all of them, so the
 	// answer is the same whichever one returns.
+	// After the reclaim: a mount point bwrap left for an absent .git reads to the checkout
+	// search as a checkout git would not read, so a plain directory would come back
+	// unresolved. One the target filled is kept by the reclaim and still counts.
+	reclaimShields()
 	changedAuto, redirected, unresolvedHooks := autoExecBefore.changed(preflight.writes)
 
 	if runErr != nil && ctx.Err() != nil && killedByCancel(cmd.ProcessState) {

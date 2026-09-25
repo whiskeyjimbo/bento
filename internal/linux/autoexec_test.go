@@ -279,6 +279,25 @@ func TestRunReportsTheAutoExecFilesTheTargetChanged(t *testing.T) {
 	}
 }
 
+// bwrap leaves a shield mount point on the host for a .git the grant did not have, and
+// the checkout search counts any .git as a checkout it could not read. So the compare
+// must run after the mount points are reclaimed, or every shielded run over a plain
+// directory reports that directory unresolved.
+func TestRunOverAPlainDirectoryLeavesNoGrantUnresolved(t *testing.T) {
+	requireSandbox(t)
+
+	dir := t.TempDir()
+	p := &policy.Policy{Entrypoint: "/bin/true", Write: []string{dir}, Exec: policy.ExecAll}
+
+	res, err := sandboxEnforcer(t).Run(context.Background(), p, enforce.Process{}, enforce.RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.UnresolvedHooks) != 0 {
+		t.Errorf("a write grant outside any checkout was reported unresolved: %v", res.UnresolvedHooks)
+	}
+}
+
 // The degraded tier has its own baseline and its own compare, wired at three separate
 // points, and the unit test above passes with either end of that pair dead. It is also
 // the tier with no mount namespace and no shields at all, so it is where a missing hint
