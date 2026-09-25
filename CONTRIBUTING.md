@@ -38,8 +38,9 @@ needs a genuine reason and a license compatible with Apache-2.0.
 - A C toolchain, for `make race`.
 - Network access, for `make vuln` and `make audit`.
 
-[`.github/workflows/gate.yml`](.github/workflows/gate.yml) is the reference: its
-setup steps install exactly this and probe each lever before running the gate.
+[`.github/workflows/gate.yml`](.github/workflows/gate.yml) installs the sandbox
+packages and lifts the sysctl on top of an Ubuntu runner image that already has
+the rest.
 
 This checkout is not part of the parent `go.work`, so every `go` command needs
 `GOWORK=off`. The Makefile sets it for you - prefer the make targets over bare

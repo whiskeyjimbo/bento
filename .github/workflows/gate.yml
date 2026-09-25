@@ -37,8 +37,8 @@ jobs:
             go-${{ runner.os }}-
 
       # The test suite runs real probes inside real bwrap sandboxes, and the denylist
-      # audit diffs against the locally installed firejail and AppArmor profiles;
-      # without them those tests skip and the gate would pass without exercising the
+      # audit diffs against the locally installed firejail and AppArmor profiles, and
+      # the examples drive bento in the same sandboxes; without them those tests skip and the gate would pass without exercising the
       # boundary. BENTO_REQUIRE_TEST_DEPS turns such a skip into a failure, so they
       # have to be present rather than merely nice to have.
       - name: Install sandbox test dependencies
