@@ -359,8 +359,8 @@ func TestInterpreterArgsAreScreenedForUnsafeRunes(t *testing.T) {
 	}
 }
 
-// Without an interpreter there is nothing to pass these to: the entrypoint is a
-// compiled binary that runs itself, and the enforcer would drop them silently.
+// Without an interpreter there is nothing to pass these to: the entrypoint is
+// executed directly, and the enforcer would drop them silently.
 func TestInterpreterArgsWithoutAnInterpreterAreRefused(t *testing.T) {
 	p := &Policy{Entrypoint: "./x", InterpreterArgs: []string{"-u"}}
 	err := p.Validate()
