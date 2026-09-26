@@ -9,6 +9,70 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
+## 0.5.0 (2026-09-26)
+
+A minor bump, for one breaking output shape: `--json` `unresolved_hooks` and
+`enforce.Result.UnresolvedHooks` change from a list of paths to a list of
+`{path, reason}`. Nothing about the boundary moved. Every change here came out of
+a persona walk through the product (`docs/ux-audit-2026-09-25.md`) and is about
+what bento tells you: messages that were false, hints that did not work, and
+gates that passed without testing anything.
+
+### What a Run Tells You
+
+- **An unread hook grant says why.** A write grant bento could not check for git
+  hooks is reported with a reason: git is not installed, git refused to answer,
+  git timed out, or the checkout could not be read. A timeout no longer reads as
+  git refusing. Breaking for `--json` consumers: `unresolved_hooks` is now
+  `[{path, reason}]`, and `enforce.Result.UnresolvedHooks` is
+  `[]enforce.UnresolvedGrant`.
+- **A write grant outside any git checkout is no longer reported as unread.** Every
+  such run printed "could not read these grants whole", including runs that
+  succeeded, for two reasons: git's "not a git repository" was counted as a
+  failure, and the empty `.git` bento creates to hold its own hooks shield was
+  still present when the check ran. A grant is treated as outside any checkout
+  only when git says so and no `.git` or `HEAD` sits at or above it; any other git
+  failure is still reported.
+- **The `bento profile` command a failed run suggests reproduces that run.** It
+  carries the manifest's `workdir`, arguments, interpreter and `--out`, so it
+  profiles what failed and merges into the manifest that failed, rather than
+  running the bare entrypoint from the wrong directory and writing a second
+  manifest. A pinned interpreter keeps the manifest's `interpreter_args`.
+- **`bento hook claude-code` no longer offers `--allow-unapproved`** in its
+  stale-approval denial. The hook has no such flag, and passing it left every
+  Bash call denied as misconfigured.
+
+### Reviewing a Manifest
+
+- **`approve` and `validate` say the manifest is read-only under `bento run`**
+  instead of warning that a write grant covering it lets the script rewrite its
+  policy, which 0.4.0 stopped. The remaining risk is named: frontends that call
+  `enforce.Run` directly and other writers on the host.
+- **`validate` no longer calls a `#!` script a compiled binary.** An entrypoint
+  with no interpreter is described as executed directly.
+- **A re-profile names the environment variables it adds.** `env: [HOME, LOGNAME,
+  USER]` could arrive silently and move `HOME` from the run's `/tmp` to the real
+  home; the merge notice and `--json` (`merged.added_env`) now list them.
+
+### Embedding
+
+- **`examples/embed` binds the manifest read-only** and refuses a manifest a write
+  grant could reach around, as `bento run` does, so the example models the safe
+  shape.
+
+### Development
+
+- **`make examples` fails when a sandboxed example is skipped.** It printed
+  "Examples verified!" and exited 0 on a host where bwrap could not build a
+  sandbox. `make check` was already red there through `make test`.
+- **CONTRIBUTING lists the gate's prerequisites** (bwrap, the AppArmor userns
+  sysctl, firejail and apparmor, python3, a C toolchain, network), and the README
+  and CONTRIBUTING gate lists match `make check`. The README no longer claims
+  `make test` skips when bwrap is missing; it fails, and plain `go test` skips.
+- **A passing `make audit` prints its verdict, not 1,300 lines.** Out-of-scope
+  paths are counted by default and listed under `-v`, which the nightly corpus job
+  passes.
+
 ## 0.4.0 (2026-09-25)
 
 A minor bump, for new surface and for three narrowed checks. Two manifest keys
