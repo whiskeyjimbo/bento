@@ -9,11 +9,12 @@ Each entry lists the changes since the previous tag. The 0.1.0 entry is the
 exception: it describes the boundary as it first shipped, not the 380-odd
 commits that built it - none of them were ever in a release.
 
-## 0.5.0 (2026-09-26)
+## 0.4.1 (2026-09-26)
 
-A minor bump, for one breaking output shape: `--json` `unresolved_hooks` and
-`enforce.Result.UnresolvedHooks` change from a list of paths to a list of
-`{path, reason}`. Nothing about the boundary moved. Every change here came out of
+A patch bump: nothing about the boundary moved. One output shape changes:
+`--json` `unresolved_hooks` and `enforce.Result.UnresolvedHooks` go from a list
+of paths to a list of `{path, reason}`, so a consumer reading that field needs
+updating. Every change here came out of
 a persona walk through the product (`docs/ux-audit-2026-09-25.md`) and is about
 what bento tells you: messages that were false, hints that did not work, and
 gates that passed without testing anything.
